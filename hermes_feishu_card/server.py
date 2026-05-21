@@ -5,6 +5,7 @@ import time
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict
 
 from aiohttp import web
@@ -32,6 +33,7 @@ MESSAGE_LOCKS_KEY = web.AppKey("message_locks", dict)
 FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
 CARD_TITLE_KEY = web.AppKey("card_title", str)
 BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
+UPLOADED_GIF_IMG_KEYS_KEY = web.AppKey("uploaded_gif_img_keys", dict)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.5
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
@@ -61,6 +63,7 @@ def create_app(
     app[METRICS_KEY] = SidecarMetrics()
     app[LAST_UPDATE_AT_KEY] = {}
     app[MESSAGE_LOCKS_KEY] = {}
+    app[UPLOADED_GIF_IMG_KEYS_KEY] = {}
     app[DIAGNOSTICS_KEY] = {
         "last_update_error": "",
         "last_route_error": "",
@@ -75,6 +78,43 @@ def create_app(
     app[CARD_TITLE_KEY] = title if isinstance(title, str) else "Hermes Agent"
     app.router.add_get("/health", _health)
     app.router.add_get("/messages/{message_id}/summary", _message_summary)
+
+    # Schedule loading GIF upload at startup
+    _gif_path = str(Path(__file__).parent / "assets" / "loading.gif")
+    if os.path.isfile(_gif_path):
+        async def _startup_gif_upload(app: web.Application) -> None:
+            logger.info("Uploading loading GIF for card footer animation...")
+            uploaded: dict[str, str] = {}
+            feishu_client = app[FEISHU_CLIENT_KEY]
+            if isinstance(feishu_client, dict):
+                for profile_id, factory in feishu_client.items():
+                    try:
+                        client = factory.get_client("default")
+                        if hasattr(client, "upload_image"):
+                            img_key = await client.upload_image(_gif_path)
+                            uploaded[profile_id] = img_key
+                            logger.info("Uploaded loading GIF for profile %s: %s", profile_id, img_key)
+                    except Exception as exc:
+                        logger.warning("Failed to upload loading GIF for profile %s: %s", profile_id, exc)
+            else:
+                client = app[FEISHU_CLIENT_KEY]
+                if hasattr(client, "upload_image"):
+                    try:
+                        img_key = await client.upload_image(_gif_path)
+                        uploaded["default"] = img_key
+                        logger.info("Uploaded loading GIF: %s", img_key)
+                    except Exception as exc:
+                        logger.warning("Failed to upload loading GIF: %s", exc)
+            app[UPLOADED_GIF_IMG_KEYS_KEY] = uploaded
+            if uploaded:
+                logger.info("Loading GIF ready for profiles: %s", list(uploaded.keys()))
+            else:
+                logger.info("No loading GIF uploaded, footer will use plain text")
+
+        app.on_startup.append(_startup_gif_upload)
+    else:
+        logger.warning("Loading GIF not found at %s, footer will use plain text", _gif_path)
+
     app.router.add_post("/events", _events)
     return app
 
@@ -109,6 +149,7 @@ async def _health(request: web.Request) -> web.Response:
         "diagnostics": diagnostics,
         "routing": request.app[ROUTING_DIAGNOSTICS_KEY],
         "profile_diagnostics": request.app[PROFILE_DIAGNOSTICS_KEY],
+        "loading_gif_img_keys": request.app.get(UPLOADED_GIF_IMG_KEYS_KEY, {}),
     }
     process_token = request.app[PROCESS_TOKEN_KEY]
     if process_token:
@@ -414,11 +455,23 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
     title = card_config.get("title", request.app[CARD_TITLE_KEY])
     if not isinstance(title, str):
         title = request.app[CARD_TITLE_KEY]
+    loading_gif_img_key = _resolve_gif_img_key(request.app, session)
     return render_card(
         session,
         footer_fields=footer_fields,
         title=title,
+        loading_gif_img_key=loading_gif_img_key,
     )
+
+
+def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | None:
+    """Look up the loading GIF img_key for the session's profile."""
+    uploaded = app.get(UPLOADED_GIF_IMG_KEYS_KEY, {})
+    if not uploaded:
+        return None
+    session_key = _session_key_for_session(app, session)
+    profile_id = session_key.split(":", 1)[0] if ":" in session_key else "default"
+    return uploaded.get(profile_id)
 
 
 def _session_key_for_session(app: web.Application, session: CardSession) -> str:

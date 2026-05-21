@@ -1,6 +1,5 @@
 from hermes_feishu_card.render import render_card
 from hermes_feishu_card.session import CardSession, ToolState
-import time
 
 
 def test_render_thinking_card_has_two_state_label_and_tools():
@@ -196,32 +195,27 @@ def test_render_completed_card_footer_respects_configured_fields_and_order():
     assert "↓2.2k" not in content
 
 
-def test_spinner_text_changes_over_time():
-    from hermes_feishu_card.render import _spinner_text
-    frames = set()
-    for _ in range(20):
-        frames.add(_spinner_text("生成中"))
-        time.sleep(0.05)
-    assert len(frames) >= 2  # 至少两个不同帧
-
-
-def test_spinner_text_contains_label():
-    from hermes_feishu_card.render import _spinner_text
-    assert "处理中" in _spinner_text("处理中")
-
-
-def test_footer_shows_spinner_not_static_for_thinking():
-    from hermes_feishu_card.session import CardSession
+def test_footer_shows_gif_column_set_for_thinking():
     from hermes_feishu_card.render import _render_footer
     session = CardSession(conversation_id="c", message_id="m", chat_id="c")
     session.status = "thinking"
-    footer = _render_footer(session)
-    assert footer != "生成中"  # 不再是静态文本
-    assert "生成中" in footer  # label 仍然包含
+    footer = _render_footer(session, loading_gif_img_key="img_v3_test_key")
+    assert isinstance(footer, list), "With GIF key, footer should be a list"
+    footer_str = str(footer)
+    assert "custom_icon" in footer_str
+    assert "img_v3_test_key" in footer_str
+    assert "生成中" in footer_str
+
+
+def test_footer_shows_plain_text_fallback_for_thinking():
+    from hermes_feishu_card.render import _render_footer
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.status = "thinking"
+    footer = _render_footer(session, loading_gif_img_key=None)
+    assert footer == "生成中"
 
 
 def test_footer_still_static_for_failed():
-    from hermes_feishu_card.session import CardSession
     from hermes_feishu_card.render import _render_footer
     session = CardSession(conversation_id="c", message_id="m", chat_id="c")
     session.status = "failed"

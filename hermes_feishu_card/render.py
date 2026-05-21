@@ -4,7 +4,6 @@ from typing import Any, Dict
 
 from .session import CardSession
 from .text import normalize_stream_text
-import time as _time
 
 DEFAULT_FOOTER_FIELDS = (
     "duration",
@@ -16,22 +15,18 @@ DEFAULT_FOOTER_FIELDS = (
 MAIN_CONTENT_CHUNK_CHARS = 2400
 DEFAULT_TITLE = "Hermes Agent"
 
-_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
-def _spinner_text(label: str = "生成中") -> str:
-    frame = _SPINNER_FRAMES[int(_time.time() * 8) % len(_SPINNER_FRAMES)]
-    return f"{frame} {label}"
 
 def render_card(
     session: CardSession,
     footer_fields: list[str] | tuple[str, ...] | None = None,
     title: str = DEFAULT_TITLE,
+    loading_gif_img_key: str | None = None,
 ) -> Dict[str, Any]:
     status = _render_status(session)
     main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
     tool_summary = _render_tool_summary(session)
     attachment_summary = _render_attachment_summary(session)
-    footer = _render_footer(session, footer_fields)
+    footer = _render_footer(session, footer_fields, loading_gif_img_key)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
     elements = _render_main_content_elements(main_text)
     if attachment_summary:
@@ -42,13 +37,23 @@ def render_card(
                 "content": attachment_summary,
             }
         )
-    elements.extend(
-        [
-            {"tag": "hr", "element_id": "main_divider"},
-            {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary},
-            {"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"},
-        ]
+    elements.append({"tag": "hr", "element_id": "main_divider"})
+    elements.append(
+        {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
     )
+
+    # Footer: list for GIF icon + text, string for markdown (completed/failed)
+    if isinstance(footer, list):
+        elements.extend(footer)
+    else:
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": "footer",
+                "content": footer,
+                "text_size": "x-small",
+            }
+        )
     return {
         "schema": "2.0",
         "config": {
@@ -128,11 +133,14 @@ def _render_attachment_summary(session: CardSession) -> str:
 def _render_footer(
     session: CardSession,
     footer_fields: list[str] | tuple[str, ...] | None = None,
-) -> str:
+    loading_gif_img_key: str | None = None,
+) -> str | list[dict[str, Any]]:
     if session.status == "failed":
         return "已停止"
     if session.status != "completed":
-        return _spinner_text("生成中")
+        if loading_gif_img_key:
+            return _render_thinking_footer_gif(loading_gif_img_key)
+        return "生成中"
     tokens = session.tokens if isinstance(session.tokens, dict) else {}
     input_tokens = _safe_int(tokens.get("input_tokens"))
     output_tokens = _safe_int(tokens.get("output_tokens"))
@@ -162,6 +170,22 @@ def _render_footer(
         if value:
             selected.append(value)
     return " · ".join(selected) if selected else values["duration"]
+
+
+def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
+    """Render thinking-state footer as markdown with inline custom icon."""
+    return [
+        {
+            "tag": "markdown",
+            "content": "生成中",
+            "text_align": "left",
+            "text_size": "x-small",
+            "icon": {
+                "tag": "custom_icon",
+                "img_key": img_key,
+            },
+        },
+    ]
 
 
 def _safe_int(value: Any) -> int:

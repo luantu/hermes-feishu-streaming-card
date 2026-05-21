@@ -9,6 +9,7 @@ from typing import Any, Dict, Union
 from urllib.parse import quote, urlparse
 
 import aiohttp
+from aiohttp import FormData
 
 
 class FeishuAPIError(RuntimeError):
@@ -95,6 +96,40 @@ class FeishuClient:
             token=token,
             json_body={"content": content},
         )
+
+    async def upload_image(self, image_path: str) -> str:
+        """Upload an image to Feishu and return the image_key.
+
+        Uses image_type="message" (24h expiry) which is sufficient for
+        transient loading indicators.
+        """
+        token = await self._tenant_token()
+        url = f"{self.config.base_url.rstrip('/')}/im/v1/images"
+        headers = {"Authorization": f"Bearer {token}"}
+        timeout = aiohttp.ClientTimeout(total=float(self.config.timeout_seconds))
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                with open(image_path, "rb") as f:
+                    data = FormData()
+                    data.add_field("image_type", "message")
+                    data.add_field("image", f, filename="loading.gif", content_type="image/gif")
+                    async with session.request("POST", url, headers=headers, data=data) as response:
+                        payload = await response.json(content_type=None)
+            if not isinstance(payload, dict):
+                raise FeishuAPIError("Feishu image upload returned non-object response")
+            if response.status >= 400:
+                raise FeishuAPIError(f"Feishu image upload HTTP {response.status}: {payload.get('msg', '')}")
+            code = payload.get("code")
+            if code != 0:
+                raise FeishuAPIError(f"Feishu image upload error {code}: {payload.get('msg', '')}")
+            img_key = payload.get("data", {}).get("image_key")
+            if not isinstance(img_key, str) or not img_key:
+                raise FeishuAPIError("Feishu image upload response missing image_key")
+            return img_key
+        except OSError as exc:
+            raise FeishuAPIError(f"Failed to read image file: {exc}") from exc
+        except aiohttp.ClientError as exc:
+            raise FeishuAPIError(f"Feishu image upload request failed: {exc.__class__.__name__}") from exc
 
     async def _tenant_token(self) -> str:
         now = time.time()
