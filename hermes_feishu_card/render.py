@@ -38,9 +38,9 @@ def render_card(
             }
         )
     elements.append({"tag": "hr", "element_id": "main_divider"})
-    elements.append(
-        {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
-    )
+    # elements.append(
+    #     {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
+    # )
 
     # Footer: list for GIF icon + text, string for markdown (completed/failed)
     if isinstance(footer, list):
