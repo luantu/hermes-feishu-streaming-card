@@ -51,7 +51,7 @@ def render_card(
                 "tag": "markdown",
                 "element_id": "footer",
                 "content": footer,
-                "text_size": "x-small",
+                "text_size": "small",
             }
         )
     return {
