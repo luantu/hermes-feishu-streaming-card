@@ -51,7 +51,7 @@ def render_card(
                 "tag": "markdown",
                 "element_id": "footer",
                 "content": footer,
-                "text_size": "small",
+                "text_size": "x-small",
             }
         )
     return {
@@ -179,7 +179,7 @@ def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
             "tag": "markdown",
             "content": "生成中",
             "text_align": "left",
-            "text_size": "x-small",
+            "text_size": "small",
             "icon": {
                 "tag": "custom_icon",
                 "img_key": img_key,
