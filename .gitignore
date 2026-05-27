@@ -13,3 +13,4 @@ build/
 .superpowers/
 .worktrees/
 .claude/
+.codegraph/
