@@ -290,7 +290,12 @@ def test_completed_event_extracts_attachment_summaries_from_response():
     )
 
     attachments = payload["data"]["attachments"]
-    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in attachments
+    assert {
+        "kind": "file",
+        "name": "report.pdf",
+        "summary": "report.pdf",
+        "is_media": True,
+    } in attachments
     assert {"kind": "image", "name": "chart.png", "summary": "chart.png"} in attachments
 
 
@@ -308,6 +313,7 @@ def test_completed_event_extracts_attachment_summaries_from_response_field():
         "kind": "audio",
         "name": "audio.mp3",
         "summary": "audio.mp3",
+        "is_media": True,
     } in payload["data"]["attachments"]
 
 
@@ -337,7 +343,7 @@ def test_completed_event_strips_trailing_attachment_punctuation_and_deduplicates
     )
 
     assert payload["data"]["attachments"] == [
-        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf", "is_media": True}
     ]
 
 
@@ -348,10 +354,11 @@ def test_completed_event_strips_trailing_attachment_punctuation_and_deduplicates
         ("feishu", True, [], True),
         ("feishu", False, None, False),
         ("slack", True, None, False),
-        ("feishu", True, [{"kind": "image", "name": "chart.png"}], False),
+        ("feishu", True, [{"kind": "image", "name": "chart.png"}], True),
+        ("feishu", True, [{"kind": "file", "name": "report.pdf", "is_media": True}], False),
     ],
 )
-def test_should_suppress_native_response_requires_feishu_delivery_without_attachments(
+def test_should_suppress_native_response_requires_feishu_delivery(
     platform, delivered, attachments, expected
 ):
     assert (
@@ -381,9 +388,12 @@ def test_build_cron_event_from_feishu_job_origin():
     assert payload["data"]["delivery_kind"] == "cron"
     assert payload["data"]["profile_id"] == "default"
     assert payload["data"]["profile_source"] == "fallback_default"
-    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in payload[
-        "data"
-    ]["attachments"]
+    assert {
+        "kind": "file",
+        "name": "report.pdf",
+        "summary": "report.pdf",
+        "is_media": True,
+    } in payload["data"]["attachments"]
 
 
 def test_build_cron_event_prefers_cleaned_delivery_content():
@@ -515,9 +525,12 @@ def test_build_event_preview_does_not_advance_sequence_or_retire_fallback():
     assert preview is not None
     assert preview["message_id"] == started["message_id"]
     assert preview["sequence"] == 1
-    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in preview[
-        "data"
-    ]["attachments"]
+    assert {
+        "kind": "file",
+        "name": "report.pdf",
+        "summary": "report.pdf",
+        "is_media": True,
+    } in preview["data"]["attachments"]
     assert completed is not None
     assert completed["message_id"] == started["message_id"]
     assert completed["sequence"] == 1
@@ -549,7 +562,7 @@ def test_attachment_guard_uses_preview_before_terminal_emit_retires_fallback():
     attachments = preview["data"]["attachments"] if preview is not None else []
 
     assert attachments == [
-        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf", "is_media": True}
     ]
     assert (
         hook_runtime.should_suppress_native_response("feishu", delivered, attachments)

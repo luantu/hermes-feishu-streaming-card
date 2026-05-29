@@ -16,6 +16,13 @@ class SidecarMetrics:
     feishu_update_successes: int = 0
     feishu_update_failures: int = 0
     feishu_update_retries: int = 0
+    feishu_delete_attempts: int = 0
+    feishu_delete_successes: int = 0
+    feishu_delete_failures: int = 0
+    feishu_resend_attempts: int = 0
+    feishu_resend_successes: int = 0
+    feishu_resend_failures: int = 0
+    feishu_resend_fallbacks: int = 0
     cron_cards_sent: int = 0
     cron_fallbacks: int = 0
 

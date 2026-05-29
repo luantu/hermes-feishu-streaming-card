@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
@@ -32,9 +33,14 @@ class CardSession:
     attachments: list[dict[str, str]] = field(default_factory=list)
     delivery_kind: str = "chat"
     reply_to_message_id: str = ""
+    started_at: float = field(default_factory=time.monotonic)
     _tool_call_count: int = field(default=0)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
+
+    @property
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started_at
 
     @property
     def tool_count(self) -> int:

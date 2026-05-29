@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## Unreleased
+
+### Fixed
+- `should_suppress_native_response` now correctly distinguishes between `MEDIA:` file uploads (which require Hermes native handling) and plain file paths mentioned in AI responses. Previously, any file path in the answer text would prevent suppression, causing duplicate messages.
+- `_extract_attachments` now adds `is_media: True` flag to attachments extracted from `MEDIA:` prefixes, enabling proper handling of real file uploads vs. text references.
+
+### Added
+- `card.resend_after_seconds` configuration option (default 60). When a session runs longer than this threshold, the terminal event (completed/failed) will delete the original streaming card and send a new one with the final content, instead of updating in place. This keeps completed answers visible in busy group chats. Set to 0 to always resend.
+- `FeishuClient.delete_message()` API for recalling/deleting Feishu messages.
+- New metrics: `feishu_delete_attempts/successes/failures`, `feishu_resend_attempts/successes/failures/fallbacks`.
+- `render_cards()` function returns multiple cards when content exceeds 5 tables. Each card contains up to 5 tables, with continuation cards labeled "(续)". Terminal events send all cards; streaming updates only update the first card.
+- Completed card subtitle now shows a brief summary of the answer (first sentence, max 20 chars) instead of static "已完成". Falls back to "已完成" for empty answers.
+
+### Tests
+- Added 6 integration tests covering: long-running resend, short-running in-place update, zero threshold, delete failure fallback, send failure fallback, and summary index migration.
+
 ## V3.4.3 — 2026-05-27
 
 ### Fixed

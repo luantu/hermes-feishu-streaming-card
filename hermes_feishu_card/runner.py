@@ -24,6 +24,9 @@ class NoopFeishuClient:
     async def update_card_message(self, message_id: str, card: dict[str, Any]) -> None:
         return None
 
+    async def delete_message(self, message_id: str) -> None:
+        return None
+
 
 @dataclass(frozen=True)
 class FeishuBoundary:

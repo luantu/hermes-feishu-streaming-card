@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
             "output_tokens",
             "context",
         ],
+        "resend_after_seconds": 60,
     },
 }
 KNOWN_SECTIONS = frozenset(DEFAULT_CONFIG)

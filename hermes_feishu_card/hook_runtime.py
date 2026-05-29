@@ -168,9 +168,20 @@ def should_suppress_native_response(
         return False
     if str(platform or "").lower() != "feishu":
         return False
-    if attachments:
+    if _has_media_attachments(attachments):
         return False
     return True
+
+
+def _has_media_attachments(attachments: Any) -> bool:
+    if not isinstance(attachments, list) or not attachments:
+        return False
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        if attachment.get("is_media") is True:
+            return True
+    return False
 
 
 def _post_json_sync(url: str, payload: dict[str, Any], timeout: float) -> bool:
@@ -558,7 +569,20 @@ def _first_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:
 def _extract_attachments(text: str) -> list[dict[str, str]]:
     seen = set()
     attachments = []
-    for raw in list(MEDIA_RE.findall(text or "")) + list(LOCAL_FILE_RE.findall(text or "")):
+    media_matches = MEDIA_RE.findall(text or "")
+    for raw in media_matches:
+        name = _attachment_name(raw)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        attachments.append({
+            "kind": _attachment_kind(name),
+            "name": name,
+            "summary": name,
+            "is_media": True,
+        })
+    local_matches = LOCAL_FILE_RE.findall(text or "")
+    for raw in local_matches:
         name = _attachment_name(raw)
         if not name or name in seen:
             continue

@@ -136,12 +136,18 @@ def render_preview_svg(cards: dict[str, dict[str, Any]]) -> str:
 
 def _card_parts(card: dict[str, Any]) -> dict[str, str]:
     elements = card["body"]["elements"]
+    main_content = ""
+    footer_content = ""
+    for el in elements:
+        if el.get("element_id") == "main_content":
+            main_content = el.get("content", "")
+        elif el.get("element_id") == "footer":
+            footer_content = el.get("content", "")
     return {
         "title": card["header"]["title"]["content"],
         "subtitle": card["header"]["subtitle"]["content"],
-        "main": elements[0]["content"],
-        "tools": elements[2]["content"],
-        "footer": elements[3]["content"],
+        "main": main_content,
+        "footer": footer_content,
     }
 
 
@@ -161,10 +167,6 @@ def _render_card_panel(
     ]
     cursor = y + 116
     lines.extend(_text_block(x + 28, cursor, parts["main"], 22, 14, "#111827"))
-    cursor += 184
-    lines.append(f'<line x1="{x + 28}" y1="{cursor}" x2="{x + 456}" y2="{cursor}" stroke="#e5e7eb"/>')
-    cursor += 38
-    lines.extend(_text_block(x + 28, cursor, parts["tools"], 22, 14, "#374151"))
     cursor = y + 520
     lines.append(f'<text x="{x + 28}" y="{cursor}" font-family="Arial, sans-serif" font-size="13" fill="#6b7280">{escape(parts["footer"])}</text>')
     return "\n".join(lines)

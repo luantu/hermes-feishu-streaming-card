@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from .session import CardSession
-from .text import normalize_stream_text, split_markdown_blocks
+from .text import normalize_stream_text, split_markdown_blocks, _markdown_structure_blocks, TABLE_SEPARATOR_RE
 import time as _time
 
 DEFAULT_FOOTER_FIELDS = (
@@ -23,38 +24,106 @@ def render_card(
     title: str = DEFAULT_TITLE,
     loading_gif_img_key: str | None = None,
 ) -> Dict[str, Any]:
+    cards = render_cards(
+        session,
+        footer_fields=footer_fields,
+        title=title,
+        loading_gif_img_key=loading_gif_img_key,
+    )
+    return cards[0] if cards else {}
+
+
+def render_cards(
+    session: CardSession,
+    footer_fields: list[str] | tuple[str, ...] | None = None,
+    title: str = DEFAULT_TITLE,
+    loading_gif_img_key: str | None = None,
+) -> list[Dict[str, Any]]:
     status = _render_status(session)
     main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
     tool_summary = _render_tool_summary(session)
     attachment_summary = _render_attachment_summary(session)
     footer = _render_footer(session, footer_fields, loading_gif_img_key)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
-    elements = _render_main_content_elements(main_text)
-    if attachment_summary:
-        elements.append(
-            {
-                "tag": "markdown",
-                "element_id": "attachment_summary",
-                "content": attachment_summary,
-            }
-        )
-    elements.append({"tag": "hr", "element_id": "main_divider"})
-    # elements.append(
-    #     {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
-    # )
+    
+    content_parts = _split_content_by_tables(main_text)
+    
+    if len(content_parts) <= 1:
+        elements = _render_main_content_elements(main_text)
+        if attachment_summary:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "attachment_summary",
+                    "content": attachment_summary,
+                }
+            )
+        elements.append({"tag": "hr", "element_id": "main_divider"})
+        if isinstance(footer, list):
+            elements.extend(footer)
+        else:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "footer",
+                    "content": footer,
+                    "text_size": "x-small",
+                }
+            )
+        return [_build_card(elements, status, header_title)]
+    
+    cards = []
+    total_parts = len(content_parts)
+    for index, part_text in enumerate(content_parts):
+        is_first = index == 0
+        is_last = index == total_parts - 1
+        part_elements = _render_main_content_elements(part_text)
+        
+        if is_first and attachment_summary:
+            part_elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "attachment_summary",
+                    "content": attachment_summary,
+                }
+            )
+        
+        part_elements.append({"tag": "hr", "element_id": "main_divider"})
+        
+        if is_last:
+            if isinstance(footer, list):
+                part_elements.extend(footer)
+            else:
+                part_elements.append(
+                    {
+                        "tag": "markdown",
+                        "element_id": "footer",
+                        "content": footer,
+                        "text_size": "x-small",
+                    }
+                )
+        else:
+            part_elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "footer",
+                    "content": f"({index + 1}/{total_parts})",
+                    "text_size": "x-small",
+                }
+            )
+        
+        part_status = status if is_first else {"subtitle": f"({index + 1}/{total_parts})", "template": status["template"]}
+        part_title = header_title if is_first else f"{header_title} (续)"
+        cards.append(_build_card(part_elements, part_status, part_title))
+    
+    return cards
 
-    # Footer: list for GIF icon + text, string for markdown (completed/failed)
-    if isinstance(footer, list):
-        elements.extend(footer)
-    else:
-        elements.append(
-            {
-                "tag": "markdown",
-                "element_id": "footer",
-                "content": footer,
-                "text_size": "x-small",
-            }
-        )
+
+def _build_card(
+    elements: list[Dict[str, Any]],
+    status: Dict[str, str],
+    title: str,
+) -> Dict[str, Any]:
     return {
         "schema": "2.0",
         "config": {
@@ -63,7 +132,7 @@ def render_card(
         },
         "header": {
             "template": status["template"],
-            "title": {"tag": "plain_text", "content": header_title},
+            "title": {"tag": "plain_text", "content": title},
             "subtitle": {"tag": "plain_text", "content": status["subtitle"]},
         },
         "body": {
@@ -72,29 +141,66 @@ def render_card(
     }
 
 
+def _split_content_by_tables(text: str) -> list[str]:
+    from .text import MAX_CARD_TABLES
+    
+    table_count = _count_markdown_tables(text)
+    if table_count <= MAX_CARD_TABLES:
+        return [text] if text else []
+    
+    blocks = _markdown_structure_blocks(text)
+    parts: list[str] = []
+    current_tables = 0
+    current_blocks: list[str] = []
+    
+    for block in blocks:
+        block_tables = _count_markdown_tables(block)
+        if current_tables + block_tables > MAX_CARD_TABLES and current_tables > 0:
+            parts.append("".join(current_blocks))
+            current_blocks = []
+            current_tables = 0
+        
+        current_blocks.append(block)
+        current_tables += block_tables
+    
+    if current_blocks:
+        parts.append("".join(current_blocks))
+    
+    return parts
+
+
+def _count_markdown_tables(text: str) -> int:
+    return len(re.findall(r'^\|[-: ]+\|', text, re.MULTILINE))
+
+
 def _render_status(session: CardSession) -> Dict[str, str]:
     if session.status == "completed":
-        return {"subtitle": "已完成", "template": "green"}
+        subtitle = _generate_summary_subtitle(session.answer_text)
+        return {"subtitle": subtitle, "template": "green"}
     if session.status == "failed":
         return {"subtitle": "处理失败", "template": "red"}
     return {"subtitle": "思考中", "template": "indigo"}
 
 
-def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
-    import re
+def _generate_summary_subtitle(text: str, max_length: int = 20) -> str:
+    if not text or not text.strip():
+        return "已完成"
+    cleaned = re.sub(r'```[\s\S]*?```', '', text)
+    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
+    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
+    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    cleaned = re.sub(r'#+\s*', '', cleaned)
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
+    cleaned = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', cleaned)
+    cleaned = re.sub(r'[\*\#`\[\]()>|-]', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    first_sentence = re.split(r'[。！？\n]', cleaned)[0].strip()
+    if len(first_sentence) > max_length:
+        return first_sentence[:max_length - 1] + "…"
+    return first_sentence if first_sentence else "已完成"
 
-    from .text import count_markdown_tables, MAX_CARD_TABLES
-    table_count = count_markdown_tables(main_text)
-    if table_count > MAX_CARD_TABLES:
-        matches = list(re.finditer(r'^\|[-: ]+\|', main_text, re.MULTILINE))
-        cutoff = matches[MAX_CARD_TABLES - 1].end()
-        rest = main_text[cutoff:]
-        next_para = re.search(r'\n\n', rest)
-        if next_para:
-            cutoff += next_para.start()
-        main_text = main_text[:cutoff].rstrip() + (
-            "\n\n> 内容含超过 5 个表格，超出部分已省略。"
-        )
+
+def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
     chunks = split_markdown_blocks(main_text, MAIN_CONTENT_CHUNK_CHARS)
     elements = []
     for index, chunk in enumerate(chunks):

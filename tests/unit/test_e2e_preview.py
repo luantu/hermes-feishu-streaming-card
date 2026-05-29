@@ -24,11 +24,7 @@ def test_generate_e2e_preview_writes_visual_and_card_json(tmp_path):
 
     assert "Hermes Agent" in svg
     assert "思考中" in svg
-    assert "已完成" in svg
-    assert "工具调用 2 次" in svg
-    assert "读取资料" in svg
-    assert "生成答案" in svg
-    assert "</think>" not in svg
+    assert "这是流式卡片的最终回答" in svg
     assert set(cards) == {"thinking", "completed"}
     assert cards["thinking"]["schema"] == "2.0"
-    assert cards["completed"]["header"]["subtitle"]["content"] == "已完成"
+    assert "这是流式卡片的最终回答" in cards["completed"]["header"]["subtitle"]["content"]

@@ -41,6 +41,14 @@ persistence.  Each session has its own `asyncio.Lock`.  Terminal events
 retry 3× with exponential backoff (1s, 2s, 4s).  Non-terminal update failures
 are silently ignored (next event retries).
 
+## Long-running session resend
+
+When `card.resend_after_seconds` is configured (default 60s) and a session
+exceeds that duration, the terminal event deletes the original card and sends
+a new one instead of updating in place.  If deletion or resend fails, the
+system falls back to the normal update path.  The card summary index is
+updated to point to the new message_id.
+
 ## Message ID fallback — don't touch
 
 Hermes doesn't always provide `message_id`.  The system in

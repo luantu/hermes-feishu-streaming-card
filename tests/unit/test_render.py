@@ -19,7 +19,6 @@ def test_render_thinking_card_has_two_state_label_and_tools():
     assert card["header"]["subtitle"]["content"] == "思考中"
     content = str(card)
     assert "正在分析。" in content
-    assert "工具调用 1 次" in content
 
 
 def test_render_card_accepts_custom_header_title():
@@ -37,7 +36,7 @@ def test_render_completed_card_replaces_thinking():
     session.status = "completed"
     card = render_card(session)
     content = str(card)
-    assert card["header"]["subtitle"]["content"] == "已完成"
+    assert card["header"]["subtitle"]["content"] == "最终答案"
     assert "最终答案" in content
     assert "不会展示" not in content
 
@@ -53,7 +52,7 @@ def test_render_completed_card_shows_attachment_summary():
     assert "附件：report.pdf" in str(card)
 
 
-def test_render_completed_card_places_attachment_summary_before_tools():
+def test_render_completed_card_places_attachment_summary_before_divider():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.status = "completed"
     session.answer_text = "正文"
@@ -62,7 +61,8 @@ def test_render_completed_card_places_attachment_summary_before_tools():
     card = render_card(session)
 
     element_ids = [element.get("element_id") for element in card["body"]["elements"]]
-    assert element_ids.index("attachment_summary") < element_ids.index("tool_summary")
+    assert "attachment_summary" in element_ids
+    assert element_ids.index("attachment_summary") < element_ids.index("main_divider")
 
 
 def test_render_completed_card_shows_at_most_eight_attachments():
@@ -222,17 +222,73 @@ def test_footer_still_static_for_failed():
     assert _render_footer(session) == "已停止"
 
 
-def test_render_card_truncates_tables_over_limit():
+def test_render_card_splits_tables_into_multiple_cards():
     from hermes_feishu_card.session import CardSession
-    from hermes_feishu_card.render import render_card
+    from hermes_feishu_card.render import render_cards
     session = CardSession(conversation_id="c", message_id="m", chat_id="c")
     session.answer_text = "\n\n".join(
         [f"Table {i}\n| col |\n| --- |\n| {i} |" for i in range(7)]
     )
     session.status = "completed"
-    card = render_card(session)
-    body_text = "".join(
-        el.get("content", "") for el in card["body"]["elements"]
+    cards = render_cards(session)
+    assert len(cards) == 2
+    first_body = "".join(
+        el.get("content", "") for el in cards[0]["body"]["elements"]
         if el.get("tag") == "markdown"
     )
-    assert "超出部分已省略" in body_text
+    assert "Table 0" in first_body
+    assert "Table 4" in first_body
+    assert "Table 5" not in first_body
+    second_body = "".join(
+        el.get("content", "") for el in cards[1]["body"]["elements"]
+        if el.get("tag") == "markdown"
+    )
+    assert "Table 5" in second_body
+    assert "Table 6" in second_body
+    assert "(续)" in cards[1]["header"]["title"]["content"]
+
+
+def test_completed_card_subtitle_uses_answer_summary():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.answer_text = "这是一个关于Python编程的回答。"
+    session.status = "completed"
+    card = render_card(session)
+    assert card["header"]["subtitle"]["content"] == "这是一个关于Python编程的回答"
+
+
+def test_completed_card_subtitle_truncates_long_answer():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.answer_text = "这是一个非常长的回答，包含了超过二十个字符的内容，应该被截断。"
+    session.status = "completed"
+    card = render_card(session)
+    subtitle = card["header"]["subtitle"]["content"]
+    assert len(subtitle) <= 20
+    assert subtitle.endswith("…")
+
+
+def test_completed_card_subtitle_strips_markdown():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.answer_text = "**加粗文本**和`代码`以及[链接](url)。"
+    session.status = "completed"
+    card = render_card(session)
+    subtitle = card["header"]["subtitle"]["content"]
+    assert "**" not in subtitle
+    assert "`" not in subtitle
+    assert "[" not in subtitle
+    assert "加粗文本和代码以及链接" == subtitle
+
+
+def test_completed_card_subtitle_fallback_for_empty_answer():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.answer_text = ""
+    session.status = "completed"
+    card = render_card(session)
+    assert card["header"]["subtitle"]["content"] == "已完成"
+
+
+def test_completed_card_subtitle_extracts_first_sentence():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.answer_text = "第一句话。第二句话。第三句话。"
+    session.status = "completed"
+    card = render_card(session)
+    assert card["header"]["subtitle"]["content"] == "第一句话"

@@ -97,6 +97,16 @@ class FeishuClient:
             json_body={"content": content},
         )
 
+    async def delete_message(self, message_id: str) -> None:
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise ValueError("message_id is required")
+        token = await self._tenant_token()
+        await self._request_json(
+            "DELETE",
+            f"/im/v1/messages/{quote(message_id, safe='')}",
+            token=token,
+        )
+
     async def upload_image(self, image_path: str) -> str:
         """Upload an image to Feishu and return the image_key.
 
