@@ -182,7 +182,7 @@ def _render_status(session: CardSession) -> Dict[str, str]:
     return {"subtitle": "思考中", "template": "indigo"}
 
 
-def _generate_summary_subtitle(text: str, max_length: int = 20) -> str:
+def _generate_summary_subtitle(text: str, max_length: int = 40) -> str:
     if not text or not text.strip():
         return "已完成"
     cleaned = re.sub(r'```[\s\S]*?```', '', text)
