@@ -31,6 +31,9 @@ SUPPORTED_RUNTIME_EVENTS = {
     "tool.updated",
     "message.completed",
     "message.failed",
+    "interaction.requested",
+    "interaction.completed",
+    "interaction.failed",
 }
 
 
@@ -47,6 +50,9 @@ _ACTIVE_FALLBACK_MESSAGE_IDS: dict[tuple[str, str, str | None], str] = {}
 _CURRENT_FALLBACK_KEYS: dict[tuple[str, str], tuple[str, str, str | None]] = {}
 _FALLBACK_LIFECYCLE_COUNTS: dict[tuple[str, str], int] = {}
 _AMBIGUOUS_TERMINAL = object()
+_SEND_LOCKS: dict[tuple[int, str, str], asyncio.Lock] = {}
+_SEND_LOCKS_GUARD = threading.Lock()
+_POST_FAILED = object()
 
 
 def reset_runtime_state() -> None:
@@ -55,6 +61,8 @@ def reset_runtime_state() -> None:
     _ACTIVE_FALLBACK_MESSAGE_IDS.clear()
     _CURRENT_FALLBACK_KEYS.clear()
     _FALLBACK_LIFECYCLE_COUNTS.clear()
+    with _SEND_LOCKS_GUARD:
+        _SEND_LOCKS.clear()
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -96,7 +104,11 @@ def emit_from_hermes_locals(
             return False
         asyncio.get_running_loop()
         asyncio.create_task(
-            _send_fail_open(config.event_url, payload, config.timeout_seconds)
+            _send_fail_open_ordered(
+                config.event_url,
+                payload,
+                _timeout_for_event(config, event_name),
+            )
         )
         return True
     except Exception:
@@ -115,7 +127,11 @@ def emit_from_hermes_locals_threadsafe(
         if payload is None:
             return False
         if "_hfc_loop" in local_vars:
-            coroutine = _send_fail_open(config.event_url, payload, config.timeout_seconds)
+            coroutine = _send_fail_open_ordered(
+                config.event_url,
+                payload,
+                _timeout_for_event(config, event_name),
+            )
             try:
                 asyncio.run_coroutine_threadsafe(coroutine, local_vars["_hfc_loop"])
             except Exception:
@@ -124,7 +140,11 @@ def emit_from_hermes_locals_threadsafe(
         else:
             asyncio.get_running_loop()
             asyncio.create_task(
-                _send_fail_open(config.event_url, payload, config.timeout_seconds)
+                _send_fail_open_ordered(
+                    config.event_url,
+                    payload,
+                    _timeout_for_event(config, event_name),
+                )
             )
         return True
     except Exception:
@@ -142,7 +162,11 @@ async def emit_from_hermes_locals_async(
         payload = build_event(event_name, local_vars)
         if payload is None:
             return False
-        await _post_json(config.event_url, payload, _timeout_for_event(config, event_name))
+        await _post_json_ordered(
+            config.event_url,
+            payload,
+            _timeout_for_event(config, event_name),
+        )
         return True
     except Exception:
         return False
@@ -159,6 +183,184 @@ def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
         return _post_json_sync(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS)
     except Exception:
         return False
+
+
+def build_interaction_event(
+    local_vars: dict[str, Any],
+    *,
+    kind: str,
+    interaction_id: str,
+    prompt: str,
+    options: list[dict[str, Any]] | None = None,
+    description: str = "",
+    timeout_seconds: float | None = None,
+) -> dict[str, Any] | None:
+    event_locals = {
+        **local_vars,
+        "_hfc_interaction_id": interaction_id,
+        "_hfc_interaction_kind": kind,
+        "_hfc_interaction_prompt": prompt,
+        "_hfc_interaction_description": description,
+        "_hfc_interaction_options": options or [],
+        "_hfc_interaction_timeout_seconds": timeout_seconds,
+    }
+    return build_event("interaction.requested", event_locals)
+
+
+def request_interaction_from_hermes_locals(
+    local_vars: dict[str, Any],
+    *,
+    kind: str,
+    interaction_id: str,
+    prompt: str,
+    options: list[dict[str, Any]] | None = None,
+    description: str = "",
+    timeout_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+) -> dict[str, Any] | None:
+    try:
+        config = load_runtime_config()
+        if not config.enabled:
+            return None
+        payload = build_interaction_event(
+            local_vars,
+            kind=kind,
+            interaction_id=interaction_id,
+            prompt=prompt,
+            options=options or [],
+            description=description,
+            timeout_seconds=timeout_seconds,
+        )
+        if payload is None:
+            return None
+        post_result = _post_interaction_event(
+            local_vars,
+            config.event_url,
+            payload,
+            _timeout_for_event(config, payload["event"]),
+        )
+        if post_result is _POST_FAILED:
+            return None
+        if isinstance(post_result, dict) and post_result.get("ok") is False:
+            return None
+        if isinstance(post_result, dict) and post_result.get("applied") is False:
+            for _ in range(2):
+                time.sleep(0.05)
+                payload = build_interaction_event(
+                    local_vars,
+                    kind=kind,
+                    interaction_id=interaction_id,
+                    prompt=prompt,
+                    options=options or [],
+                    description=description,
+                    timeout_seconds=timeout_seconds,
+                )
+                if payload is None:
+                    return None
+                post_result = _post_interaction_event(
+                    local_vars,
+                    config.event_url,
+                    payload,
+                    _timeout_for_event(config, payload["event"]),
+                )
+                if post_result is _POST_FAILED:
+                    return None
+                if isinstance(post_result, dict) and post_result.get("ok") is False:
+                    return None
+                if not (
+                    isinstance(post_result, dict)
+                    and post_result.get("applied") is False
+                ):
+                    break
+            else:
+                return None
+        base_url = _summary_base_url(config.event_url)
+        url = f"{base_url}/interactions/{parse.quote(interaction_id, safe='')}"
+        timeout = _interaction_timeout(timeout_seconds)
+        poll_interval = _interaction_poll_interval(poll_interval_seconds)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                result = _get_json_sync(url, config.timeout_seconds)
+            except Exception:
+                result = None
+            if isinstance(result, dict) and result.get("status") in {"completed", "failed"}:
+                return result
+            if time.monotonic() >= deadline:
+                return {
+                    "ok": False,
+                    "status": "timeout",
+                    "interaction_id": interaction_id,
+                }
+            time.sleep(poll_interval)
+    except Exception:
+        return None
+
+
+def request_approval_choice_from_hermes_locals(
+    local_vars: dict[str, Any],
+    approval_data: dict[str, Any],
+    *,
+    interaction_id: str,
+    timeout_seconds: float | None = None,
+) -> str | None:
+    command = str(approval_data.get("command") or "").strip()
+    description = str(approval_data.get("description") or "dangerous command").strip()
+    result = request_interaction_from_hermes_locals(
+        local_vars,
+        kind="approval",
+        interaction_id=interaction_id,
+        prompt="需要授权后继续执行",
+        description=f"```\n{command[:3000]}\n```\n\n{description}",
+        options=[
+            {"label": "允许一次", "value": "once", "style": "primary"},
+            {"label": "本会话允许", "value": "session"},
+            {"label": "始终允许", "value": "always"},
+            {"label": "拒绝", "value": "deny", "style": "danger"},
+        ],
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(result, dict) and result.get("status") == "completed":
+        choice = str(result.get("choice") or "").strip()
+        return choice or None
+    return None
+
+
+def request_clarify_response_from_hermes_locals(
+    local_vars: dict[str, Any],
+    *,
+    interaction_id: str,
+    question: str,
+    choices: Any,
+    timeout_seconds: float | None = None,
+) -> str | None:
+    if not choices:
+        return None
+    options = []
+    for index, choice in enumerate(list(choices)):
+        label = str(choice).strip()
+        if label:
+            options.append(
+                {
+                    "label": label,
+                    "value": label,
+                    "style": "primary" if index == 0 else "default",
+                }
+            )
+    if not options:
+        return None
+    result = request_interaction_from_hermes_locals(
+        local_vars,
+        kind="clarify",
+        interaction_id=interaction_id,
+        prompt=str(question or "请选择").strip(),
+        options=options,
+        timeout_seconds=timeout_seconds,
+    )
+    if isinstance(result, dict) and result.get("status") == "completed":
+        choice = str(result.get("choice") or "").strip()
+        return choice or None
+    return None
 
 
 def should_suppress_native_response(
@@ -208,6 +410,29 @@ def _post_json_sync(url: str, payload: dict[str, Any], timeout: float) -> bool:
     return result["error"] is None
 
 
+def _post_interaction_event(
+    local_vars: dict[str, Any],
+    url: str,
+    payload: dict[str, Any],
+    timeout: float,
+) -> dict[str, Any] | None | object:
+    loop = local_vars.get("_hfc_loop")
+    if loop is not None:
+        try:
+            if loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    _post_json_ordered_response(url, payload, timeout),
+                    loop,
+                )
+                return future.result(timeout=max(1.0, timeout + 1.0))
+        except Exception:
+            return _POST_FAILED
+    try:
+        return _post_json_sync_response(url, payload, timeout)
+    except Exception:
+        return _POST_FAILED
+
+
 def _timeout_for_event(config: RuntimeConfig, event_name: str) -> float:
     if event_name in {"message.completed", "message.failed"}:
         return max(config.timeout_seconds, TERMINAL_TIMEOUT_SECONDS)
@@ -223,6 +448,50 @@ async def _send_fail_open(
         return
 
 
+async def _send_fail_open_ordered(
+    url: str, payload: dict[str, Any], timeout: float
+) -> None:
+    try:
+        await _post_json_ordered(url, payload, timeout)
+    except Exception:
+        return
+
+
+async def _post_json_ordered(
+    url: str, payload: dict[str, Any], timeout: float
+) -> None:
+    lock = _send_lock(url, payload)
+    if lock is None:
+        await _post_json(url, payload, timeout)
+        return
+    async with lock:
+        await _post_json(url, payload, timeout)
+
+
+async def _post_json_ordered_response(
+    url: str, payload: dict[str, Any], timeout: float
+) -> Any:
+    lock = _send_lock(url, payload)
+    if lock is None:
+        return await _post_json_response(url, payload, timeout)
+    async with lock:
+        return await _post_json_response(url, payload, timeout)
+
+
+def _send_lock(url: str, payload: dict[str, Any]) -> asyncio.Lock | None:
+    message_id = payload.get("message_id")
+    if not isinstance(message_id, str) or not message_id:
+        return None
+    loop = asyncio.get_running_loop()
+    key = (id(loop), url, message_id)
+    with _SEND_LOCKS_GUARD:
+        lock = _SEND_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _SEND_LOCKS[key] = lock
+        return lock
+
+
 async def _post_json(url: str, payload: dict[str, Any], timeout: float) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = request.Request(
@@ -233,6 +502,29 @@ async def _post_json(url: str, payload: dict[str, Any], timeout: float) -> None:
     )
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _open_request, req, timeout)
+
+
+async def _post_json_response(url: str, payload: dict[str, Any], timeout: float) -> Any:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _open_json_request, req, timeout)
+
+
+def _post_json_sync_response(url: str, payload: dict[str, Any], timeout: float) -> Any:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    return _open_json_request(req, timeout)
 
 
 async def lookup_card_summary(
@@ -288,6 +580,15 @@ def _open_json_request(req: request.Request, timeout: float) -> Any:
     if not body:
         return None
     return json.loads(body.decode("utf-8"))
+
+
+def _get_json_sync(url: str, timeout: float) -> Any:
+    req = request.Request(
+        url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    return _open_json_request(req, timeout)
 
 
 def build_event(
@@ -405,14 +706,22 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     origin = job.get("origin")
     if not isinstance(origin, dict):
         origin = {}
-    chat_id = str(
-        origin.get("chat_id") or os.environ.get("HERMES_CRON_AUTO_DELIVER_CHAT_ID") or ""
-    ).strip()
+    resolved_targets = _resolved_cron_targets(local_vars, job)
+    resolved_chat_id = _resolved_target_chat_id(resolved_targets, "feishu")
+    deliver_platform = _deliver_platform(job.get("deliver"))
     platform = str(
-        origin.get("platform")
+        deliver_platform
+        or _first_target_platform(resolved_targets)
+        or origin.get("platform")
         or os.environ.get("HERMES_CRON_AUTO_DELIVER_PLATFORM")
         or "feishu"
     ).strip().lower()
+    chat_id = str(
+        resolved_chat_id
+        or origin.get("chat_id")
+        or os.environ.get("HERMES_CRON_AUTO_DELIVER_CHAT_ID")
+        or ""
+    ).strip()
     if platform != "feishu" or not chat_id:
         return None
 
@@ -441,6 +750,88 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _interaction_timeout(value: float | None) -> float:
+    if value is not None and math.isfinite(value) and value >= 0:
+        return value
+    env_value = _finite_float(os.environ.get("HERMES_FEISHU_CARD_INTERACTION_TIMEOUT_SECONDS"))
+    if env_value is not None and env_value >= 0:
+        return env_value
+    return 300.0
+
+
+def _interaction_poll_interval(value: float | None) -> float:
+    if value is not None and math.isfinite(value) and value >= 0:
+        return value
+    env_value = _finite_float(os.environ.get("HERMES_FEISHU_CARD_INTERACTION_POLL_SECONDS"))
+    if env_value is not None and 0 <= env_value <= 5:
+        return env_value
+    return 0.5
+
+
+def _coerce_interaction_options(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    options: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or item.get("text") or item.get("value") or "").strip()
+        option_value = str(item.get("value") or label).strip()
+        if not label or not option_value:
+            continue
+        style = str(item.get("style") or item.get("type") or "default").strip() or "default"
+        options.append({"label": label, "value": option_value, "style": style})
+    return options
+
+
+def _resolved_cron_targets(
+    local_vars: dict[str, Any], job: dict[str, Any]
+) -> list[dict[str, Any]]:
+    value = local_vars.get("_hfc_resolved_targets")
+    if value is None:
+        value = job.get("_hfc_resolved_targets")
+    if value is None:
+        value = job.get("resolved_targets")
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _deliver_platform(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("platform") or value.get("type") or "").strip().lower()
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if ":" in text:
+        return text.split(":", 1)[0].strip()
+    return text
+
+
+def _first_target_platform(targets: list[dict[str, Any]]) -> str:
+    for target in targets:
+        platform = str(target.get("platform") or target.get("type") or "").strip().lower()
+        if platform:
+            return platform
+    return ""
+
+
+def _resolved_target_chat_id(targets: list[dict[str, Any]], platform: str) -> str:
+    for target in targets:
+        target_platform = str(target.get("platform") or target.get("type") or "").strip().lower()
+        if target_platform != platform:
+            continue
+        chat_id = str(
+            target.get("chat_id")
+            or target.get("open_chat_id")
+            or target.get("receive_id")
+            or ""
+        ).strip()
+        if chat_id:
+            return chat_id
+    return ""
+
+
 def _event_data(
     event_name: str, local_vars: dict[str, Any], source_obj: Any, message_obj: Any
 ) -> dict[str, Any]:
@@ -450,10 +841,47 @@ def _event_data(
         "profile_source": profile_source,
     }
     if event_name in {"thinking.delta", "answer.delta"}:
-        text = _first_string(local_vars, ("text", "delta", "delta_text", "content"))
+        text = _first_raw_string(local_vars, ("text", "delta", "delta_text", "content"))
         if text is None:
-            text = _first_attr_string(message_obj, ("text", "content"))
+            text = _first_attr_raw_string(message_obj, ("text", "content"))
         data["text"] = text or ""
+        mode = _first_string(local_vars, ("mode", "_hfc_text_mode"))
+        if mode:
+            data["mode"] = mode
+        return data
+    if event_name.startswith("interaction."):
+        data.update(
+            {
+                "interaction_id": (
+                    _first_string(local_vars, ("_hfc_interaction_id", "interaction_id"))
+                    or ""
+                ),
+                "kind": (
+                    _first_string(local_vars, ("_hfc_interaction_kind", "kind"))
+                    or "choice"
+                ),
+                "prompt": (
+                    _first_string(
+                        local_vars,
+                        ("_hfc_interaction_prompt", "prompt", "question"),
+                    )
+                    or ""
+                ),
+                "description": (
+                    _first_string(
+                        local_vars,
+                        ("_hfc_interaction_description", "description"),
+                    )
+                    or ""
+                ),
+                "options": _coerce_interaction_options(
+                    local_vars.get("_hfc_interaction_options", local_vars.get("options"))
+                ),
+            }
+        )
+        timeout_value = _finite_float(local_vars.get("_hfc_interaction_timeout_seconds"))
+        if timeout_value is not None:
+            data["timeout_seconds"] = timeout_value
         return data
     if event_name == "tool.updated":
         tool_id = _first_string(local_vars, ("tool_id", "tool_call_id", "name")) or "tool"
@@ -563,6 +991,14 @@ def _first_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:
         value = source.get(name)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    return None
+
+
+def _first_raw_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = source.get(name)
+        if isinstance(value, str) and value:
+            return value
     return None
 
 
@@ -747,6 +1183,21 @@ def _first_attr_string(obj: Any, names: tuple[str, ...]) -> str | None:
             continue
         if isinstance(value, str) and value.strip():
             return value.strip()
+    return None
+
+
+def _first_attr_raw_string(obj: Any, names: tuple[str, ...]) -> str | None:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return _first_raw_string(obj, names)
+    for name in names:
+        try:
+            value = getattr(obj, name, None)
+        except Exception:
+            continue
+        if isinstance(value, str) and value:
+            return value
     return None
 
 

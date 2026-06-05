@@ -45,11 +45,12 @@ def render_cards(
     attachment_summary = _render_attachment_summary(session)
     footer = _render_footer(session, footer_fields, loading_gif_img_key)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
-    
+
     content_parts = _split_content_by_tables(main_text)
-    
+
     if len(content_parts) <= 1:
         elements = _render_main_content_elements(main_text)
+        elements.extend(_render_interaction_elements(session))
         if attachment_summary:
             elements.append(
                 {
@@ -59,6 +60,9 @@ def render_cards(
                 }
             )
         elements.append({"tag": "hr", "element_id": "main_divider"})
+        elements.append(
+            {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
+        )
         if isinstance(footer, list):
             elements.extend(footer)
         else:
@@ -71,14 +75,17 @@ def render_cards(
                 }
             )
         return [_build_card(elements, status, header_title)]
-    
+
     cards = []
     total_parts = len(content_parts)
     for index, part_text in enumerate(content_parts):
         is_first = index == 0
         is_last = index == total_parts - 1
         part_elements = _render_main_content_elements(part_text)
-        
+
+        if is_first:
+            part_elements.extend(_render_interaction_elements(session))
+
         if is_first and attachment_summary:
             part_elements.append(
                 {
@@ -87,10 +94,13 @@ def render_cards(
                     "content": attachment_summary,
                 }
             )
-        
+
         part_elements.append({"tag": "hr", "element_id": "main_divider"})
-        
+
         if is_last:
+            part_elements.append(
+                {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
+            )
             if isinstance(footer, list):
                 part_elements.extend(footer)
             else:
@@ -111,11 +121,11 @@ def render_cards(
                     "text_size": "x-small",
                 }
             )
-        
+
         part_status = status if is_first else {"subtitle": f"({index + 1}/{total_parts})", "template": status["template"]}
         part_title = header_title if is_first else f"{header_title} (续)"
         cards.append(_build_card(part_elements, part_status, part_title))
-    
+
     return cards
 
 
@@ -179,10 +189,12 @@ def _render_status(session: CardSession) -> Dict[str, str]:
         return {"subtitle": subtitle, "template": "green"}
     if session.status == "failed":
         return {"subtitle": "处理失败", "template": "red"}
+    if session.active_interaction is not None and session.active_interaction.status == "pending":
+        return {"subtitle": "等待选择", "template": "orange"}
     return {"subtitle": "思考中", "template": "indigo"}
 
 
-def _generate_summary_subtitle(text: str, max_length: int = 40) -> str:
+def _generate_summary_subtitle(text: str, max_length: int = 20) -> str:
     if not text or not text.strip():
         return "已完成"
     cleaned = re.sub(r'```[\s\S]*?```', '', text)
@@ -199,7 +211,6 @@ def _generate_summary_subtitle(text: str, max_length: int = 40) -> str:
         return first_sentence[:max_length - 1] + "…"
     return first_sentence if first_sentence else "已完成"
 
-
 def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
     chunks = split_markdown_blocks(main_text, MAIN_CONTENT_CHUNK_CHARS)
     elements = []
@@ -207,6 +218,78 @@ def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
         element_id = "main_content" if index == 0 else f"main_content_{index}"
         elements.append({"tag": "markdown", "element_id": element_id, "content": chunk})
     return elements
+
+
+def _render_interaction_elements(session: CardSession) -> list[Dict[str, Any]]:
+    interaction = session.active_interaction
+    if interaction is None:
+        return []
+
+    prompt = interaction.prompt or "请选择下一步"
+    lines = [f"**{prompt}**"]
+    if interaction.description:
+        lines.append("")
+        lines.append(interaction.description)
+
+    elements: list[Dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "element_id": "interaction_prompt",
+            "content": "\n".join(lines),
+        }
+    ]
+    if interaction.status == "pending":
+        for index, option in enumerate(interaction.options):
+            elements.append(
+                {
+                    "tag": "button",
+                    "element_id": f"hfc_btn_{index}",
+                    "text": {"tag": "plain_text", "content": option.label},
+                    "type": _button_type(option.style),
+                    "size": "medium",
+                    "width": "default",
+                    "behaviors": [
+                        {
+                            "type": "callback",
+                            "value": {
+                                "hfc_action": "interaction.select",
+                                "interaction_id": interaction.interaction_id,
+                                "choice": option.value,
+                                "choice_label": option.label,
+                                "token": interaction.callback_token,
+                            },
+                        }
+                    ],
+                }
+            )
+        return elements
+
+    if interaction.status == "completed":
+        choice = interaction.choice_label or interaction.choice or "已完成"
+        user = f" by {interaction.user_name}" if interaction.user_name else ""
+        content = f"已选择：{choice}{user}"
+    else:
+        content = interaction.error or "交互请求失败"
+    elements.append(
+        {
+            "tag": "markdown",
+            "element_id": "interaction_result",
+            "content": content,
+        }
+    )
+    return elements
+
+
+def _button_type(style: str) -> str:
+    normalized = str(style or "").strip().lower()
+    if normalized in {"primary", "danger", "default"}:
+        return normalized
+    if normalized in {"red", "warning", "destructive"}:
+        return "danger"
+    if normalized in {"green", "success"}:
+        return "primary"
+    return "default"
+
 
 def _render_tool_summary(session: CardSession) -> str:
     if not session.tools:

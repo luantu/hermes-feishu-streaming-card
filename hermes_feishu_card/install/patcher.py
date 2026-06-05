@@ -5,12 +5,18 @@ PATCH_BEGIN = "# HERMES_FEISHU_CARD_PATCH_BEGIN"
 PATCH_END = "# HERMES_FEISHU_CARD_PATCH_END"
 COMPLETE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_COMPLETE_PATCH_BEGIN"
 COMPLETE_PATCH_END = "# HERMES_FEISHU_CARD_COMPLETE_PATCH_END"
+QUEUED_COMPLETE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_BEGIN"
+QUEUED_COMPLETE_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_END"
 TOOL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_TOOL_PATCH_BEGIN"
 TOOL_PATCH_END = "# HERMES_FEISHU_CARD_TOOL_PATCH_END"
 ANSWER_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_ANSWER_DELTA_PATCH_BEGIN"
 ANSWER_DELTA_PATCH_END = "# HERMES_FEISHU_CARD_ANSWER_DELTA_PATCH_END"
 THINKING_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_BEGIN"
 THINKING_DELTA_PATCH_END = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_END"
+CLARIFY_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_BEGIN"
+CLARIFY_PATCH_END = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_END"
+APPROVAL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_BEGIN"
+APPROVAL_PATCH_END = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_END"
 CRON_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CRON_PATCH_BEGIN"
 CRON_PATCH_END = "# HERMES_FEISHU_CARD_CRON_PATCH_END"
 
@@ -26,6 +32,7 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         raise ValueError(f"unsupported patch strategy: {strategy}")
     content = _apply_start_patch(content, strategy=strategy)
     content = _apply_complete_patch(content)
+    content = _apply_queued_complete_patch(content)
     if strategy == "gateway_run_013_plus":
         content = _apply_cron_patch(content)
     content = _apply_callback_patch(
@@ -56,7 +63,7 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         ),
         required_callback_args=("text",),
     )
-    return _apply_callback_patch(
+    content = _apply_callback_patch(
         content,
         callback_name="_interim_assistant_cb",
         begin_marker=THINKING_DELTA_PATCH_BEGIN,
@@ -69,6 +76,36 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
             "_run_still_current",
         ),
         required_callback_args=("text", "already_streamed"),
+    )
+    content = _apply_callback_patch(
+        content,
+        callback_name="_clarify_callback_sync",
+        begin_marker=CLARIFY_PATCH_BEGIN,
+        end_marker=CLARIFY_PATCH_END,
+        renderer=_render_clarify_hook_block,
+        required_outer_names=(
+            "source",
+            "event_message_id",
+            "_status_chat_id",
+            "session_key",
+            "_run_still_current",
+        ),
+        required_callback_args=("question", "choices"),
+    )
+    return _apply_callback_patch(
+        content,
+        callback_name="_approval_notify_sync",
+        begin_marker=APPROVAL_PATCH_BEGIN,
+        end_marker=APPROVAL_PATCH_END,
+        renderer=_render_approval_hook_block,
+        required_outer_names=(
+            "source",
+            "event_message_id",
+            "_status_chat_id",
+            "_approval_session_key",
+            "_run_still_current",
+        ),
+        required_callback_args=("approval_data",),
     )
 
 
@@ -128,6 +165,38 @@ def _apply_complete_patch(content: str) -> str:
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
+def _apply_queued_complete_patch(content: str) -> str:
+    owned_block = _find_simple_marker_block(
+        content,
+        QUEUED_COMPLETE_PATCH_BEGIN,
+        QUEUED_COMPLETE_PATCH_END,
+        "queued completion patch markers",
+    )
+    if owned_block is not None:
+        lines = content.splitlines(keepends=True)
+        begin_index, end_index = owned_block
+        indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
+        newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+        expected = _render_queued_complete_hook_block(indent, newline)
+        if lines[begin_index : end_index + 1] == expected:
+            return content
+        return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
+
+    lines = content.splitlines(keepends=True)
+    target = 'if first_response and not _already_streamed:'
+    for index, line in enumerate(lines):
+        if _strip_line_ending(line).strip() != target:
+            continue
+        previous = lines[index - 1] if index > 0 else ""
+        if "first_response = result.get(" not in previous:
+            continue
+        indent = _leading_whitespace(_strip_line_ending(line))
+        newline = _line_ending(line) or _detect_newline(content)
+        hook = _render_queued_complete_hook_block(indent, newline)
+        return "".join(lines[:index] + hook + lines[index:])
+    return content
+
+
 def remove_patch(content: str) -> str:
     """Remove the owned Feishu card hook block from patched Hermes content."""
     content = _remove_cron_patch(content)
@@ -151,6 +220,27 @@ def remove_patch(content: str) -> str:
         THINKING_DELTA_PATCH_END,
         _render_thinking_delta_hook_block,
         "thinking delta patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        CLARIFY_PATCH_BEGIN,
+        CLARIFY_PATCH_END,
+        _render_clarify_hook_block,
+        "clarify patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        APPROVAL_PATCH_BEGIN,
+        APPROVAL_PATCH_END,
+        _render_approval_hook_block,
+        "approval patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        QUEUED_COMPLETE_PATCH_BEGIN,
+        QUEUED_COMPLETE_PATCH_END,
+        _render_queued_complete_hook_block,
+        "queued completion patch markers",
     )
     content = _remove_complete_patch(content)
     owned_block = _find_owned_block(content)
@@ -190,6 +280,9 @@ def remove_patch_lenient(content: str) -> str:
         (TOOL_PATCH_BEGIN, TOOL_PATCH_END),
         (ANSWER_DELTA_PATCH_BEGIN, ANSWER_DELTA_PATCH_END),
         (THINKING_DELTA_PATCH_BEGIN, THINKING_DELTA_PATCH_END),
+        (CLARIFY_PATCH_BEGIN, CLARIFY_PATCH_END),
+        (APPROVAL_PATCH_BEGIN, APPROVAL_PATCH_END),
+        (QUEUED_COMPLETE_PATCH_BEGIN, QUEUED_COMPLETE_PATCH_END),
     ):
         owned_block = _find_simple_marker_block(
             content,
@@ -783,6 +876,53 @@ def _render_complete_hook_block(indent: str, newline: str):
     ]
 
 
+def _render_queued_complete_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{QUEUED_COMPLETE_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import build_event as _hfc_build_event{newline}"
+        ),
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import emit_from_hermes_locals_async as _hfc_emit_async{newline}"
+        ),
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import should_suppress_native_response as _hfc_should_suppress{newline}"
+        ),
+        f"{inner_indent}if first_response and not _already_streamed:{newline}",
+        f"{deeper_indent}_hfc_completed_locals = {{{newline}",
+        f"{deeper_indent}    **locals(),{newline}",
+        f"{deeper_indent}    \"answer\": first_response,{newline}",
+        f"{deeper_indent}    \"duration\": result.get(\"duration\", 0.0) if isinstance(result, dict) else 0.0,{newline}",
+        f"{deeper_indent}    \"model\": result.get(\"model\", \"\") if isinstance(result, dict) else \"\",{newline}",
+        f"{deeper_indent}    \"tokens\": {{{newline}",
+        f"{deeper_indent}        \"input_tokens\": result.get(\"input_tokens\", 0) if isinstance(result, dict) else 0,{newline}",
+        f"{deeper_indent}        \"output_tokens\": result.get(\"output_tokens\", 0) if isinstance(result, dict) else 0,{newline}",
+        f"{deeper_indent}    }},{newline}",
+        f"{deeper_indent}    \"context\": {{{newline}",
+        f"{deeper_indent}        \"used_tokens\": result.get(\"last_prompt_tokens\", 0) if isinstance(result, dict) else 0,{newline}",
+        f"{deeper_indent}        \"max_tokens\": result.get(\"context_length\", 0) if isinstance(result, dict) else 0,{newline}",
+        f"{deeper_indent}    }},{newline}",
+        f"{deeper_indent}}}{newline}",
+        f"{deeper_indent}_hfc_completed_event = _hfc_build_event(\"message.completed\", _hfc_completed_locals, preview=True){newline}",
+        f"{deeper_indent}_hfc_attachments = []{newline}",
+        f"{deeper_indent}if _hfc_completed_event is not None:{newline}",
+        f"{deeper_indent}    _hfc_attachments = _hfc_completed_event.get(\"data\", {{}}).get(\"attachments\", []){newline}",
+        f"{deeper_indent}_hfc_card_delivered = await _hfc_emit_async(_hfc_completed_locals, event_name=\"message.completed\"){newline}",
+        f"{deeper_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
+        f"{deeper_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):{newline}",
+        f"{deeper_indent}    _already_streamed = True{newline}",
+        f"{indent}except Exception:{newline}",
+        f"{inner_indent}pass{newline}",
+        f"{indent}{QUEUED_COMPLETE_PATCH_END}{newline}",
+    ]
+
+
 def _render_legacy_complete_hook_block(indent: str, newline: str):
     inner_indent = _child_indent(indent)
     deeper_indent = _child_indent(inner_indent)
@@ -934,11 +1074,71 @@ def _render_thinking_delta_hook_block(indent: str, newline: str):
         f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
         f"{deeper_indent}    \"_hfc_loop\": _loop_for_step,{newline}",
         f"{deeper_indent}    \"text\": text,{newline}",
+        f"{deeper_indent}    \"mode\": \"append_block\",{newline}",
         f"{deeper_indent}}}, event_name=\"thinking.delta\"):{newline}",
         f"{deeper_indent}    return{newline}",
         f"{indent}except Exception:{newline}",
         f"{inner_indent}pass{newline}",
         f"{indent}{THINKING_DELTA_PATCH_END}{newline}",
+    ]
+
+
+def _render_clarify_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{CLARIFY_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import request_clarify_response_from_hermes_locals as _hfc_request_clarify{newline}"
+        ),
+        f"{inner_indent}from uuid import uuid4 as _hfc_uuid4{newline}",
+        f"{inner_indent}if choices and _run_still_current():{newline}",
+        f"{deeper_indent}_hfc_clarify_response = _hfc_request_clarify({{{newline}",
+        f"{deeper_indent}    **locals(),{newline}",
+        f"{deeper_indent}    \"source\": source,{newline}",
+        f"{deeper_indent}    \"chat_id\": _status_chat_id,{newline}",
+        f"{deeper_indent}    \"conversation_id\": session_key or _status_chat_id,{newline}",
+        f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
+        f"{deeper_indent}    \"_hfc_loop\": locals().get(\"_loop_for_step\"),{newline}",
+        f"{deeper_indent}    \"kind\": \"clarify\",{newline}",
+        f"{deeper_indent}}}, interaction_id=\"clarify_\" + _hfc_uuid4().hex[:10], question=question, choices=choices){newline}",
+        f"{deeper_indent}if _hfc_clarify_response is not None:{newline}",
+        f"{deeper_indent}    return _hfc_clarify_response{newline}",
+        f"{indent}except Exception:{newline}",
+        f"{inner_indent}pass{newline}",
+        f"{indent}{CLARIFY_PATCH_END}{newline}",
+    ]
+
+
+def _render_approval_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{APPROVAL_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import request_approval_choice_from_hermes_locals as _hfc_request_approval{newline}"
+        ),
+        f"{inner_indent}from uuid import uuid4 as _hfc_uuid4{newline}",
+        f"{inner_indent}if _run_still_current():{newline}",
+        f"{deeper_indent}_hfc_approval_choice = _hfc_request_approval({{{newline}",
+        f"{deeper_indent}    **locals(),{newline}",
+        f"{deeper_indent}    \"source\": source,{newline}",
+        f"{deeper_indent}    \"chat_id\": _status_chat_id,{newline}",
+        f"{deeper_indent}    \"conversation_id\": _approval_session_key or _status_chat_id,{newline}",
+        f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
+        f"{deeper_indent}    \"_hfc_loop\": locals().get(\"_loop_for_step\"),{newline}",
+        f"{deeper_indent}}}, approval_data, interaction_id=\"approval_\" + _hfc_uuid4().hex[:10]){newline}",
+        f"{deeper_indent}if _hfc_approval_choice:{newline}",
+        f"{deeper_indent}    from tools.approval import resolve_gateway_approval as _hfc_resolve_gateway_approval{newline}",
+        f"{deeper_indent}    _hfc_resolve_gateway_approval(_approval_session_key, _hfc_approval_choice){newline}",
+        f"{deeper_indent}    return{newline}",
+        f"{indent}except Exception:{newline}",
+        f"{inner_indent}pass{newline}",
+        f"{indent}{APPROVAL_PATCH_END}{newline}",
     ]
 
 

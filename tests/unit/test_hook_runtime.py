@@ -279,6 +279,168 @@ def test_build_completed_event_preserves_duration_and_tokens():
     }
 
 
+def test_build_interaction_event_reuses_active_card_message_id():
+    local_vars = {
+        "chat_id": "oc_abc",
+        "conversation_id": "conv_abc",
+        "event_message_id": "om_hermes_20260516",
+    }
+
+    started = hook_runtime.build_event("message.started", local_vars)
+    interaction = hook_runtime.build_interaction_event(
+        local_vars,
+        kind="approval",
+        interaction_id="approval-1",
+        prompt="允许执行命令吗？",
+        description="rm -rf /tmp/demo",
+        options=[
+            {"label": "允许一次", "value": "once"},
+            {"label": "拒绝", "value": "deny"},
+        ],
+    )
+
+    assert interaction["event"] == "interaction.requested"
+    assert interaction["message_id"] == started["message_id"]
+    assert interaction["data"]["interaction_id"] == "approval-1"
+    assert interaction["data"]["kind"] == "approval"
+    assert interaction["data"]["prompt"] == "允许执行命令吗？"
+    assert interaction["data"]["options"][0]["value"] == "once"
+
+
+def test_request_interaction_posts_event_and_polls_until_completed(monkeypatch):
+    posted = []
+    polls = iter(
+        [
+            {"ok": True, "status": "pending", "interaction_id": "approval-1"},
+            {
+                "ok": True,
+                "status": "completed",
+                "interaction_id": "approval-1",
+                "choice": "once",
+                "choice_label": "允许一次",
+            },
+        ]
+    )
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    def fake_post(local_vars, url, payload, timeout):
+        posted.append((local_vars, url, payload, timeout))
+        return {"ok": True, "applied": True}
+
+    def fake_get(url, timeout):
+        assert url == "http://sidecar.test/interactions/approval-1"
+        return next(polls)
+
+    monkeypatch.setattr(hook_runtime, "_post_interaction_event", fake_post)
+    monkeypatch.setattr(hook_runtime, "_get_json_sync", fake_get)
+
+    result = hook_runtime.request_interaction_from_hermes_locals(
+        {"chat_id": "oc_abc", "message_id": "msg_1"},
+        kind="approval",
+        interaction_id="approval-1",
+        prompt="允许执行命令吗？",
+        options=[{"label": "允许一次", "value": "once"}],
+        timeout_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+    assert result == {
+        "ok": True,
+        "status": "completed",
+        "interaction_id": "approval-1",
+        "choice": "once",
+        "choice_label": "允许一次",
+    }
+    assert posted[0][1] == "http://sidecar.test/events"
+    assert posted[0][2]["event"] == "interaction.requested"
+
+
+def test_request_interaction_retries_when_sidecar_reports_not_applied(monkeypatch):
+    posted = []
+    polls = iter(
+        [
+            {
+                "ok": True,
+                "status": "completed",
+                "interaction_id": "clarify-1",
+                "choice": "保留",
+            },
+        ]
+    )
+    post_results = iter(
+        [
+            {"ok": True, "applied": False},
+            {"ok": True, "applied": True},
+        ]
+    )
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    def fake_post(local_vars, url, payload, timeout):
+        posted.append(payload)
+        return next(post_results)
+
+    def fake_get(url, timeout):
+        assert url == "http://sidecar.test/interactions/clarify-1"
+        return next(polls)
+
+    monkeypatch.setattr(hook_runtime, "_post_interaction_event", fake_post)
+    monkeypatch.setattr(hook_runtime, "_get_json_sync", fake_get)
+
+    result = hook_runtime.request_interaction_from_hermes_locals(
+        {"chat_id": "oc_abc", "message_id": "msg_1"},
+        kind="clarify",
+        interaction_id="clarify-1",
+        prompt="怎么处理？",
+        options=[{"label": "保留", "value": "保留"}],
+        timeout_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+    assert result["status"] == "completed"
+    assert result["choice"] == "保留"
+    assert [payload["sequence"] for payload in posted] == [0, 1]
+
+
+def test_request_interaction_polls_through_transient_not_found(monkeypatch):
+    polls = iter(
+        [
+            error.HTTPError("http://sidecar.test/interactions/clarify-1", 404, "not found", {}, None),
+            {
+                "ok": True,
+                "status": "completed",
+                "interaction_id": "clarify-1",
+                "choice": "删除",
+            },
+        ]
+    )
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    def fake_post(local_vars, url, payload, timeout):
+        return {"ok": True, "applied": True}
+
+    def fake_get(url, timeout):
+        result = next(polls)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(hook_runtime, "_post_interaction_event", fake_post)
+    monkeypatch.setattr(hook_runtime, "_get_json_sync", fake_get)
+
+    result = hook_runtime.request_interaction_from_hermes_locals(
+        {"chat_id": "oc_abc", "message_id": "msg_1"},
+        kind="clarify",
+        interaction_id="clarify-1",
+        prompt="怎么处理？",
+        options=[{"label": "删除", "value": "删除"}],
+        timeout_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+    assert result["status"] == "completed"
+    assert result["choice"] == "删除"
+
+
 def test_completed_event_extracts_attachment_summaries_from_response():
     payload = hook_runtime.build_event(
         "message.completed",
@@ -426,6 +588,27 @@ def test_build_cron_event_uses_auto_deliver_chat_id(monkeypatch):
     )
 
     assert payload["chat_id"] == "oc_env"
+
+
+def test_build_cron_event_prefers_explicit_deliver_and_resolved_feishu_target():
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-migrated",
+                "deliver": "feishu",
+                "origin": {"platform": "discord", "chat_id": "discord-channel"},
+                "_hfc_resolved_targets": [
+                    {"platform": "feishu", "chat_id": "oc_resolved"}
+                ],
+            },
+            "content": "迁移后的定时任务结果",
+        }
+    )
+
+    assert payload is not None
+    assert payload["chat_id"] == "oc_resolved"
+    assert payload["platform"] == "feishu"
+    assert payload["data"]["answer"] == "迁移后的定时任务结果"
 
 
 def test_build_cron_event_returns_none_for_non_feishu_or_missing_chat(monkeypatch):
@@ -969,6 +1152,84 @@ async def test_emit_from_hermes_locals_threadsafe_schedules_on_running_loop(monk
         "text": "hello",
     }
     assert timeout == 0.8
+
+
+@pytest.mark.asyncio
+async def test_emit_from_hermes_locals_async_serializes_same_message_deltas(monkeypatch):
+    completed: list[tuple[int, str]] = []
+
+    async def slow_first_sender(url, payload, timeout):
+        sequence = payload["sequence"]
+        if sequence == 0:
+            await asyncio.sleep(0.05)
+        completed.append((sequence, payload["data"]["text"]))
+
+    monkeypatch.setattr(hook_runtime, "_post_json", slow_first_sender)
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+    first = asyncio.create_task(
+        hook_runtime.emit_from_hermes_locals_async(
+            {
+                "chat_id": "oc_abc",
+                "message_id": "msg_stream_order",
+                "text": "查当前安装的版本：`hermes-feishu-streaming-card` ",
+            },
+            event_name="answer.delta",
+        )
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        hook_runtime.emit_from_hermes_locals_async(
+            {
+                "chat_id": "oc_abc",
+                "message_id": "msg_stream_order",
+                "text": "V3.5.0。",
+            },
+            event_name="answer.delta",
+        )
+    )
+
+    assert await asyncio.gather(first, second) == [True, True]
+    assert completed == [
+        (0, "查当前安装的版本：`hermes-feishu-streaming-card` "),
+        (1, "V3.5.0。"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interaction_event_uses_same_message_send_lock(monkeypatch):
+    completed: list[int] = []
+
+    async def slow_delta_sender(url, payload, timeout):
+        await asyncio.sleep(0.05)
+        completed.append(payload["sequence"])
+
+    async def interaction_sender(url, payload, timeout):
+        completed.append(payload["sequence"])
+        return {"ok": True, "applied": True}
+
+    monkeypatch.setattr(hook_runtime, "_post_json", slow_delta_sender)
+    monkeypatch.setattr(hook_runtime, "_post_json_response", interaction_sender)
+    loop = asyncio.get_running_loop()
+    first = asyncio.create_task(
+        hook_runtime._post_json_ordered(
+            "http://sidecar.test/events",
+            {"message_id": "msg_stream_order", "sequence": 0},
+            0.8,
+        )
+    )
+    await asyncio.sleep(0)
+
+    result = await asyncio.to_thread(
+        hook_runtime._post_interaction_event,
+        {"_hfc_loop": loop},
+        "http://sidecar.test/events",
+        {"message_id": "msg_stream_order", "sequence": 1},
+        0.8,
+    )
+    await first
+
+    assert result == {"ok": True, "applied": True}
+    assert completed == [0, 1]
 
 
 @pytest.mark.asyncio

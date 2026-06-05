@@ -275,6 +275,65 @@ async def test_event_lifecycle_sends_then_updates_final_card(client):
     assert metrics["feishu_update_retries"] == 0
 
 
+async def test_interaction_request_renders_buttons_and_callback_resolves(client):
+    test_client, feishu_client = client
+
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    requested = await test_client.post(
+        "/events",
+        json=event_payload(
+            "interaction.requested",
+            1,
+            {
+                "interaction_id": "approval-1",
+                "kind": "approval",
+                "prompt": "允许执行命令吗？",
+                "description": "rm -rf /tmp/demo",
+                "options": [
+                    {"label": "允许一次", "value": "once", "style": "primary"},
+                    {"label": "拒绝", "value": "deny", "style": "danger"},
+                ],
+            },
+        ),
+    )
+
+    assert requested.status == 200
+    assert (await requested.json()) == {"ok": True, "applied": True}
+    interaction_card = feishu_client.updated[-1][1]
+    button = next(
+        element
+        for element in interaction_card["body"]["elements"]
+        if element.get("tag") == "button"
+    )
+    action_value = button["behaviors"][0]["value"]
+
+    callback = await test_client.post(
+        "/card/actions",
+        json={
+            "event": {
+                "operator": {"open_id": "ou_bailey", "name": "Bailey"},
+                "context": {"open_chat_id": "oc_abc"},
+                "action": {"value": action_value},
+            }
+        },
+    )
+    result = await test_client.get("/interactions/approval-1")
+
+    assert callback.status == 200
+    callback_body = await callback.json()
+    assert callback_body["ok"] is True
+    assert callback_body["toast"]["type"] == "success"
+    assert result.status == 200
+    assert await result.json() == {
+        "ok": True,
+        "status": "completed",
+        "choice": "once",
+        "choice_label": "允许一次",
+        "interaction_id": "approval-1",
+    }
+    assert "已选择：允许一次" in str(feishu_client.updated[-1][1])
+
+
 async def test_completed_card_summary_can_be_looked_up_by_feishu_message_id(client):
     test_client, _ = client
     long_answer = "最终答案" * 1000
@@ -634,6 +693,10 @@ async def test_concurrent_streaming_deltas_share_message_update_window(client):
     assert second_delta.status == 200
     assert await first_delta.json() == {"ok": True, "applied": True}
     assert await second_delta.json() == {"ok": True, "applied": True}
+    for _ in range(20):
+        if feishu_client.updated:
+            break
+        await asyncio.sleep(0.01)
     assert len(feishu_client.updated) == 1
     assert "第一段" in str(feishu_client.updated[0][1])
     health = await test_client.get("/health")
@@ -666,10 +729,53 @@ async def test_concurrent_card_updates_preserve_newer_content(monkeypatch):
 
         assert first_delta.status == 200
         assert second_delta.status == 200
+        for _ in range(20):
+            if len(feishu_client.updated) >= 2:
+                break
+            await asyncio.sleep(0.01)
         assert len(feishu_client.updated) == 2
         assert "第一段第二段" in str(feishu_client.updated[-1][1])
     finally:
         await test_client.close()
+
+
+async def test_terminal_update_is_not_blocked_by_streaming_update_backlog(client, monkeypatch):
+    test_client, feishu_client = client
+    feishu_client.update_delay = 0.05
+    monkeypatch.setattr(sidecar_server, "UPDATE_MIN_INTERVAL_SECONDS", 0)
+
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    await test_client.post(
+        "/events",
+        json=event_payload("answer.delta", 1, {"text": "片段0"}),
+    )
+    deltas = await asyncio.gather(
+        *[
+            test_client.post(
+                "/events",
+                json=event_payload("answer.delta", sequence, {"text": f"片段{sequence}"}),
+            )
+            for sequence in range(2, 12)
+        ]
+    )
+
+    started_at = asyncio.get_running_loop().time()
+    completed = await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 12, {"answer": "最终答案"}),
+    )
+    elapsed = asyncio.get_running_loop().time() - started_at
+
+    assert all(response.status == 200 for response in deltas)
+    assert completed.status == 200
+    assert elapsed < 0.5
+    assert "最终答案" in str(feishu_client.updated[-1][1])
+    health = await test_client.get("/health")
+    metrics = (await health.json())["metrics"]
+    assert metrics["events_received"] == 13
+    assert metrics["events_applied"] == 13
+    assert metrics["feishu_update_attempts"] <= 3
+    assert metrics["feishu_update_failures"] == 0
 
 
 async def test_terminal_event_waits_for_update_window(client, monkeypatch):
