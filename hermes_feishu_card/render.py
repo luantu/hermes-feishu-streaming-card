@@ -13,6 +13,7 @@ DEFAULT_FOOTER_FIELDS = (
     "input_tokens",
     "output_tokens",
     "context",
+    "tool_summary",
 )
 MAIN_CONTENT_CHUNK_CHARS = 2400
 DEFAULT_TITLE = "Hermes Agent"
@@ -41,9 +42,11 @@ def render_cards(
 ) -> list[Dict[str, Any]]:
     status = _render_status(session)
     main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
-    tool_summary = _render_tool_summary(session)
+    effective_fields = list(DEFAULT_FOOTER_FIELDS) if footer_fields is None else list(footer_fields)
+    show_tool_summary = "tool_summary" in effective_fields
+    tool_summary = _render_tool_summary(session) if show_tool_summary else ""
     attachment_summary = _render_attachment_summary(session)
-    footer = _render_footer(session, footer_fields, loading_gif_img_key)
+    footer = _render_footer(session, effective_fields, loading_gif_img_key)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
 
     content_parts = _split_content_by_tables(main_text)
@@ -60,9 +63,10 @@ def render_cards(
                 }
             )
         elements.append({"tag": "hr", "element_id": "main_divider"})
-        elements.append(
-            {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
-        )
+        if tool_summary:
+            elements.append(
+                {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
+            )
         if isinstance(footer, list):
             elements.extend(footer)
         else:
@@ -98,9 +102,10 @@ def render_cards(
         part_elements.append({"tag": "hr", "element_id": "main_divider"})
 
         if is_last:
-            part_elements.append(
-                {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
-            )
+            if tool_summary:
+                part_elements.append(
+                    {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
+                )
             if isinstance(footer, list):
                 part_elements.extend(footer)
             else:
@@ -349,10 +354,12 @@ def _render_footer(
     selected = []
     fields = DEFAULT_FOOTER_FIELDS if footer_fields is None else footer_fields
     for field in fields:
+        if field == "tool_summary":
+            continue
         value = values.get(field)
         if value:
             selected.append(value)
-    return " · ".join(selected) if selected else values["duration"]
+    return " · ".join(selected) if selected else values.get("duration", "")
 
 
 def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:

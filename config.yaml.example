@@ -24,13 +24,15 @@ card:
   max_wait_ms: 800
   max_chars: 240
   # Footer fields and order. Supported values:
-  # duration, model, input_tokens, output_tokens, context
+  # duration, model, input_tokens, output_tokens, context, tool_summary
+  # Include "tool_summary" to show the tool-call summary block.
   footer_fields:
     - duration
     - model
     - input_tokens
     - output_tokens
     - context
+    - tool_summary
   # If a task runs longer than this many seconds, the terminal event
   # (completed/failed) will delete the original card and send a new one
   # instead of updating in place.  Useful in busy group chats where the
