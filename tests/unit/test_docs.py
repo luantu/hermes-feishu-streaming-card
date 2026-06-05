@@ -11,9 +11,19 @@ def read_doc(path: str) -> str:
 def test_readme_documents_sidecar_only_and_supported_hermes_version():
     readme = read_doc("README.md")
 
-    assert "V3.5.1" in readme
+    assert readme.startswith("# Hermes 飞书流式卡片插件\n")
+    assert "V3.6.0" in readme
     assert "[English](README.en.md)" in readme
+    assert "img.shields.io/github/stars/baileyh8/hermes-feishu-streaming-card" in readme
+    assert "img.shields.io/github/v/release/baileyh8/hermes-feishu-streaming-card" in readme
+    assert "img.shields.io/github/actions/workflow/status/baileyh8/hermes-feishu-streaming-card/tests.yml" in readme
+    assert "img.shields.io/badge/Python-3.9%2B" in readme
+    assert "img.shields.io/badge/Feishu%20%2F%20Lark-Streaming%20Cards" in readme
+    assert "img.shields.io/badge/Runtime-Sidecar--only" in readme
     assert "docs/assets/readme-cover.png" in readme
+    assert "项目亮点" in readme
+    assert "解决的真实痛点" in readme
+    assert "Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片" in readme
     assert "sidecar-only" in readme.lower()
     assert "setup --hermes-dir" in readme
     assert "整合安装器" in readme
@@ -36,7 +46,7 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
 def test_readme_documents_v340_hermes_compatibility():
     readme = read_doc("README.md")
 
-    assert "V3.5.1" in readme
+    assert "V3.6.0" in readme
     assert "issue #41" in readme
     assert "PR #42" in readme
     assert "授权/选项按钮" in readme
@@ -59,13 +69,15 @@ def test_readme_documents_v340_hermes_compatibility():
     assert "per-bot/profile title" in readme
     assert "cron final cards" in readme
     assert "attachment summaries + native media delivery" in readme
+    assert "routing profile diagnostics" in readme
+    assert "safe repair" in readme
     assert "reply card context" in readme
 
 
 def test_english_readme_documents_v340_hermes_compatibility():
     readme = read_doc("README.en.md")
 
-    assert "V3.5.1" in readme
+    assert "V3.6.0" in readme
     assert "issue #41" in readme
     assert "PR #42" in readme
     assert "Approval/choice buttons" in readme
@@ -88,7 +100,46 @@ def test_english_readme_documents_v340_hermes_compatibility():
     assert "per-bot/profile title" in readme
     assert "cron final cards" in readme
     assert "attachment summaries + native media delivery" in readme
+    assert "routing profile diagnostics" in readme
+    assert "safe `repair`" in readme
     assert "reply card context" in readme
+
+
+def test_readme_documents_one_line_install_and_release_packages():
+    readme = read_doc("README.md")
+    english_readme = read_doc("README.en.md")
+    install_doc = read_doc("README-install.md")
+    workflow = read_doc(".github/workflows/release-assets.yml")
+
+    assert "curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.sh | bash" in readme
+    assert "irm https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.ps1 | iex" in readme
+    assert "README-install.md" in readme
+    assert "docs/release-notes-v3.6.0.md" in readme
+    assert "docs/release-notes-v3.5.2.md" in readme or "v3.5.2" in readme
+    assert "docs/roadmap-v3.6.0.md" in readme
+    assert "hermes-feishu-card-<version>-macos.tar.gz" in readme
+    assert "hermes-feishu-card-<version>-linux.tar.gz" in readme
+    assert "hermes-feishu-card-<version>-windows.zip" in readme
+
+    assert "One-Line Install" in english_readme
+    assert "README-install.md" in english_readme
+    assert "bash install.sh" in install_doc
+    assert "install.ps1" in install_doc
+    assert "HFC_VERSION" in install_doc
+    assert "v3.6.0" in install_doc
+
+    assert (ROOT / "install.sh").exists()
+    assert (ROOT / "install.ps1").exists()
+    assert (ROOT / "README-install.md").exists()
+    assert (ROOT / "docs/release-notes-v3.6.0.md").exists()
+    assert (ROOT / "docs/release-notes-v3.5.2.md").exists()
+    assert (ROOT / "docs/roadmap-v3.6.0.md").exists()
+    assert (ROOT / ".github/workflows/release-assets.yml").exists()
+    assert "gh release upload" in workflow
+    assert 'NAME="hermes-feishu-card-${TAG}"' in workflow
+    assert "${NAME}-macos.tar.gz" in workflow
+    assert "${NAME}-linux.tar.gz" in workflow
+    assert "${NAME}-windows.zip" in workflow
 
 
 def test_english_readme_and_docs_are_linked():
@@ -105,7 +156,11 @@ def test_english_readme_and_docs_are_linked():
     ]
 
     assert "[中文](README.md)" in english_readme
-    assert "Hermes Feishu Streaming Card Plugin V3.5.1" in english_readme
+    assert english_readme.startswith("# Hermes Feishu Streaming Card Plugin\n")
+    assert "Hermes Feishu Streaming Card turns Hermes Agent Gateway replies" in english_readme
+    assert "Project Highlights" in english_readme
+    assert "Pain Points Solved" in english_readme
+    assert "img.shields.io/github/stars/baileyh8/hermes-feishu-streaming-card" in english_readme
     assert "docs/assets/readme-cover.png" in english_readme
     assert "setup --hermes-dir" in english_readme
     assert "Hermes Gateway Streaming And Thinking" in english_readme
@@ -255,6 +310,10 @@ def test_docs_describe_hermes_detection_diagnostics():
     assert "compatibility" in docs
     assert "anchor" in docs or "anchors" in docs
     assert "reason" in docs
+    assert "--explain" in docs
+    assert "--json" in docs
+    assert "install_state" in docs
+    assert "recommendations" in docs
     assert "- [x] 增加安装前 Hermes 版本展示和更友好的错误提示。" in docs
 
 
@@ -319,16 +378,42 @@ def test_changelog_documents_v343_release_notes():
     assert "v2026.5.16+" in changelog
 
 
-def test_changelog_documents_v350_release_notes():
+def test_changelog_documents_v352_release_notes():
     changelog = read_doc("CHANGELOG.md")
+    release_notes = read_doc("docs/release-notes-v3.5.2.md")
 
+    assert "## V3.5.2 — 2026-06-04" in changelog
     assert "## V3.5.1 — 2026-06-01" in changelog
     assert "## V3.5.0 — 2026-06-01" in changelog
+    assert "Cross-platform installers" in changelog
+    assert "externally-managed-environment" in changelog
+    assert "install.ps1" in changelog
+    assert "V3.5.2 Release Notes" in release_notes
+    assert "hermes-feishu-card-v3.5.2-macos.tar.gz" in release_notes
     assert "issue #41" in changelog
     assert "PR #42" in changelog
     assert "interaction.requested" in changelog
     assert "MAIN_CONTENT_CHUNK_CHARS" in changelog
     assert "append_block" in changelog
+
+
+def test_changelog_documents_v360_release_notes():
+    changelog = read_doc("CHANGELOG.md")
+    release_notes = read_doc("docs/release-notes-v3.6.0.md")
+
+    assert "## V3.6.0 — 2026-06-04" in changelog
+    assert "doctor --json" in changelog
+    assert "doctor --explain" in changelog
+    assert "repair --hermes-dir" in changelog
+    assert "setup --repair" in changelog
+    assert "media_files" in changelog
+    assert "smoke-feishu-card --profile-id" in changelog
+    assert "bots test --profile-id" in changelog
+    assert "/health.routing.profiles" in changelog
+    assert "v2026.5.29" in changelog
+    assert "V3.6.0 Release Notes" in release_notes
+    assert "hermes-feishu-card-v3.6.0-macos.tar.gz" in release_notes
+    assert "Docker packaging is intentionally out of scope" in release_notes
 
 
 def test_config_example_documents_profile_and_bot_card_titles():
@@ -435,11 +520,16 @@ def test_docs_describe_release_readiness_boundaries():
     )
 
     assert "docs/release-readiness.md" in docs
-    assert "3.5.1" in release_readiness
+    assert "3.6.0" in release_readiness
+    assert "Release assets workflow" in release_readiness
+    assert "install.ps1" in release_readiness
     assert "3.1.0" not in release_readiness
     assert "interaction.requested" in release_readiness
     assert "append_block" in release_readiness
     assert "MAIN_CONTENT_CHUNK_CHARS" in release_readiness
+    assert "doctor --json" in release_readiness
+    assert "repair --hermes-dir" in release_readiness
+    assert "/health.routing.profiles" in release_readiness
     assert "python3 -m pytest -q" in docs
     assert "真实 Hermes Gateway" in docs
     assert "真实飞书应用" in docs

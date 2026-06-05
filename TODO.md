@@ -2,6 +2,36 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
+## 下一版计划：V3.6.0 / V3.7.0
+
+详细路线见 [docs/roadmap-v3.6.0.md](docs/roadmap-v3.6.0.md)。
+
+### V3.5.2：安装补丁版
+
+- [x] 更新 CHANGELOG、README 和 Release notes，说明一行安装、Release 包、checksum。
+- [x] 发布 tag 后验证 `.github/workflows/release-assets.yml` 能上传 macOS/Linux/Windows 安装包。
+- [x] 确认 `install.sh` 在 macOS 临时 Hermes fixture 上完整跑通。
+- [x] 补 Windows PowerShell 安装脚本的语法验证路径。
+
+### V3.6.0：安装与运维产品化
+
+- [x] **P0 安装自救**：新增 `doctor --explain` / `doctor --json`，解释 hook strategy、manifest、backup 和 anchor 状态。
+- [x] **P0 安装修复**：新增 `setup --repair` 和 `repair` 子命令，处理 manifest/backup 缺失等可验证修复场景，并拒绝用户改动。
+- [x] **P0 媒体/文件消息处理**：识别结构化 attachments/files/media_files，在卡片中保留摘要，同时不抑制 Hermes 原生媒体/文件投递路径。
+- [x] **P1 多 Profile CLI**：`smoke-feishu-card`、`bots test` 支持 `--profile-id` 和 profile 维度排障。
+- [x] **P1 health routing 分组**：`/health.routing` 在多 Profile 下按 profile 分组展示 bot、chat binding、last_route、last_route_error 和 events。
+- [x] **P1 E2E 矩阵**：覆盖 Hermes `v2026.4.23`、`v2026.5.7`、`v2026.5.16+`、`v2026.5.29`、`0.13.x`、`0.14.x`。
+- [x] **P1 发布矩阵**：CI 验证 Release 打包 dry run、macOS/Linux install dry run、Windows PowerShell parser。
+- [ ] **P2 Docker 部署**：本版按用户要求暂不考虑，移入后续版本候选。
+
+### V3.7.0：体验增强候选
+
+- [ ] 卡片思考过程折叠/展开，默认突出最终答案和关键工具状态。
+- [ ] 工具调用详情支持查看参数摘要、耗时、失败原因。
+- [ ] 卡片内提供“继续”“重试”“取消”等操作入口。
+- [ ] 群聊规则支持 @机器人触发、白名单、chat binding 自动提示。
+- [ ] 可观测性补充 update queue length、coalesce count、terminal drain latency、Feishu API latency。
+
 ## V3.3.0 (已完成)
 
 - [x] 多 Profile 进程内支持（一个 sidecar 服务多个 Hermes profile，`profile_id:message_id` 复合键）
@@ -54,9 +84,4 @@
 - [x] 长会话撤回+重发：`card.resend_after_seconds` 配置，超时后撤回原卡片发送新卡片
 - [x] issue #31：修复并发 PATCH / sequence 竞争导致的流式卡片内容回退与漏字（V3.4.2）
 - [x] issue #25：修复 Hermes v2026.5.7 fallback `message_id` 生命周期一致性（V3.4.1）
-- [ ] **媒体/文件消息处理**：图片、文件等非文本消息不走流式卡片，由 sidecar 拦截后直接发送原始文件（P0）
-- [ ] CLI 命令支持多 Profile 模式（`smoke-feishu-card`、`bots test` 等）
-- [ ] `/health.routing` 在多 Profile 下按 profile 分组展示
-- [ ] 跑通 Hermes Gateway 完整对话测试
-- [ ] CI/CD 自动化 release (GitHub Actions build + publish)
-- [ ] Docker 镜像 / docker-compose 一键部署
+- [ ] 旧 V3.4 未完成项已迁移到 V3.6.0 / V3.7.0 下一版计划。

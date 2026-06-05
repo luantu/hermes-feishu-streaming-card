@@ -1,0 +1,78 @@
+name: release-assets
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to package"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select workflow_dispatch tag
+        if: github.event_name == 'workflow_dispatch'
+        run: git checkout "${{ inputs.tag }}"
+
+      - name: Build install packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          fi
+
+          NAME="hermes-feishu-card-${TAG}"
+          mkdir -p dist pkg/macos pkg/linux pkg/windows
+
+          COMMON_FILES=(
+            README-install.md
+            config.yaml.example
+            README.md
+            README.en.md
+            CHANGELOG.md
+            LICENSE
+          )
+
+          cp install.sh "${COMMON_FILES[@]}" pkg/macos/
+          cp install.sh "${COMMON_FILES[@]}" pkg/linux/
+          cp install.ps1 "${COMMON_FILES[@]}" pkg/windows/
+
+          (cd pkg/macos && tar -czf "../../dist/${NAME}-macos.tar.gz" .)
+          (cd pkg/linux && tar -czf "../../dist/${NAME}-linux.tar.gz" .)
+          (cd pkg/windows && zip -qr "../../dist/${NAME}-windows.zip" .)
+          (cd dist && shasum -a 256 * > "${NAME}-checksums.txt")
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi

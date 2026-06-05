@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
-<<## Unreleased
+## Unreleased
 
 ### Fixed
 - `should_suppress_native_response` now correctly distinguishes between `MEDIA:` file uploads (which require Hermes native handling) and plain file paths mentioned in AI responses. Previously, any file path in the answer text would prevent suppression, causing duplicate messages.
@@ -20,6 +20,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ### Tests
 - Added 6 integration tests covering: long-running resend, short-running in-place update, zero threshold, delete failure fallback, send failure fallback, and summary index migration.
+
+## V3.6.0 — 2026-06-04
+
+### Added
+- Read-only `doctor --json` and `doctor --explain` diagnostics covering config, sidecar, Hermes version/anchors, streaming settings, install state, and actionable recommendations.
+- Safe `repair --hermes-dir ... --yes` and `setup --repair` flows for verifiable hook state recovery without overwriting user edits.
+- Structured attachment extraction for Hermes locals such as `attachments`, `files`, `media_files`, image/audio/video file objects, and URL/file dictionaries.
+- Profile-scoped operations: `smoke-feishu-card --profile-id`, `bots test --profile-id`, clearer CLI `status` routing output, and /health.routing.profiles.
+- Hermes compatibility release matrix coverage for `v2026.4.23`, `v2026.5.7`, `v2026.5.16+`, `v2026.5.29`, `0.13.x`, and `0.14.x`.
+- `docs/release-notes-v3.6.0.md` and refreshed release-readiness docs for operations-focused publishing.
+
+### Fixed
+- Repairable missing manifest/backup states are now detected and explained instead of leaving users with opaque `run.py changed since install` failures.
+- Cards retain attachment summaries while the hook keeps Hermes native media/file delivery paths unsuppressed.
+- Multi-profile routing diagnostics now show profile-level bot counts, chat bindings, last route, last route error, and event counters.
+
+### Tests
+- Added regression coverage for doctor JSON/explain output, repair refusal/recovery paths, structured media/file events, profile-targeted smoke commands, health routing grouping, Hermes release matrix fixtures, release asset dry-run guards, and documentation constraints.
+
+## V3.5.2 — 2026-06-04
+
+### Added
+- Cross-platform installers: `install.sh` for macOS/Linux and `install.ps1` for Windows PowerShell.
+- One-line install entry points in the Chinese and English README homepages.
+- GitHub Release asset packaging workflow for macOS/Linux tarballs, Windows zip packages, and SHA-256 checksums.
+- `README-install.md` and `docs/release-notes-v3.5.2.md` for packaged installer usage and release publishing.
+- V3.6.0 roadmap documentation focused on repair diagnostics, media/file delivery, multi-profile operations, and release/E2E matrices.
+
+### Fixed
+- `install.sh` no longer sources the whole .env file. It now reads only Feishu/sidecar-related variables, so unrelated values with spaces such as browser paths do not break macOS installs.
+- `install.sh` detects uv/PEP 668 `externally-managed-environment` Python errors and retries pip installation with `--break-system-packages`, keeping the failure mode explicit while allowing one-line installs on uv-managed macOS Python.
+
+### CI
+- Added a Windows GitHub Actions job that parses `install.ps1` with PowerShell AST validation.
+- Added installer regression tests for safe .env parsing and externally managed Python retry behavior.
+- Added documentation tests for one-line install commands and Release asset workflow coverage.
+
 
 ## V3.5.1 — 2026-06-01
 
