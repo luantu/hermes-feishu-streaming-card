@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 ### Tests
 - Added 6 integration tests covering: long-running resend, short-running in-place update, zero threshold, delete failure fallback, send failure fallback, and summary index migration.
 
+## V3.6.1 — 2026-06-06
+
+### Fixed
+- issue #47: Hermes semver `VERSION` values without a `v` prefix, such as `0.15.1`, are now parsed correctly instead of being reported as unsupported.
+- Hermes `0.15.x` / `v0.15.x` now uses the existing `gateway_run_013_plus` hook strategy when the required `gateway/run.py` anchors are present.
+
+### Tests
+- Added release-matrix coverage for `0.13.0`, `0.14.0`, `0.15.1`, and `v0.15.1`.
+- Added a `doctor --explain` regression test for Hermes `0.15.1` without the `v` prefix.
+
 ## V3.6.0 — 2026-06-04
 
 ### Added
