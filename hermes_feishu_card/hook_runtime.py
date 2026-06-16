@@ -709,10 +709,14 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     resolved_targets = _resolved_cron_targets(local_vars, job)
     resolved_chat_id = _resolved_target_chat_id(resolved_targets, "feishu")
     deliver_platform = _deliver_platform(job.get("deliver"))
+    # deliver values like "origin" and "none" are routing directives, not
+    # concrete platform names — prefer resolved targets and origin over them.
+    if deliver_platform in ("origin", "none", ""):
+        deliver_platform = ""
     platform = str(
-        deliver_platform
-        or _first_target_platform(resolved_targets)
+        _first_target_platform(resolved_targets)
         or origin.get("platform")
+        or deliver_platform
         or os.environ.get("HERMES_CRON_AUTO_DELIVER_PLATFORM")
         or "feishu"
     ).strip().lower()
