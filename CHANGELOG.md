@@ -5,21 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
-## Unreleased
+## V3.6.2 — 2026-06-16
 
 ### Fixed
-- `should_suppress_native_response` now correctly distinguishes between `MEDIA:` file uploads (which require Hermes native handling) and plain file paths mentioned in AI responses. Previously, any file path in the answer text would prevent suppression, causing duplicate messages.
-- `_extract_attachments` now adds `is_media: True` flag to attachments extracted from `MEDIA:` prefixes, enabling proper handling of real file uploads vs. text references.
+- issue #53: `install` / `setup` now detects the Hermes Gateway runtime venv Python and installs `hermes-feishu-streaming-card` into that interpreter before patching `gateway/run.py`.
+- Hermes hook import/emit failures are no longer completely silent; injected hook blocks still fail open, but now write a diagnostic `[hermes-feishu-card] hook failed: ...` warning to Hermes stderr.
+- `doctor --json` and `doctor --explain` now report `runtime_import`, including whether Hermes runtime Python can import `hermes_feishu_card.hook_runtime`.
 
-### Added
-- `card.resend_after_seconds` configuration option (default 60). When a session runs longer than this threshold, the terminal event (completed/failed) will delete the original streaming card and send a new one with the final content, instead of updating in place. This keeps completed answers visible in busy group chats. Set to 0 to always resend.
-- `FeishuClient.delete_message()` API for recalling/deleting Feishu messages.
-- New metrics: `feishu_delete_attempts/successes/failures`, `feishu_resend_attempts/successes/failures/fallbacks`.
-- `render_cards()` function returns multiple cards when content exceeds 5 tables. Each card contains up to 5 tables, with continuation cards labeled "(续)". Terminal events send all cards; streaming updates only update the first card.
-- Completed card subtitle now shows a brief summary of the answer (first sentence, max 20 chars) instead of static "已完成". Falls back to "已完成" for empty answers.
-
-### Tests
-- Added 6 integration tests covering: long-running resend, short-running in-place update, zero threshold, delete failure fallback, send failure fallback, and summary index migration.
+### Docs
+- Documented Hermes venv deployment behavior and installer safety expectations in README and installer safety docs.
+- Kept `.env` search expansion out of this release scope; it remains a separate follow-up item from the venv runtime installation fix.
 
 ## V3.6.1 — 2026-06-06
 
