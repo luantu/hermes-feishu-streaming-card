@@ -397,7 +397,13 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 metrics.events_applied += 1
             else:
                 metrics.events_ignored += 1
-            return web.json_response({"ok": True, "applied": applied}), None
+            response_payload = {"ok": True, "applied": applied}
+            if event.event == "interaction.requested":
+                response_payload["interaction_mode"] = _interaction_mode_for_session_key(
+                    request.app,
+                    _session_key(event),
+                )
+            return web.json_response(response_payload), None
         if event.event == "message.completed" and _delivery_kind(event) == "cron":
             session = CardSession(
                 conversation_id=event.conversation_id,
@@ -547,7 +553,13 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         metrics.events_applied += 1
     else:
         metrics.events_ignored += 1
-    return web.json_response({"ok": True, "applied": applied}), post_lock_task
+    response_payload = {"ok": True, "applied": applied}
+    if event.event == "interaction.requested":
+        response_payload["interaction_mode"] = _interaction_mode_for_session_key(
+            request.app,
+            _session_key(event),
+        )
+    return web.json_response(response_payload), post_lock_task
 
 
 def _store_interaction_result(app: web.Application, session: CardSession) -> None:
@@ -696,12 +708,29 @@ def _render_session_cards(request: web.Request, session: CardSession) -> list[di
     if not isinstance(title, str):
         title = request.app[CARD_TITLE_KEY]
     loading_gif_img_key = _resolve_gif_img_key(request.app, session)
+    interaction_mode = _interaction_mode_for_session_key(
+        request.app,
+        _session_key_for_session(request.app, session),
+    )
     return render_cards(
         session,
         footer_fields=footer_fields,
         title=title,
         loading_gif_img_key=loading_gif_img_key,
+        interaction_mode=interaction_mode,
     )
+
+
+def _interaction_mode_for_session_key(app: web.Application, session_key: str) -> str:
+    card_config = app[SESSION_CARD_CONFIGS_KEY].get(session_key, {})
+    raw_mode = card_config.get(
+        "interaction_mode",
+        app[BASE_CARD_CONFIG_KEY].get("interaction_mode", "callback"),
+    )
+    mode = str(raw_mode or "").strip().lower()
+    if mode in {"text", "markdown", "reply"}:
+        return "text"
+    return "callback"
 
 
 def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | None:
