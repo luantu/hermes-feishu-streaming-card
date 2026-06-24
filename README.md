@@ -40,6 +40,18 @@ Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
 
+## V3.6.5 流式终态稳定性补丁
+
+V3.6.5 修复 issues #64 和 #65：Feishu thread / 话题场景下，`message.started` 现在会使用和 streaming callbacks 一致的 reply anchor 作为 card session `message_id`，避免 `events_applied=0`；DeepSeek 等一次性返回最终答案的模型，即使没有任何 `thinking.delta` / `answer.delta`，也会从 `message.completed` / `agent_result.final_response` 回填最终内容并完成同一张卡片。
+
+完整发布说明见 [V3.6.5 release notes](docs/release-notes-v3.6.5.md)。
+
+## V3.6.4 话题回复与定时投递补丁
+
+V3.6.4 修复 issues #61 和 #62：用户在飞书 thread / 话题里发消息时，初始 streaming card 会使用飞书 reply API 发回同一 thread，并继续用同一张卡片做后续 PATCH 更新；cron job 配置 `deliver: "feishu:oc_xxx"` 时也能从 `deliver` 字段解析 chat id，避免定时任务退回普通文本。
+
+完整发布说明见 [V3.6.4 release notes](docs/release-notes-v3.6.4.md)。
+
 ## V3.6.3 Hermes v0.17 兼容与交互补丁
 
 V3.6.3 修复 issues #56-#59：Hermes v0.17.0+ / `v2026.6.19+` 将真实 streaming callback 移到 `_run_agent_inner` 后，patcher 会优先在 `_run_agent_inner` 注入 `tool.updated`、`answer.delta`、`thinking.delta`、clarify 和 approval hook，避免卡片停在“思考中”。
@@ -159,7 +171,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.6.3` 或 `main` |
+| `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.6.5` 或 `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `HFC_CONFIG` 同目录 `.env` | 飞书凭据保存位置 |
@@ -202,7 +214,7 @@ V3.6.2 会继续自动读取 `~/.hermes/config.yaml` 同目录的 `~/.hermes/.en
 
 ## 升级
 
-从 V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x 升级到 V3.6.3 向后兼容，**单 Profile 配置无需任何修改**。如果 Hermes 使用自己的 venv，升级后请重新跑 `setup` 或 `install`，让插件同时进入 Hermes runtime Python 并刷新 hook。
+从 V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x 升级到 V3.6.5 向后兼容，**单 Profile 配置无需任何修改**。如果 Hermes 使用自己的 venv，升级后请重新跑 `setup` 或 `install`，让插件同时进入 Hermes runtime Python 并刷新 hook。
 
 ```bash
 # 1. 停止 sidecar
@@ -210,7 +222,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. 更新代码
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.6.3
+git checkout v3.6.5
 pip install -e ".[test]" --upgrade
 
 # 3. 诊断 Hermes hook strategy 与 anchors
@@ -415,6 +427,8 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v3.6.5](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.5) | 2026-06 | issues #64/#65，Feishu thread `message_id` 归一化、DeepSeek completed-only 最终答案回填并更新同一卡片 |
+| [v3.6.4](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.4) | 2026-06 | issues #61/#62，飞书 thread 卡片回复到原话题、cron `deliver: "feishu:oc_xxx"` 解析为卡片投递 |
 | [v3.6.3](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.3) | 2026-06 | issues #56-#59，Hermes v0.17 `_run_agent_inner` hook、localhost 交互 text fallback、Telegram 隔离、Windows profile path |
 | [v3.6.2](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.2) | 2026-06 | issue #53，安装到 Hermes runtime venv、doctor runtime import 检查、hook 失败 warning 诊断 |
 | [v3.6.1](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.6.1) | 2026-06 | issue #47，支持 Hermes `0.15.x` 和无 `v` 前缀 VERSION，避免 `doctor --explain` 误报 unsupported |

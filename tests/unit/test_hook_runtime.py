@@ -174,6 +174,25 @@ def test_build_event_extracts_gateway_source_object():
     assert payload["message_id"].startswith("hfc_")
 
 
+def test_build_event_carries_feishu_thread_id_from_source():
+    class ThreadSourceObject:
+        platform = "feishu"
+        chat_id = "oc_source"
+        thread_id = "omt_thread"
+
+    payload = hook_runtime.build_event(
+        "message.started",
+        {
+            "source": ThreadSourceObject(),
+            "session_id": "agent:main:feishu:dm:oc_source:omt_thread",
+            "message_id": "om_user_message",
+        },
+    )
+
+    assert payload["chat_id"] == "oc_source"
+    assert payload["thread_id"] == "omt_thread"
+
+
 def test_build_event_ignores_non_feishu_platforms():
     assert (
         hook_runtime.build_event(
@@ -738,6 +757,23 @@ def test_build_cron_event_from_feishu_job_origin():
     } in payload["data"]["attachments"]
 
 
+def test_build_cron_event_extracts_chat_id_from_deliver_string():
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-deliver",
+                "deliver": "feishu:oc_cron_from_deliver",
+            },
+            "delivery_content": "定时结果",
+        }
+    )
+
+    assert payload is not None
+    assert payload["chat_id"] == "oc_cron_from_deliver"
+    assert payload["platform"] == "feishu"
+    assert payload["data"]["delivery_kind"] == "cron"
+
+
 def test_build_cron_event_prefers_cleaned_delivery_content():
     payload = hook_runtime.build_cron_event(
         {
@@ -833,6 +869,20 @@ def test_build_completed_event_uses_agent_result_token_fallbacks():
     assert payload["data"]["duration"] == 1.25
     assert payload["data"]["tokens"]["input_tokens"] == 99
     assert payload["data"]["tokens"]["output_tokens"] > 0
+
+
+def test_completed_event_uses_agent_result_final_response_when_response_is_empty():
+    payload = hook_runtime.build_event(
+        "message.completed",
+        {
+            "chat_id": "oc_abc",
+            "message_id": "msg_1",
+            "response": "",
+            "agent_result": {"final_response": "DeepSeek 一次性返回的最终答案"},
+        },
+    )
+
+    assert payload["data"]["answer"] == "DeepSeek 一次性返回的最终答案"
 
 
 def test_build_completed_event_sanitizes_cumulative_token_counts():
