@@ -43,6 +43,20 @@ TERMINAL_EVENTS = {"message.completed", "message.failed"}
 DIAGNOSTICS_KEY = web.AppKey("diagnostics", dict)
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 logger = logging.getLogger(__name__)
+_log_handler_configured = False
+
+
+def _ensure_logger() -> None:
+    global _log_handler_configured
+    if _log_handler_configured:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    _log_handler_configured = True
 
 
 def create_app(
@@ -51,6 +65,7 @@ def create_app(
     card_config: dict[str, Any] | None = None,
     bot_router: Any = None,
 ) -> web.Application:
+    _ensure_logger()
     app = web.Application()
     card_config = card_config or {}
     app[FEISHU_CLIENT_KEY] = feishu_client

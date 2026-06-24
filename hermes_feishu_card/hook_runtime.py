@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 from typing import Any
@@ -99,9 +100,11 @@ def emit_from_hermes_locals(
     try:
         config = load_runtime_config()
         if not config.enabled:
+            print(f"[hermes-feishu-card] emit_from_hermes_locals: disabled for {event_name}", file=sys.stderr)
             return False
         payload = build_event(event_name, local_vars)
         if payload is None:
+            print(f"[hermes-feishu-card] emit_from_hermes_locals: build_event returned None for {event_name}", file=sys.stderr)
             return False
         asyncio.get_running_loop()
         asyncio.create_task(
@@ -112,7 +115,8 @@ def emit_from_hermes_locals(
             )
         )
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"[hermes-feishu-card] emit_from_hermes_locals: exception for {event_name}: {exc}", file=sys.stderr)
         return False
 
 
@@ -123,9 +127,11 @@ def emit_from_hermes_locals_threadsafe(
     try:
         config = load_runtime_config()
         if not config.enabled:
+            print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: disabled for {event_name}", file=sys.stderr)
             return False
         payload = build_event(event_name, local_vars)
         if payload is None:
+            print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: build_event returned None for {event_name}", file=sys.stderr)
             return False
         if "_hfc_loop" in local_vars:
             coroutine = _send_fail_open_ordered(
@@ -135,9 +141,10 @@ def emit_from_hermes_locals_threadsafe(
             )
             try:
                 asyncio.run_coroutine_threadsafe(coroutine, local_vars["_hfc_loop"])
-            except Exception:
+            except Exception as exc:
                 coroutine.close()
-                raise
+                print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: run_coroutine_threadsafe failed for {event_name}: {exc}", file=sys.stderr)
+                return False
         else:
             asyncio.get_running_loop()
             asyncio.create_task(
@@ -148,7 +155,8 @@ def emit_from_hermes_locals_threadsafe(
                 )
             )
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: exception for {event_name}: {exc}", file=sys.stderr)
         return False
 
 
@@ -159,9 +167,11 @@ async def emit_from_hermes_locals_async(
     try:
         config = load_runtime_config()
         if not config.enabled:
+            print(f"[hermes-feishu-card] emit_from_hermes_locals_async: disabled for {event_name}", file=sys.stderr)
             return False
         payload = build_event(event_name, local_vars)
         if payload is None:
+            print(f"[hermes-feishu-card] emit_from_hermes_locals_async: build_event returned None for {event_name}", file=sys.stderr)
             return False
         await _post_json_ordered(
             config.event_url,
@@ -169,7 +179,8 @@ async def emit_from_hermes_locals_async(
             _timeout_for_event(config, event_name),
         )
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"[hermes-feishu-card] emit_from_hermes_locals_async: exception for {event_name}: {exc}", file=sys.stderr)
         return False
 
 
@@ -177,12 +188,18 @@ def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
     try:
         config = load_runtime_config()
         if not config.enabled:
+            print("[hermes-feishu-card] emit_cron_delivery: disabled, skipping", file=sys.stderr)
             return False
         payload = build_cron_event(local_vars)
         if payload is None:
+            print("[hermes-feishu-card] emit_cron_delivery: build_cron_event returned None", file=sys.stderr)
             return False
-        return _post_json_sync(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS)
-    except Exception:
+        result = _post_json_sync(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS)
+        if not result:
+            print("[hermes-feishu-card] emit_cron_delivery: _post_json_sync returned False (POST failed)", file=sys.stderr)
+        return result
+    except Exception as exc:
+        print(f"[hermes-feishu-card] emit_cron_delivery: exception: {exc}", file=sys.stderr)
         return False
 
 
@@ -380,11 +397,15 @@ def should_suppress_native_response(
     platform: str, delivered: bool, attachments: Any = None
 ) -> bool:
     if not delivered:
+        print(f"[hermes-feishu-card] should_suppress_native_response: NOT suppressing — delivered={delivered}", file=sys.stderr)
         return False
     if str(platform or "").lower() != "feishu":
+        print(f"[hermes-feishu-card] should_suppress_native_response: NOT suppressing — platform={platform}", file=sys.stderr)
         return False
     if _has_media_attachments(attachments):
+        print(f"[hermes-feishu-card] should_suppress_native_response: NOT suppressing — has_media_attachments={attachments}", file=sys.stderr)
         return False
+    print(f"[hermes-feishu-card] should_suppress_native_response: suppressing native response (delivered={delivered}, platform={platform})", file=sys.stderr)
     return True
 
 
@@ -640,10 +661,12 @@ def _build_event(
     event_name: str, local_vars: dict[str, Any], *, preview: bool
 ) -> dict[str, Any] | None:
     if event_name not in SUPPORTED_RUNTIME_EVENTS:
+        print(f"[hermes-feishu-card] _build_event: unsupported event={event_name}", file=sys.stderr)
         return None
     source_obj = local_vars.get("source")
     platform = _platform_name(local_vars, source_obj)
     if platform != "feishu":
+        print(f"[hermes-feishu-card] _build_event: platform={platform} != feishu for {event_name}", file=sys.stderr)
         return None
     gateway_event_obj = local_vars.get("event")
     chat_id = _first_string(local_vars, ("chat_id", "open_chat_id", "receive_id"))
@@ -653,6 +676,7 @@ def _build_event(
     if chat_id is None:
         chat_id = _first_attr_string(source_obj, ("chat_id", "open_chat_id", "receive_id"))
     if chat_id is None:
+        print(f"[hermes-feishu-card] _build_event: no chat_id for {event_name}", file=sys.stderr)
         return None
     thread_id = _thread_id_for_runtime_event(local_vars, message_obj, source_obj)
 
@@ -690,6 +714,7 @@ def _build_event(
                 fallback_key, created_at_lifecycle_token
             )
     if active_fallback_cache_key is _AMBIGUOUS_TERMINAL:
+        print(f"[hermes-feishu-card] _build_event: ambiguous terminal for {event_name} conv={conversation_id} chat={chat_id}", file=sys.stderr)
         return None
     active_fallback_message_id = (
         _ACTIVE_FALLBACK_MESSAGE_IDS.get(active_fallback_cache_key)
@@ -699,6 +724,7 @@ def _build_event(
     if active_fallback_message_id is not None:
         message_id = active_fallback_message_id
     elif is_terminal_event and message_id is None:
+        print(f"[hermes-feishu-card] _build_event: terminal {event_name} with no message_id", file=sys.stderr)
         return None
     elif message_id is None:
         message_id = _fallback_message_id(
@@ -709,6 +735,7 @@ def _build_event(
             preview=preview,
         )
         if message_id is None:
+            print(f"[hermes-feishu-card] _build_event: fallback_message_id returned None for {event_name}", file=sys.stderr)
             return None
     sequence = _peek_next_sequence(message_id) if preview else _next_sequence(message_id)
     event_data = _event_data(event_name, local_vars, source_obj, message_obj)

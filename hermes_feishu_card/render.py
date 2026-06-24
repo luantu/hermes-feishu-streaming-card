@@ -369,7 +369,7 @@ def _render_footer(
         duration = float(session.duration)
     except (TypeError, ValueError):
         duration = 0.0
-    model = session.model if isinstance(session.model, str) and session.model.strip() else "Unknown"
+    model = session.model if isinstance(session.model, str) and session.model.strip() else ""
     context = session.context if isinstance(session.context, dict) else {}
     used_context = _safe_int(context.get("used_tokens"))
     max_context = _safe_int(context.get("max_tokens"))
