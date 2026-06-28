@@ -173,15 +173,25 @@ async def emit_from_hermes_locals_async(
         if payload is None:
             print(f"[hermes-feishu-card] emit_from_hermes_locals_async: build_event returned None for {event_name}", file=sys.stderr)
             return False
-        await _post_json_ordered(
+        result = await _post_json_ordered_response(
             config.event_url,
             payload,
             _timeout_for_event(config, event_name),
         )
-        return True
+        return _event_was_applied(result)
     except Exception as exc:
         print(f"[hermes-feishu-card] emit_from_hermes_locals_async: exception for {event_name}: {exc}", file=sys.stderr)
         return False
+
+
+def _event_was_applied(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return True
+    if result.get("ok") is False:
+        return False
+    if result.get("applied") is False:
+        return False
+    return True
 
 
 def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
