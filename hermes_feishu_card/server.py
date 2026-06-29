@@ -511,6 +511,35 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         ), None
 
     applied = session.apply(event)
+    # Duplicate terminal event for already-completed session: send a new card
+    # instead of returning applied=False (which causes gateway to emit plain text).
+    if not applied and session.status in {"completed", "failed"} and event.event in TERMINAL_EVENTS:
+        route = _resolve_route(request, event)
+        if route is not None:
+            cards_list = _render_session_cards(request, session)
+            new_card = cards_list[0] if cards_list else _render_session_card(request, session)
+            new_message_id = await _send_card(
+                request,
+                event.chat_id,
+                new_card,
+                route.bot_id,
+                thread_id=_thread_id_for_event(event),
+            )
+            if new_message_id is not None:
+                applied = True
+                _store_card_summary(request.app, event, session, new_message_id)
+                request.app[DIAGNOSTICS_KEY]["last_terminal_event"] = {
+                    "message_id": event.message_id,
+                    "event": event.event,
+                    "sequence": event.sequence,
+                    "applied": True,
+                    "session_status": session.status,
+                    "answer_chars": len(session.answer_text),
+                    "new_card": True,
+                    "new_message_id": new_message_id,
+                }
+                metrics.events_applied += 1
+                return web.json_response({"ok": True, "applied": True, "new_card": True, "new_message_id": new_message_id}), None
     if applied and event.event.startswith("interaction."):
         _store_interaction_result(request.app, session)
     if event.event in TERMINAL_EVENTS:
