@@ -77,7 +77,36 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         ),
         required_callback_args=("text", "already_streamed"),
     )
-    return content
+    content = _apply_callback_patch(
+        content,
+        callback_name="_clarify_callback_sync",
+        begin_marker=CLARIFY_PATCH_BEGIN,
+        end_marker=CLARIFY_PATCH_END,
+        renderer=_render_clarify_hook_block,
+        required_outer_names=(
+            "source",
+            "event_message_id",
+            "_status_chat_id",
+            "session_key",
+            "_run_still_current",
+        ),
+        required_callback_args=("question", "choices"),
+    )
+    return _apply_callback_patch(
+        content,
+        callback_name="_approval_notify_sync",
+        begin_marker=APPROVAL_PATCH_BEGIN,
+        end_marker=APPROVAL_PATCH_END,
+        renderer=_render_approval_hook_block,
+        required_outer_names=(
+            "source",
+            "event_message_id",
+            "_status_chat_id",
+            "_approval_session_key",
+            "_run_still_current",
+        ),
+        required_callback_args=("approval_data",),
+    )
 
 
 def apply_cron_patch(content: str) -> str:

@@ -372,9 +372,13 @@ def test_apply_patch_inserts_streaming_callback_hooks():
     assert patcher.TOOL_PATCH_BEGIN in patched
     assert patcher.ANSWER_DELTA_PATCH_BEGIN in patched
     assert patcher.THINKING_DELTA_PATCH_BEGIN in patched
+    assert patcher.CLARIFY_PATCH_BEGIN in patched
+    assert patcher.APPROVAL_PATCH_BEGIN in patched
     assert 'event_name="tool.updated"' in patched
     assert 'event_name="answer.delta"' in patched
     assert 'event_name="thinking.delta"' in patched
+    assert '"kind": "clarify"' in patched
+    assert "resolve_gateway_approval" in patched
     assert (
         'if event_type in ("tool.started", "tool.completed") and _run_still_current():'
         in patched
@@ -429,6 +433,8 @@ def test_apply_patch_inserts_streaming_hooks_into_run_agent_inner():
     assert patched.index(patcher.TOOL_PATCH_BEGIN) > inner_index
     assert patched.index(patcher.ANSWER_DELTA_PATCH_BEGIN) > inner_index
     assert patched.index(patcher.THINKING_DELTA_PATCH_BEGIN) > inner_index
+    assert patched.index(patcher.CLARIFY_PATCH_BEGIN) > inner_index
+    assert patched.index(patcher.APPROVAL_PATCH_BEGIN) > inner_index
     assert patcher.remove_patch(patched) == content
 
 
