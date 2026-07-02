@@ -49,12 +49,15 @@ def _ensure_logger() -> None:
     global _log_handler_configured
     if _log_handler_configured:
         return
+    import sys
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     ))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    sys.stderr.write("[hermes-feishu-card] logger initialized\n")
+    sys.stderr.flush()
     _log_handler_configured = True
 
 
