@@ -6,6 +6,7 @@ import time
 import asyncio
 import logging
 import re
+import sys
 from typing import Any, Dict
 
 from aiohttp import web
@@ -55,6 +56,7 @@ def _ensure_logger() -> None:
     ))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    sys.stderr.reconfigure(line_buffering=True)
     _log_handler_configured = True
 
 
@@ -981,28 +983,35 @@ def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | No
         try:
             client = factory.get_client("default")
             if hasattr(client, "upload_image"):
-                future = asyncio.run_coroutine_threadsafe(
-                    client.upload_image(_gif_path), loop
-                )
-                img_key = future.result(timeout=15)
-                uploaded[profile_id] = img_key
-                logger.info("Loading GIF ready for profile %s", profile_id)
-                return img_key
+                async def _do_upload():
+                    try:
+                        key = await asyncio.wait_for(client.upload_image(_gif_path), timeout=15)
+                        uploaded[profile_id] = key
+                        logger.info("Loading GIF ready for profile %s", profile_id)
+                    except Exception as exc:
+                        logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
+                    finally:
+                        uploaded.pop("_uploading", None)
+                asyncio.run_coroutine_threadsafe(_do_upload(), loop)
         except Exception as exc:
-            logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
+            logger.warning("Failed to schedule GIF upload for profile %s: %s", profile_id, exc)
+            uploaded.pop("_uploading", None)
     else:
         try:
             if hasattr(feishu_client, "upload_image"):
-                future = asyncio.run_coroutine_threadsafe(
-                    feishu_client.upload_image(_gif_path), loop
-                )
-                img_key = future.result(timeout=15)
-                uploaded[profile_id] = img_key
-                logger.info("Loading GIF ready", profile_id)
-                return img_key
+                async def _do_upload():
+                    try:
+                        key = await asyncio.wait_for(feishu_client.upload_image(_gif_path), timeout=15)
+                        uploaded["default"] = key
+                        logger.info("Loading GIF ready")
+                    except Exception as exc:
+                        logger.warning("Failed to upload GIF: %s", exc)
+                    finally:
+                        uploaded.pop("_uploading", None)
+                asyncio.run_coroutine_threadsafe(_do_upload(), loop)
         except Exception as exc:
-            logger.warning("Failed to upload GIF: %s", exc)
-    uploaded.pop("_uploading", None)
+            logger.warning("Failed to schedule GIF upload: %s", exc)
+            uploaded.pop("_uploading", None)
     return None
 
 
