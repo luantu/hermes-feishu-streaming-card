@@ -49,15 +49,12 @@ def _ensure_logger() -> None:
     global _log_handler_configured
     if _log_handler_configured:
         return
-    import sys
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     ))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-    sys.stderr.write("[hermes-feishu-card] logger initialized\n")
-    sys.stderr.flush()
     _log_handler_configured = True
 
 
@@ -962,6 +959,7 @@ def _interaction_mode_for_session_key(app: web.Application, session_key: str) ->
 
 
 def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | None:
+    import sys
     uploaded = app.get(UPLOADED_GIF_IMG_KEYS_KEY, {})
     session_key = _session_key_for_session(app, session)
     profile_id = session_key.split(":", 1)[0] if ":" in session_key else "default"
@@ -972,45 +970,61 @@ def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | No
         return None
     _gif_path = os.path.join(os.path.dirname(__file__), "assets", "loading.gif")
     if not os.path.isfile(_gif_path):
+        print(f"[hermes-feishu-card] GIF file not found at {_gif_path}", file=sys.stderr, flush=True)
         return None
     uploaded["_uploading"] = True
     feishu_client = app[FEISHU_CLIENT_KEY]
+    print(f"[hermes-feishu-card] Scheduling GIF upload for profile={profile_id}, client_type={type(feishu_client).__name__}", file=sys.stderr, flush=True)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        print("[hermes-feishu-card] No running event loop for GIF upload", file=sys.stderr, flush=True)
+        uploaded.pop("_uploading", None)
         return None
     if isinstance(feishu_client, dict):
         factory = feishu_client.get(profile_id) or next(iter(feishu_client.values()))
         try:
             client = factory.get_client("default")
-            if hasattr(client, "upload_image"):
+            has_upload = hasattr(client, "upload_image")
+            print(f"[hermes-feishu-card] client={type(client).__name__}, has_upload_image={has_upload}", file=sys.stderr, flush=True)
+            if has_upload:
                 async def _do_upload():
                     try:
+                        print("[hermes-feishu-card] GIF upload starting...", file=sys.stderr, flush=True)
                         key = await asyncio.wait_for(client.upload_image(_gif_path), timeout=15)
                         uploaded[profile_id] = key
+                        print(f"[hermes-feishu-card] GIF upload success: {key}", file=sys.stderr, flush=True)
                         logger.info("Loading GIF ready for profile %s", profile_id)
                     except Exception as exc:
+                        print(f"[hermes-feishu-card] GIF upload failed: {exc}", file=sys.stderr, flush=True)
                         logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
                     finally:
                         uploaded.pop("_uploading", None)
                 asyncio.run_coroutine_threadsafe(_do_upload(), loop)
         except Exception as exc:
+            print(f"[hermes-feishu-card] Failed to schedule GIF upload: {exc}", file=sys.stderr, flush=True)
             logger.warning("Failed to schedule GIF upload for profile %s: %s", profile_id, exc)
             uploaded.pop("_uploading", None)
     else:
         try:
-            if hasattr(feishu_client, "upload_image"):
+            has_upload = hasattr(feishu_client, "upload_image")
+            print(f"[hermes-feishu-card] client={type(feishu_client).__name__}, has_upload_image={has_upload}", file=sys.stderr, flush=True)
+            if has_upload:
                 async def _do_upload():
                     try:
+                        print("[hermes-feishu-card] GIF upload starting...", file=sys.stderr, flush=True)
                         key = await asyncio.wait_for(feishu_client.upload_image(_gif_path), timeout=15)
                         uploaded["default"] = key
+                        print(f"[hermes-feishu-card] GIF upload success: {key}", file=sys.stderr, flush=True)
                         logger.info("Loading GIF ready")
                     except Exception as exc:
+                        print(f"[hermes-feishu-card] GIF upload failed: {exc}", file=sys.stderr, flush=True)
                         logger.warning("Failed to upload GIF: %s", exc)
                     finally:
                         uploaded.pop("_uploading", None)
                 asyncio.run_coroutine_threadsafe(_do_upload(), loop)
         except Exception as exc:
+            print(f"[hermes-feishu-card] Failed to schedule GIF upload: {exc}", file=sys.stderr, flush=True)
             logger.warning("Failed to schedule GIF upload: %s", exc)
             uploaded.pop("_uploading", None)
     return None
