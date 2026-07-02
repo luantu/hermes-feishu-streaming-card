@@ -6,7 +6,6 @@ import time
 import asyncio
 import logging
 import re
-from pathlib import Path
 from typing import Any, Dict
 
 from aiohttp import web
@@ -100,45 +99,6 @@ def create_app(
     app.router.add_post("/card/actions", _card_actions)
     app.router.add_post("/commands", _commands)
     app.router.add_post("/events", _events)
-
-    _gif_path = str(Path(__file__).parent / "assets" / "loading.gif")
-    if os.path.isfile(_gif_path):
-        async def _startup_gif_upload(app: web.Application) -> None:
-            try:
-                logger.info("Uploading loading GIF for card footer animation...")
-                uploaded: dict[str, str] = {}
-                feishu_client = app[FEISHU_CLIENT_KEY]
-                if isinstance(feishu_client, dict):
-                    for profile_id, factory in feishu_client.items():
-                        try:
-                            client = factory.get_client("default")
-                            if hasattr(client, "upload_image"):
-                                img_key = await asyncio.wait_for(
-                                    client.upload_image(_gif_path), timeout=15
-                                )
-                                uploaded[profile_id] = img_key
-                        except Exception as exc:
-                            logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
-                else:
-                    if hasattr(feishu_client, "upload_image"):
-                        try:
-                            img_key = await asyncio.wait_for(
-                                feishu_client.upload_image(_gif_path), timeout=15
-                            )
-                            uploaded["default"] = img_key
-                        except Exception as exc:
-                            logger.warning("Failed to upload GIF: %s", exc)
-                app[UPLOADED_GIF_IMG_KEYS_KEY] = uploaded
-                if uploaded:
-                    logger.info("Loading GIF ready for profiles: %s", list(uploaded.keys()))
-            except Exception as exc:
-                logger.warning("Loading GIF upload error: %s", exc)
-
-        async def _nonblocking_gif_upload(app: web.Application) -> None:
-            asyncio.create_task(_startup_gif_upload(app))
-
-        app.on_startup.append(_nonblocking_gif_upload)
-
     return app
 
 
