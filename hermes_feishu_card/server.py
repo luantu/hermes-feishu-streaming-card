@@ -99,6 +99,53 @@ def create_app(
     app.router.add_post("/card/actions", _card_actions)
     app.router.add_post("/commands", _commands)
     app.router.add_post("/events", _events)
+
+    _gif_path = os.path.join(os.path.dirname(__file__), "assets", "loading.gif")
+    if os.path.isfile(_gif_path):
+        async def _startup_gif_upload(app: web.Application) -> None:
+            async def _do_upload():
+                try:
+                    uploaded: dict[str, str] = {}
+                    feishu_client = app[FEISHU_CLIENT_KEY]
+                    if isinstance(feishu_client, dict):
+                        for profile_id, factory in feishu_client.items():
+                            try:
+                                client = factory.get_client("default")
+                                if hasattr(client, "upload_image"):
+                                    key = await asyncio.wait_for(
+                                        client.upload_image(_gif_path), timeout=15
+                                    )
+                                    uploaded[profile_id] = key
+                                    logger.info("Loading GIF ready for profile %s: %s", profile_id, key)
+                            except Exception as exc:
+                                logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
+                    elif hasattr(feishu_client, "get_client"):
+                        try:
+                            client = feishu_client.get_client("default")
+                            if hasattr(client, "upload_image"):
+                                key = await asyncio.wait_for(
+                                    client.upload_image(_gif_path), timeout=15
+                                )
+                                uploaded["default"] = key
+                                logger.info("Loading GIF ready: %s", key)
+                        except Exception as exc:
+                            logger.warning("Failed to upload GIF: %s", exc)
+                    elif hasattr(feishu_client, "upload_image"):
+                        try:
+                            key = await asyncio.wait_for(
+                                feishu_client.upload_image(_gif_path), timeout=15
+                            )
+                            uploaded["default"] = key
+                            logger.info("Loading GIF ready: %s", key)
+                        except Exception as exc:
+                            logger.warning("Failed to upload GIF: %s", exc)
+                    app[UPLOADED_GIF_IMG_KEYS_KEY].update(uploaded)
+                except Exception as exc:
+                    logger.warning("GIF upload error: %s", exc)
+            asyncio.create_task(_do_upload())
+
+        app.on_startup.append(_startup_gif_upload)
+
     return app
 
 
@@ -962,53 +1009,7 @@ def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | No
     uploaded = app.get(UPLOADED_GIF_IMG_KEYS_KEY, {})
     session_key = _session_key_for_session(app, session)
     profile_id = session_key.split(":", 1)[0] if ":" in session_key else "default"
-    img_key = uploaded.get(profile_id)
-    if img_key:
-        return img_key
-    if uploaded.get("_uploading"):
-        return None
-    _gif_path = os.path.join(os.path.dirname(__file__), "assets", "loading.gif")
-    if not os.path.isfile(_gif_path):
-        return None
-    uploaded["_uploading"] = True
-    feishu_client = app[FEISHU_CLIENT_KEY]
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        uploaded.pop("_uploading", None)
-        return None
-
-    def _schedule_upload(client, pid):
-        if not hasattr(client, "upload_image"):
-            uploaded.pop("_uploading", None)
-            return
-        async def _do_upload():
-            try:
-                key = await asyncio.wait_for(client.upload_image(_gif_path), timeout=15)
-                uploaded[pid] = key
-                logger.info("Loading GIF ready for profile %s: %s", pid, key)
-            except Exception as exc:
-                logger.warning("Failed to upload GIF for profile %s: %s", pid, exc)
-            finally:
-                uploaded.pop("_uploading", None)
-        asyncio.run_coroutine_threadsafe(_do_upload(), loop)
-
-    try:
-        if isinstance(feishu_client, dict):
-            factory = feishu_client.get(profile_id) or next(iter(feishu_client.values()))
-            client = factory.get_client("default")
-            _schedule_upload(client, profile_id)
-        elif hasattr(feishu_client, "get_client"):
-            client = feishu_client.get_client("default")
-            _schedule_upload(client, "default")
-        elif hasattr(feishu_client, "upload_image"):
-            _schedule_upload(feishu_client, "default")
-        else:
-            uploaded.pop("_uploading", None)
-    except Exception as exc:
-        logger.warning("Failed to schedule GIF upload: %s", exc)
-        uploaded.pop("_uploading", None)
-    return None
+    return uploaded.get(profile_id) or uploaded.get("default")
 
 
 def _session_key_for_session(app: web.Application, session: CardSession) -> str:
