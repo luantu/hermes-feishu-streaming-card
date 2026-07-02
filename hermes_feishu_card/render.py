@@ -15,6 +15,7 @@ DEFAULT_FOOTER_FIELDS = (
     "input_tokens",
     "output_tokens",
     "context",
+    "tool_summary",
 )
 MAIN_CONTENT_CHUNK_CHARS = 2400
 DEFAULT_TITLE = "Hermes Agent"
@@ -75,7 +76,9 @@ def render_card(
         else:
             primary_text = normalize_stream_text(session.visible_main_text)
     attachment_summary = _render_attachment_summary(session)
-    footer = _render_footer(session, footer_fields, loading_gif_img_key=loading_gif_img_key)
+    effective_fields = list(DEFAULT_FOOTER_FIELDS) if footer_fields is None else list(footer_fields)
+    show_tool_summary = "tool_summary" in effective_fields
+    footer = _render_footer(session, effective_fields, loading_gif_img_key=loading_gif_img_key)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
     elements = _render_main_content_elements(primary_text)
     timeline_elements: list[Dict[str, Any]] = []
@@ -98,7 +101,7 @@ def render_card(
             }
         )
     elements.append({"tag": "hr", "element_id": "main_divider"})
-    if not timeline_elements:
+    if not timeline_elements and show_tool_summary:
         elements.append(
             {
                 "tag": "markdown",
@@ -267,7 +270,12 @@ def _button_type(style: str) -> str:
 
 
 def _render_tool_summary(session: CardSession) -> str:
-    return ""
+    if not session.tools:
+        return "工具调用 0 次"
+    lines = [f"工具调用 {session.tool_count} 次"]
+    for tool in session.tools.values():
+        lines.append(f"- `{tool.name}`: {tool.status}")
+    return "\n".join(lines)
 
 
 def _render_timeline_elements(
@@ -446,6 +454,8 @@ def _render_footer(
     selected = []
     fields = DEFAULT_FOOTER_FIELDS if footer_fields is None else footer_fields
     for field in fields:
+        if field == "tool_summary":
+            continue
         value = values.get(field)
         if value:
             selected.append(value)
