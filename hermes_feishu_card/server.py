@@ -6,7 +6,6 @@ import time
 import asyncio
 import logging
 import re
-import sys
 from typing import Any, Dict
 
 from aiohttp import web
@@ -56,7 +55,6 @@ def _ensure_logger() -> None:
     ))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-    sys.stderr.reconfigure(line_buffering=True)
     _log_handler_configured = True
 
 

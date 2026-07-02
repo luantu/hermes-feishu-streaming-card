@@ -59,6 +59,7 @@ def start_sidecar(config_path: str | Path, config: dict[str, dict[str, Any]]) ->
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
     finally:
         log_handle.close()
