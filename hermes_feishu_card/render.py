@@ -72,7 +72,7 @@ def render_card(
     primary_text = normalize_stream_text(session.answer_text)
     if not primary_text:
         if session.status == "thinking":
-            primary_text = _spinner_frame()
+            primary_text = "生成中..."
         else:
             primary_text = normalize_stream_text(session.visible_main_text)
     attachment_summary = _render_attachment_summary(session)

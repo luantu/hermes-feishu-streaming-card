@@ -926,7 +926,6 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
         _session_key_for_session(request.app, session),
     )
     loading_gif_img_key = _resolve_gif_img_key(request.app, session)
-    logger.info("render_session_card: gif_key=%s, session_status=%s", loading_gif_img_key, session.status)
     return render_card(
         session,
         footer_fields=footer_fields,
