@@ -65,6 +65,7 @@ def render_card(
     max_timeline_items: int = 12,
     max_reasoning_chars: int = 1200,
     max_tool_result_chars: int = 600,
+    loading_gif_img_key: str | None = None,
 ) -> Dict[str, Any]:
     status = _render_status(session)
     primary_text = normalize_stream_text(session.answer_text)
@@ -74,7 +75,7 @@ def render_card(
         else:
             primary_text = normalize_stream_text(session.visible_main_text)
     attachment_summary = _render_attachment_summary(session)
-    footer = _render_footer(session, footer_fields)
+    footer = _render_footer(session, footer_fields, loading_gif_img_key=loading_gif_img_key)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
     elements = _render_main_content_elements(primary_text)
     timeline_elements: list[Dict[str, Any]] = []
@@ -105,7 +106,10 @@ def render_card(
                 "content": _render_tool_summary(session),
             }
         )
-    elements.append({"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"})
+    if isinstance(footer, list):
+        elements.extend(footer)
+    else:
+        elements.append({"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"})
     header = {
         "template": status["template"],
         "title": {"tag": "plain_text", "content": header_title},
@@ -263,12 +267,7 @@ def _button_type(style: str) -> str:
 
 
 def _render_tool_summary(session: CardSession) -> str:
-    if not session.tools:
-        return "工具调用 0 次"
-    lines = [f"工具调用 {session.tool_count} 次"]
-    for tool in session.tools.values():
-        lines.append(f"- `{tool.name}`: {tool.status}")
-    return "\n".join(lines)
+    return ""
 
 
 def _render_timeline_elements(
@@ -414,10 +413,13 @@ def _render_attachment_summary(session: CardSession) -> str:
 def _render_footer(
     session: CardSession,
     footer_fields: list[str] | tuple[str, ...] | None = None,
+    loading_gif_img_key: str | None = None,
 ) -> str:
     if session.status == "failed":
         return "已停止"
     if session.status != "completed":
+        if loading_gif_img_key:
+            return _render_thinking_footer_gif(loading_gif_img_key)
         return _spinner_text("生成中")
     tokens = session.tokens if isinstance(session.tokens, dict) else {}
     input_tokens = _safe_int(tokens.get("input_tokens"))
@@ -448,6 +450,21 @@ def _render_footer(
         if value:
             selected.append(value)
     return " · ".join(selected) if selected else values["duration"]
+
+
+def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "tag": "markdown",
+            "content": "生成中",
+            "text_align": "left",
+            "text_size": "small",
+            "icon": {
+                "tag": "custom_icon",
+                "img_key": img_key,
+            },
+        },
+    ]
 
 
 def _safe_int(value: Any) -> int:

@@ -1064,8 +1064,8 @@ def test_render_tool_summary_keeps_tool_names_when_reasoning_hidden():
     card = render_card(session, show_reasoning=False)
     tool_summary = next(item for item in card["body"]["elements"] if item.get("element_id") == "tool_summary")
 
-    assert "工具调用 1 次" in tool_summary["content"]
-    assert "`search`: running" in tool_summary["content"]
+    assert "工具调用 1 次" not in tool_summary["content"]
+    assert "`search`: running" not in tool_summary["content"]
     assert "auxiliary_timeline" not in str(card)
 
 

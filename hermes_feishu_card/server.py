@@ -6,6 +6,7 @@ import time
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict
 
 from aiohttp import web
@@ -34,6 +35,8 @@ FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
 CARD_TITLE_KEY = web.AppKey("card_title", str)
 BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
 FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
+UPLOADED_GIF_IMG_KEYS_KEY = web.AppKey("uploaded_gif_img_keys", dict)
+RESEND_AFTER_SECONDS_KEY = web.AppKey("resend_after_seconds", float)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
@@ -78,6 +81,7 @@ def create_app(
     app[METRICS_KEY] = SidecarMetrics()
     app[MESSAGE_LOCKS_KEY] = {}
     app[FLUSH_CONTROLLERS_KEY] = {}
+    app[UPLOADED_GIF_IMG_KEYS_KEY] = {}
     app[DIAGNOSTICS_KEY] = {
         "last_update_error": "",
         "last_route_error": "",
@@ -96,6 +100,35 @@ def create_app(
     app.router.add_post("/card/actions", _card_actions)
     app.router.add_post("/commands", _commands)
     app.router.add_post("/events", _events)
+
+    _gif_path = str(Path(__file__).parent / "assets" / "loading.gif")
+    if os.path.isfile(_gif_path):
+        async def _startup_gif_upload(app: web.Application) -> None:
+            logger.info("Uploading loading GIF for card footer animation...")
+            uploaded: dict[str, str] = {}
+            feishu_client = app[FEISHU_CLIENT_KEY]
+            if isinstance(feishu_client, dict):
+                for profile_id, factory in feishu_client.items():
+                    try:
+                        client = factory.get_client("default")
+                        if hasattr(client, "upload_image"):
+                            img_key = await client.upload_image(_gif_path)
+                            uploaded[profile_id] = img_key
+                    except Exception as exc:
+                        logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
+            else:
+                if hasattr(feishu_client, "upload_image"):
+                    try:
+                        img_key = await feishu_client.upload_image(_gif_path)
+                        uploaded["default"] = img_key
+                    except Exception as exc:
+                        logger.warning("Failed to upload GIF: %s", exc)
+            app[UPLOADED_GIF_IMG_KEYS_KEY] = uploaded
+            if uploaded:
+                logger.info("Loading GIF ready for profiles: %s", list(uploaded.keys()))
+
+        app.on_startup.append(_startup_gif_upload)
+
     return app
 
 
@@ -922,11 +955,13 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
         request.app,
         _session_key_for_session(request.app, session),
     )
+    loading_gif_img_key = _resolve_gif_img_key(request.app, session)
     return render_card(
         session,
         footer_fields=footer_fields,
         title=title,
         interaction_mode=interaction_mode,
+        loading_gif_img_key=loading_gif_img_key,
         show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
         timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), False),
         max_timeline_items=_safe_positive_int(
@@ -951,6 +986,15 @@ def _interaction_mode_for_session_key(app: web.Application, session_key: str) ->
     if mode in {"text", "markdown", "reply"}:
         return "text"
     return "callback"
+
+
+def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | None:
+    uploaded = app.get(UPLOADED_GIF_IMG_KEYS_KEY, {})
+    if not uploaded:
+        return None
+    session_key = _session_key_for_session(app, session)
+    profile_id = session_key.split(":", 1)[0] if ":" in session_key else "default"
+    return uploaded.get(profile_id)
 
 
 def _session_key_for_session(app: web.Application, session: CardSession) -> str:
