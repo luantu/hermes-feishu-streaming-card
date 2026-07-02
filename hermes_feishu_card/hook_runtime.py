@@ -467,7 +467,7 @@ async def emit_from_hermes_locals_async(
             payload,
             _timeout_for_event(config, event_name),
         )
-        return _event_was_applied(result)
+        return _event_was_delivered(result, event_name)
     except Exception as exc:
         print(f"[hermes-feishu-card] emit_from_hermes_locals_async: exception for {event_name}: {exc}", file=sys.stderr)
         return False
@@ -479,6 +479,25 @@ def _event_was_applied(result: Any) -> bool:
     if result.get("ok") is False:
         return False
     if result.get("applied") is False:
+        return False
+    return True
+
+
+def _event_was_delivered(result: Any, event_name: str) -> bool:
+    """Determine if a card was delivered for suppression purposes.
+
+    For terminal events (message.completed/failed), the sidecar may return
+    applied=False if the session is already terminal (e.g. queued follow-up).
+    In that case the card was already delivered on the first terminal event,
+    so we should still suppress the native response.
+    """
+    if not isinstance(result, dict):
+        return True
+    if result.get("ok") is False:
+        return False
+    if result.get("applied") is False:
+        if event_name in {"message.completed", "message.failed"}:
+            return True
         return False
     return True
 

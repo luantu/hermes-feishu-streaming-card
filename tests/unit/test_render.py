@@ -20,7 +20,7 @@ def test_render_thinking_card_keeps_runtime_status_only_in_footer():
     assert "subtitle" not in card["header"]
     content = str(card)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
-    assert main["content"] in _SPINNER_FRAMES
+    assert main["content"] == "生成中..."
     assert "正在思考" not in content
     assert "思考中" not in str(card["header"])
     assert "生成中" in content
@@ -558,7 +558,7 @@ def test_render_never_leaks_thinking_text_to_main_content_without_timeline_reaso
     card = render_card(session)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
 
-    assert main["content"] in _SPINNER_FRAMES
+    assert main["content"] == "生成中..."
     assert "正在思考" not in str(card)
     assert "这是 thinking.delta 的内容" not in str(card)
 
@@ -1023,7 +1023,7 @@ def test_render_thinking_without_answer_uses_placeholder_in_main_content():
     card = render_card(session)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
 
-    assert main["content"] in _SPINNER_FRAMES
+    assert main["content"] == "生成中..."
     assert "正在思考" not in str(card)
     assert "这是推理文本，只该在 timeline。" not in main["content"]
     assert "这是推理文本，只该在 timeline。" not in str(card)

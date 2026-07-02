@@ -2135,7 +2135,7 @@ async def test_async_terminal_emit_uses_sidecar_applied_response(monkeypatch):
     assert await hook_runtime.emit_from_hermes_locals_async(
         local_vars, event_name="message.completed"
     )
-    assert not await hook_runtime.emit_from_hermes_locals_async(
+    assert await hook_runtime.emit_from_hermes_locals_async(
         local_vars, event_name="message.completed"
     )
     assert not await hook_runtime.emit_from_hermes_locals_async(
