@@ -310,24 +310,10 @@ def _session_key(event: SidecarEvent) -> str:
 
 
 def _thread_id_for_event(event: SidecarEvent) -> str | None:
-    data = event.data if isinstance(event.data, dict) else {}
-    raw_thread = (
-        event.thread_id
-        or data.get("thread_id")
-        or (event.conversation_id if event.conversation_id != event.chat_id else "")
-    )
-    if isinstance(raw_thread, str) and raw_thread.startswith(("omt_", "om_")):
-        return raw_thread
     return None
 
 
 def _reply_to_message_id_for_event(event: SidecarEvent) -> str | None:
-    data = event.data if isinstance(event.data, dict) else {}
-    reply_to = data.get("reply_to_message_id")
-    if isinstance(reply_to, str) and reply_to.startswith("om_"):
-        return reply_to
-    if _thread_id_for_event(event) and event.message_id.startswith("om_"):
-        return event.message_id
     return None
 
 
