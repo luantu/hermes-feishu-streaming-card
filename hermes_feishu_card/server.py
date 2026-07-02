@@ -960,11 +960,50 @@ def _interaction_mode_for_session_key(app: web.Application, session_key: str) ->
 
 def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | None:
     uploaded = app.get(UPLOADED_GIF_IMG_KEYS_KEY, {})
-    if not uploaded:
-        return None
     session_key = _session_key_for_session(app, session)
     profile_id = session_key.split(":", 1)[0] if ":" in session_key else "default"
-    return uploaded.get(profile_id)
+    img_key = uploaded.get(profile_id)
+    if img_key:
+        return img_key
+    if uploaded.get("_uploading"):
+        return None
+    _gif_path = os.path.join(os.path.dirname(__file__), "assets", "loading.gif")
+    if not os.path.isfile(_gif_path):
+        return None
+    uploaded["_uploading"] = True
+    feishu_client = app[FEISHU_CLIENT_KEY]
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    if isinstance(feishu_client, dict):
+        factory = feishu_client.get(profile_id) or next(iter(feishu_client.values()))
+        try:
+            client = factory.get_client("default")
+            if hasattr(client, "upload_image"):
+                future = asyncio.run_coroutine_threadsafe(
+                    client.upload_image(_gif_path), loop
+                )
+                img_key = future.result(timeout=15)
+                uploaded[profile_id] = img_key
+                logger.info("Loading GIF ready for profile %s", profile_id)
+                return img_key
+        except Exception as exc:
+            logger.warning("Failed to upload GIF for profile %s: %s", profile_id, exc)
+    else:
+        try:
+            if hasattr(feishu_client, "upload_image"):
+                future = asyncio.run_coroutine_threadsafe(
+                    feishu_client.upload_image(_gif_path), loop
+                )
+                img_key = future.result(timeout=15)
+                uploaded[profile_id] = img_key
+                logger.info("Loading GIF ready", profile_id)
+                return img_key
+        except Exception as exc:
+            logger.warning("Failed to upload GIF: %s", exc)
+    uploaded.pop("_uploading", None)
+    return None
 
 
 def _session_key_for_session(app: web.Application, session: CardSession) -> str:
