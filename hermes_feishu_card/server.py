@@ -717,6 +717,21 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         ), None
 
     applied = session.apply(event)
+    if not applied and session.status in {"completed", "failed"} and event.event in TERMINAL_EVENTS:
+        route = _resolve_route(request, event)
+        if route is not None:
+            new_card = _render_session_card(request, session)
+            new_message_id = await _send_card(
+                request,
+                event.chat_id,
+                new_card,
+                route.bot_id,
+            )
+            if new_message_id is not None:
+                applied = True
+                _store_card_summary(request.app, event, session, new_message_id)
+                metrics.events_applied += 1
+                return web.json_response({"ok": True, "applied": True, "new_card": True}), None
     if applied and event.event.startswith("interaction."):
         _store_interaction_result(request.app, session)
     if event.event in TERMINAL_EVENTS:
