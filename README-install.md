@@ -17,6 +17,36 @@ From V3.6.6, if `--hermes-dir` points at the wrong directory and
 `gateway/run.py` is missing, `doctor --explain` and `install` read `hermes -V`
 and suggest the `Project:` path reported by the Hermes CLI.
 
+From V3.8.0, card rendering separates the primary answer from the auxiliary
+reasoning/tool timeline, removes duplicate footer tool summaries, and runs the
+Hermes runtime import check from the Hermes project root. Re-run `setup` or
+`install` after upgrading so the refreshed hook and runtime package match.
+
+From V3.8.1, high-frequency `thinking.delta` / `answer.delta` events are
+coalesced inside the Hermes Gateway process before reaching the sidecar. The
+same release adds read-only `/hfc help`, `/hfc status`, `/hfc doctor`, and
+`/hfc monitor` cards for Feishu-side diagnostics.
+
+From V3.8.2, pre-tool answer blocks stay in the primary card body until the
+next pre-tool answer or terminal event arrives, then move into the auxiliary
+timeline. Completed cards strip already archived intermediate prefaces, and the
+timeline renders reasoning and tool details with separate compact hierarchy.
+
+From V3.8.3, independent slash-command prompts such as `/new`, `/reset`,
+`/undo`, and `/model` can render as standalone Feishu command cards. `/update`
+remains Hermes' background upgrade command and does not use an interactive
+command card.
+
+From V3.8.4, those standalone command cards also work in Feishu/Lark WebSocket
+long-connection deployments by patching the Feishu adapter's native interactive
+card action path; local/private sidecars no longer have to fall back to gray
+native text for `/new` or `/model`, and no public HTTP callback is required for
+these native slash/model command cards.
+
+From V3.8.5, always-allowed or no-confirm slash-command results also stay in
+Feishu/Lark interactive cards. Re-run `install` after upgrading so the Hermes
+Gateway hook passes the current event into the command-card adapter patch.
+
 ## macOS / Linux
 
 ```bash
@@ -33,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.6.6` or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.6`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -42,6 +72,25 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `FEISHU_APP_SECRET` | unset | Feishu/Lark app secret. |
 | `HFC_SKIP_START` | `0` | Set to `1` to install hook without starting sidecar. |
 | `HFC_NO_PROMPT` | `0` | Set to `1` for non-interactive installs. |
+
+## Docker Containers
+
+Use `install-docker.sh` inside an existing Hermes container. It defaults to
+`/opt/hermes` for Hermes and `/opt/data/config.yaml` for sidecar config. The
+script selects Hermes venv Python and does not fall back to system Python unless
+`HFC_PYTHON` is set.
+
+```
+export FEISHU_APP_ID=cli_xxx
+export FEISHU_APP_SECRET=xxx
+export HFC_VERSION=v3.8.6
+bash install-docker.sh
+```
+
+V3.8.6 also supports Docker/source-stripped Hermes roots that contain
+`gateway/run.py` but no top-level `VERSION` file or `.git` metadata. In that
+case `doctor --explain` reports `version_source: gateway anchors` and uses the
+verified Gateway code anchors to choose the hook strategy.
 
 ## One-Line Install
 

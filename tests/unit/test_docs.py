@@ -25,9 +25,12 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "img.shields.io/badge/Feishu%20%2F%20Lark-Streaming%20Cards" in readme
     assert "img.shields.io/badge/Runtime-Sidecar--only" in readme
     assert "docs/assets/readme-cover.png" in readme
+    assert "docs/assets/feishu-card-showcase-v385.png" in readme
     assert "项目亮点" in readme
     assert "解决的真实痛点" in readme
     assert "Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片" in readme
+    assert "/hfc status" in readme
+    assert "HERMES_FEISHU_CARD_DELTA_COALESCE_MS" in readme
     assert "sidecar-only" in readme.lower()
     assert "setup --hermes-dir" in readme
     assert "整合安装器" in readme
@@ -37,8 +40,8 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "thinking.delta" in readme
     assert "v2026.4.23" in readme
     assert "Git tag `v2026.4.23+`" in readme
-    assert "docs/assets/feishu-weather-card.png" in readme
     assert (ROOT / "docs/assets/readme-cover.png").exists()
+    assert (ROOT / "docs/assets/feishu-card-showcase-v385.png").exists()
     assert (ROOT / "docs/assets/feishu-weather-card.png").exists()
     assert "V3.2" in readme
     assert "多 bot" in readme
@@ -124,6 +127,19 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.sh | bash" in readme
     assert "irm https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.ps1 | iex" in readme
     assert "README-install.md" in readme
+    assert "install-docker.sh" in readme
+    assert "docker-compose.example.yml" in readme
+    assert "Docker" in install_doc
+    assert "v3.8.6" in install_doc
+    assert "v3.8.5" not in install_doc
+    assert "version_source: gateway anchors" in install_doc
+    assert "docs/release-notes-v3.8.6.md" in readme
+    assert "docs/release-notes-v3.8.5.md" in readme
+    assert "docs/release-notes-v3.8.4.md" in readme
+    assert "docs/release-notes-v3.8.3.md" in readme
+    assert "docs/release-notes-v3.8.2.md" in readme
+    assert "docs/release-notes-v3.8.1.md" in readme
+    assert "docs/release-notes-v3.8.0.md" in readme
     assert "docs/release-notes-v3.6.6.md" in readme
     assert "docs/release-notes-v3.6.5.md" in readme
     assert "docs/release-notes-v3.6.4.md" in readme
@@ -142,6 +158,7 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "bash install.sh" in install_doc
     assert "install.ps1" in install_doc
     assert "HFC_VERSION" in install_doc
+    assert "v3.8.6" in install_doc
     assert "v3.6.6" in install_doc
 
     assert (ROOT / "install.sh").exists()
@@ -156,12 +173,98 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert (ROOT / "docs/release-notes-v3.6.0.md").exists()
     assert (ROOT / "docs/release-notes-v3.5.2.md").exists()
     assert (ROOT / "docs/roadmap-v3.6.0.md").exists()
+    assert (ROOT / "install-docker.sh").exists()
+    assert (ROOT / "docker-compose.example.yml").exists()
+    assert (ROOT / "docs/release-notes-v3.8.6.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.5.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.4.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.3.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.2.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.1.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.0.md").exists()
+    assert (ROOT / "docs/release-notes-v3.7.0.md").exists()
     assert (ROOT / ".github/workflows/release-assets.yml").exists()
     assert "gh release upload" in workflow
     assert 'NAME="hermes-feishu-card-${TAG}"' in workflow
     assert "${NAME}-macos.tar.gz" in workflow
     assert "${NAME}-linux.tar.gz" in workflow
     assert "${NAME}-windows.zip" in workflow
+
+
+def test_v386_release_notes_are_linked():
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    v386_release_notes = Path("docs/release-notes-v3.8.6.md")
+    v385_release_notes = Path("docs/release-notes-v3.8.5.md")
+    v384_release_notes = Path("docs/release-notes-v3.8.4.md")
+    v383_release_notes = Path("docs/release-notes-v3.8.3.md")
+    release_notes = Path("docs/release-notes-v3.8.2.md")
+    compose = Path("docker-compose.example.yml").read_text(encoding="utf-8")
+
+    assert v386_release_notes.exists()
+    assert "## V3.8.6 — 2026-07-02" in changelog
+    assert "V3.8.6" in changelog
+    assert "[docs/release-notes-v3.8.6.md](docs/release-notes-v3.8.6.md)" in changelog
+    v386_text = v386_release_notes.read_text(encoding="utf-8")
+    assert "issue #70" in v386_text
+    assert "Hermes v0.18.0" in v386_text
+    assert "v2026.7.1" in v386_text
+    assert "version_source: gateway anchors" in v386_text
+    assert "hermes-feishu-card-v3.8.6-macos.tar.gz" in v386_text
+    assert v385_release_notes.exists()
+    assert "## V3.8.5 — 2026-07-02" in changelog
+    assert "V3.8.5" in changelog
+    assert "[docs/release-notes-v3.8.5.md](docs/release-notes-v3.8.5.md)" in changelog
+    v385_text = v385_release_notes.read_text(encoding="utf-8")
+    assert "始终允许" in v385_text
+    assert "event=event" in v385_text
+    assert "hermes-feishu-card-v3.8.5-macos.tar.gz" in v385_text
+    assert v384_release_notes.exists()
+    assert "## V3.8.4 — 2026-07-01" in changelog
+    assert "V3.8.4" in changelog
+    assert "[docs/release-notes-v3.8.4.md](docs/release-notes-v3.8.4.md)" in changelog
+    v384_text = v384_release_notes.read_text(encoding="utf-8")
+    assert "Feishu WebSocket 原生命令卡片" in v384_text
+    assert "tools.slash_confirm.resolve" in v384_text
+    assert "hermes-feishu-card-v3.8.4-macos.tar.gz" in v384_text
+    assert v383_release_notes.exists()
+    assert "## V3.8.3 — 2026-07-01" in changelog
+    assert "V3.8.3" in changelog
+    assert "[docs/release-notes-v3.8.3.md](docs/release-notes-v3.8.3.md)" in changelog
+    v383_text = v383_release_notes.read_text(encoding="utf-8")
+    assert "独立 slash 确认卡片" in v383_text
+    assert "`/update` 不弹交互卡片" in v383_text
+    assert "hermes-feishu-card-v3.8.3-macos.tar.gz" in v383_text
+    assert release_notes.exists()
+    assert "## V3.8.2 — 2026-07-01" in changelog
+    assert "V3.8.2" in changelog
+    assert "[docs/release-notes-v3.8.2.md](docs/release-notes-v3.8.2.md)" in changelog
+    assert "## V3.8.1 — 2026-07-01" in changelog
+    assert "V3.8.1" in changelog
+    assert "[docs/release-notes-v3.8.1.md](docs/release-notes-v3.8.1.md)" in changelog
+    assert "## V3.8.0 — 2026-07-01" in changelog
+    assert "V3.8.0" in changelog
+    assert "[docs/release-notes-v3.8.0.md](docs/release-notes-v3.8.0.md)" in changelog
+    release_text = release_notes.read_text(encoding="utf-8")
+    assert "pre-tool answer" in release_text
+    assert "thinking.delta" in release_text
+    assert "feishu-v382-readme-showcase.png" in release_text
+    assert "hermes-feishu-card-v3.8.2-macos.tar.gz" in release_text
+    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.6}"' in compose
+
+
+def test_todo_points_to_v38_public_plan_docs():
+    todo = read_doc("TODO.md")
+
+    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6" in todo
+    assert "### V3.8.2：卡片 timeline 阅读体验补丁（已完成）" in todo
+    assert "### V3.8.3：独立命令卡片（已完成）" in todo
+    assert "### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）" in todo
+    assert "### V3.8.5：命令结果反馈卡片补丁（已完成）" in todo
+    assert "### V3.8.6：Docker / Hermes v0.18.0 兼容补丁（已完成）" in todo
+    assert "### V3.8.x 后续维护与扩展面（待办）" in todo
+    assert "[docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md)" in todo
+    assert "[docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)" in todo
+    assert "docs/roadmap-v3.6.0.md" not in todo
 
 
 def test_english_readme_and_docs_are_linked():
@@ -180,10 +283,13 @@ def test_english_readme_and_docs_are_linked():
     assert "[中文](README.md)" in english_readme
     assert english_readme.startswith("# Hermes Feishu Streaming Card Plugin\n")
     assert "Hermes Feishu Streaming Card turns Hermes Agent Gateway replies" in english_readme
+    assert "/hfc status" in english_readme
+    assert "HERMES_FEISHU_CARD_DELTA_COALESCE_MS" in english_readme
     assert "Project Highlights" in english_readme
     assert "Pain Points Solved" in english_readme
     assert "img.shields.io/github/stars/baileyh8/hermes-feishu-streaming-card" in english_readme
     assert "docs/assets/readme-cover.png" in english_readme
+    assert "docs/assets/feishu-card-showcase-v385.png" in english_readme
     assert "setup --hermes-dir" in english_readme
     assert "Hermes Gateway Streaming And Thinking" in english_readme
     assert "streaming.enabled" in english_readme
@@ -269,7 +375,7 @@ def test_docs_describe_sidecar_process_management_scope():
     assert "stop --config" in docs
     assert "/health" in docs
     assert "PID/token" in docs
-    assert "process_pid/process_token" in docs
+    assert "process_pid/process_token_hash" in docs
     assert "POSIX" in docs
     assert "no-op client" in docs
     assert "- [x] 将 sidecar 进程管理从占位 `status` 扩展为可启动、可停止、可探活。" in docs
@@ -519,6 +625,17 @@ def test_changelog_documents_v366_release_notes():
     assert "hermes-feishu-card-v3.6.6-macos.tar.gz" in release_notes
 
 
+def test_changelog_documents_v370_release_notes():
+    changelog = read_doc("CHANGELOG.md")
+    release_notes = read_doc("docs/release-notes-v3.7.0.md")
+
+    assert "## V3.7.0 — 2026-06-29" in changelog
+    assert "issue #70" in changelog
+    assert "install-docker.sh" in release_notes
+    assert "docker-compose.example.yml" in release_notes
+    assert "hermes-feishu-card-v3.7.0-linux.tar.gz" in release_notes
+
+
 def test_config_example_documents_profile_and_bot_card_titles():
     config = read_doc("config.yaml.example")
 
@@ -605,17 +722,21 @@ def test_docs_describe_e2e_visual_preview_materials():
     assert "e2e-card-preview.svg" in docs
     assert "e2e-card-preview.json" in docs
     assert "tools/generate_e2e_preview.py" in docs
-    assert "思考中" in svg
+    assert "思考流更新" in svg
     assert "已完成" in svg
-    assert "工具调用 2 次" in svg
+    assert "读取资料" in svg
+    assert "生成答案" in svg
     assert "</think>" not in svg
     assert '"thinking"' in preview_json
     assert '"completed"' in preview_json
+    assert "思考与工具" in preview_json
+    assert "2 次工具调用" in preview_json
     assert "端到端截图" in docs and "e2e-card-preview" in docs
 
 
 def test_docs_describe_release_readiness_boundaries():
     release_readiness = read_doc("docs/release-readiness.md")
+    english_readiness = read_doc("docs/release-readiness.en.md")
     docs = "\n".join(
         [
             read_doc("README.md"),
@@ -625,9 +746,12 @@ def test_docs_describe_release_readiness_boundaries():
     )
 
     assert "docs/release-readiness.md" in docs
-    assert "3.6.6" in release_readiness
+    assert "3.8.2" in release_readiness
+    assert "issue #74" in release_readiness
+    assert "/hfc" in release_readiness
     assert "Release assets workflow" in release_readiness
     assert "install.ps1" in release_readiness
+    assert "install-docker.sh" in release_readiness
     assert "3.1.0" not in release_readiness
     assert "interaction.requested" in release_readiness
     assert "interaction_mode: text" in release_readiness
@@ -640,8 +764,23 @@ def test_docs_describe_release_readiness_boundaries():
     assert "/health.routing.profiles" in release_readiness
     assert "0.15.x" in release_readiness
     assert "0.17.x" in release_readiness
+    assert "0.18.x" in release_readiness
+    assert "v2026.7.1+" in release_readiness
+    assert "version_source: gateway anchors" in release_readiness
     assert "python3 -m pytest -q" in docs
     assert "真实 Hermes Gateway" in docs
     assert "真实飞书应用" in docs
     assert "App Secret" in docs
     assert "GitHub Actions" in docs
+
+    assert "[English](release-readiness.en.md)" in english_readiness
+    assert "3.8.2" in english_readiness
+    assert "issue #74" in english_readiness
+    assert "/hfc" in english_readiness
+    assert "install-docker.sh" in english_readiness
+    assert "docker-compose.example.yml" in english_readiness
+    assert "/opt/hermes" in english_readiness
+    assert "/opt/data/config.yaml" in english_readiness
+    assert "0.18.x" in english_readiness
+    assert "v2026.7.1+" in english_readiness
+    assert "version_source: gateway anchors" in english_readiness

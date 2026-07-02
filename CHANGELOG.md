@@ -5,6 +5,141 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V3.8.6 — 2026-07-02
+
+See also: [docs/release-notes-v3.8.6.md](docs/release-notes-v3.8.6.md)
+
+### Fixed
+- Fixed issue #70 Docker/source-stripped installs where Hermes has `gateway/run.py` but no top-level `VERSION` file and no local `.git` tag metadata. `doctor --explain`, `install`, and `setup` now fall back to verified Gateway code anchors instead of failing with `Hermes VERSION missing, unknown, or invalid`.
+- When the fallback is used, diagnostics now report `version_source: gateway anchors`, `version: unknown`, and the inferred `hook_strategy` (`gateway_run_013_plus` for modern Hermes anchors, `legacy_gateway_run` for legacy anchors).
+- Added Hermes v0.18.0 / `v2026.7.1` compatibility coverage; it stays on `gateway_run_013_plus`.
+
+### Changed
+- Docker examples now default to `HFC_VERSION=v3.8.6`.
+- README showcase image now uses the combined horizontal real-UI card collage for command cards, command result feedback, and the answer/tool timeline.
+
+### Tests
+- Added regression coverage for missing-`VERSION` Hermes roots with legacy and modern Gateway anchors, explicit invalid VERSION rejection, and parent-git-tag isolation while still accepting verified anchors.
+
+## V3.8.5 — 2026-07-02
+
+See also: [docs/release-notes-v3.8.5.md](docs/release-notes-v3.8.5.md)
+
+### Fixed
+- Fixed the always-allowed slash-command path: when Hermes executes `/new`, `/reset`, `/clear`, `/undo`, `/stop`, or direct `/model <model>` without asking for confirmation, Feishu/Lark now receives the command result as an interactive card instead of gray native text.
+- Removed the extra direct `message.update` attempt for interactive command-card callbacks. Feishu callback responses now own the in-place card update, avoiding invalid `msg_type=interactive` update warnings.
+- Updated the Gateway hook patch so Feishu command-card installation receives the current `event`, allowing command result cardification without touching unrelated normal replies.
+
+### Changed
+- `/update` remains intentionally outside command-result cardification, preserving Hermes' background upgrade behavior.
+- Patcher upgrade handling accepts the V3.8.4 command-card hook block and rewrites it to the V3.8.5 `event=event` form during install.
+
+### Tests
+- Added regression coverage for always-allowed `/new` command result cards, one-shot command-result context consumption, `/update` plain-text preservation, callback-only command-card updates, and legacy command-card hook upgrade compatibility.
+
+## V3.8.4 — 2026-07-01
+
+See also: [docs/release-notes-v3.8.4.md](docs/release-notes-v3.8.4.md)
+
+### Fixed
+- Fixed the Feishu/Lark WebSocket long-connection path for standalone slash command cards. Local/private sidecar deployments no longer have to fall back to gray Hermes native text for `/new`, `/reset`, `/undo`, and similar slash confirmations.
+- Added a native Feishu adapter `send_slash_confirm(...)` monkeypatch that renders interactive cards and resolves clicks through Hermes `tools.slash_confirm.resolve(...)`.
+- Added a native Feishu adapter `/model` picker path for WebSocket deployments. Model choices render as Feishu interactive card buttons and call Hermes' original `on_model_selected` callback.
+- Skipped the sidecar `interaction.requested` pre-card whenever Feishu WebSocket-native command cards are available, preventing `/new` from showing both a sidecar choice card and a native button card.
+- Repaired stale in-process install markers so an upgraded Gateway class cannot silently keep missing `send_slash_confirm(...)` and fall back to text.
+
+### Changed
+- Command-card action handling now wraps Feishu `_on_card_action_trigger` and only consumes plugin-owned `hfc_action` values; existing Hermes approval/update card actions continue to use the original adapter path.
+- Release and installer documentation now explicitly describe Feishu/Lark WebSocket long-connection behavior instead of implying that slash command cards require a public HTTP callback.
+- Failed native slash-card sends now emit a local warning instead of silently degrading, making real-environment diagnosis clearer.
+
+### Tests
+- Added regression coverage for native Feishu slash confirmation card sending, sidecar-skip behavior, stale install-marker repair, slash card action resolution, native model picker card sending, and model picker action resolution.
+
+## V3.8.3 — 2026-07-01
+
+See also: [docs/release-notes-v3.8.3.md](docs/release-notes-v3.8.3.md)
+
+### Added
+- Added standalone Feishu command-card handling for Hermes slash confirmations such as `/new`, `/reset`, `/undo`, and high-cost `/model <model>` confirmation prompts.
+- Added a Feishu-only `send_model_picker(...)` adapter method when Hermes asks the Feishu adapter to render `/model` choices and the native adapter has no picker implementation.
+- Added async command-card polling and terminal command-card completion updates without blocking the Hermes Gateway event loop.
+
+### Changed
+- Slash-command cards are intentionally separate from active Agent streaming cards. Approval, clarify, and Agent-turn options remain attached to the active card; independent slash commands render their own command surfaces.
+- `/update` remains Hermes's background upgrade command and does not render an interactive command card.
+
+### Fixed
+- If command-card posting, polling, or completion updates fail, Hermes falls back to its native text path instead of swallowing command results.
+- Local/private text fallback no longer creates a residual command card before handing slash confirmation back to Hermes native text prompts.
+- Gateway patching now installs Feishu command-card adapter methods before slash command dispatch while preserving idempotent patch/remove behavior.
+
+### Tests
+- Added unit/integration coverage for async slash-confirm card requests, model picker callbacks, command-card completion events, text-mode native fallback non-application, patch insertion/removal, and fallback-preserving slash confirm flow.
+
+## V3.8.2 — 2026-07-01
+
+See also: [docs/release-notes-v3.8.2.md](docs/release-notes-v3.8.2.md)
+
+### Fixed
+- Pre-tool `answer.delta` blocks now stay in the primary card body while tools run, and are archived into the auxiliary timeline only when the next answer block or terminal answer arrives.
+- Terminal cards strip archived intermediate-answer prefixes from completed answers, keeping the final response clean in the primary content area.
+- Raw `thinking.delta` remains internal stream state instead of leaking into the main content area or auxiliary timeline.
+
+### Changed
+- Auxiliary timeline rendering now separates reasoning and tool entries into compact elements: reasoning uses `small`, tools use `x-small` quoted markdown, with lighter visual hierarchy for long command details.
+- README screenshots now use the latest V3.8.2 collapsed and expanded real Feishu card examples.
+- E2E preview generation now reads all timeline panel elements after per-entry rendering.
+
+### Tests
+- Added regression coverage for delayed pre-tool answer folding, terminal prefix stripping, compact timeline hierarchy, and updated server/render/preview expectations.
+
+## V3.8.1 — 2026-07-01
+
+See also: [docs/release-notes-v3.8.1.md](docs/release-notes-v3.8.1.md)
+
+### Added
+- Added read-only Feishu-side diagnostics commands: `/hfc help`, `/hfc status`, `/hfc doctor`, and `/hfc monitor`.
+- Added Gateway runtime knobs for high-frequency delta coalescing: `HERMES_FEISHU_CARD_DELTA_COALESCE_MS`, `HERMES_FEISHU_CARD_DELTA_COALESCE_CHARS`, and `HERMES_FEISHU_CARD_DELTA_COALESCE_MAX_PENDING`.
+
+### Fixed
+- issue #74: high-frequency `thinking.delta` / `answer.delta` bursts are now coalesced inside the Hermes Gateway process before reaching the sidecar, reducing stream-reader thread pressure that could trigger `Stream stale for 180s`.
+- Terminal events now flush pending coalesced deltas before rendering `message.completed` / `message.failed`, preventing missing tail content at finalization.
+- Existing installed hook blocks from V3.8.0 and earlier are still recognized during upgrade/remove even though V3.8.1 adds command handling to the hook.
+- `/messages/{message_id}/summary` now returns hashed diagnostic ids instead of raw `chat_id` or Feishu message ids.
+
+### Tests
+- Added regression coverage for DeepSeek/Qwen-style high-frequency delta coalescing, terminal pre-flush, `/hfc` command interception, patcher upgrades, sidecar command cards, and summary redaction.
+
+## V3.8.0 — 2026-07-01
+
+See also: [docs/release-notes-v3.8.0.md](docs/release-notes-v3.8.0.md)
+
+### Added
+- Separated the primary answer area from the reasoning/tool timeline so the card keeps the final response prominent while auxiliary progress remains readable.
+- Added card update metrics for queue depth, burst coalescing, terminal drain latency, and Feishu update latency to make streaming regressions easier to observe.
+- Added a V3.8.0 card screenshot to the README homepage and refreshed install, upgrade, and Docker examples for the new release.
+
+### Fixed
+- Burst update coalescing now merges queued card refreshes more aggressively, reducing duplicated PATCH churn during fast thinking/tool bursts.
+- Terminal completion now drains pending updates before rendering the final card, preventing stale intermediate content from winning the last PATCH.
+- Long Markdown tables and fenced code blocks keep safe structural boundaries across card chunking, reducing raw Markdown leaks and half-open fences.
+- The bottom tool-call summary is hidden when the auxiliary timeline is visible, preventing duplicate "N tool calls" sections.
+- Runtime import diagnostics now execute from the Hermes project root, preventing current-repo `PYTHONPATH` false positives.
+
+### Docs
+- Added `docs/release-notes-v3.8.0.md` and refreshed release-planning notes for the V3.8.x line.
+
+## V3.7.0 — 2026-06-29
+
+### Added
+- issue #70: added `install-docker.sh` for existing Hermes Docker containers with `/opt/hermes`, `/opt/data`, and Hermes venv Python assumptions.
+- Added `docker-compose.example.yml` as a non-official Compose example for bind/volume layout and non-interactive installer execution.
+- Release packages now include Docker install assets.
+
+### Tests
+- Added Docker installer script coverage, Compose example checks, release packaging coverage, and docs assertions.
+
 ## V3.6.6 — 2026-06-26
 
 ### Fixed

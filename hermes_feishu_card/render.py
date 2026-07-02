@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ast
+import json
 import re
+import time as _time
 from typing import Any, Dict
 
 from .session import CardSession
-from .text import normalize_stream_text, split_markdown_blocks, _markdown_structure_blocks, TABLE_SEPARATOR_RE
-import time as _time
+from .text import normalize_stream_text, split_markdown_blocks
 
 DEFAULT_FOOTER_FIELDS = (
     "duration",
@@ -13,213 +15,144 @@ DEFAULT_FOOTER_FIELDS = (
     "input_tokens",
     "output_tokens",
     "context",
-    "tool_summary",
 )
 MAIN_CONTENT_CHUNK_CHARS = 2400
 DEFAULT_TITLE = "Hermes Agent"
 
+_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_REDACTABLE_TOOL_DETAIL_KEYS = (
+    "tenant_access_token",
+    "app_secret",
+    "chat_id",
+    "open_id",
+    "message_id",
+    "password",
+    "token",
+    "secret",
+)
+_TOOL_DETAIL_KEY_PATTERN = (
+    r"[A-Za-z0-9_]*(?:"
+    + "|".join(re.escape(key) for key in _REDACTABLE_TOOL_DETAIL_KEYS)
+    + r")[A-Za-z0-9_]*"
+)
+_TOOL_DETAIL_REDACTION_RE = re.compile(
+    r"(?i)([\"']?"
+    + _TOOL_DETAIL_KEY_PATTERN
+    + r"[\"']?\s*[:=]\s*)([^\s,;&}\]]+)"
+)
+_TOOL_DETAIL_QUOTED_REDACTION_RE = re.compile(
+    r"(?is)([\"']?"
+    + _TOOL_DETAIL_KEY_PATTERN
+    + r"[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
+)
+_TOOL_DETAIL_REDACTED = "[REDACTED]"
+
+def _spinner_text(label: str = "生成中") -> str:
+    return f"{_spinner_frame()} {label}"
+
+
+def _spinner_frame() -> str:
+    frame = _SPINNER_FRAMES[int(_time.time() * 8) % len(_SPINNER_FRAMES)]
+    return frame
 
 def render_card(
     session: CardSession,
     footer_fields: list[str] | tuple[str, ...] | None = None,
     title: str = DEFAULT_TITLE,
-    loading_gif_img_key: str | None = None,
     interaction_mode: str = "callback",
+    show_reasoning: bool = True,
+    timeline_expanded: bool = False,
+    max_timeline_items: int = 12,
+    max_reasoning_chars: int = 1200,
+    max_tool_result_chars: int = 600,
 ) -> Dict[str, Any]:
-    cards = render_cards(
-        session,
-        footer_fields=footer_fields,
-        title=title,
-        loading_gif_img_key=loading_gif_img_key,
-        interaction_mode=interaction_mode,
-    )
-    return cards[0] if cards else {}
-
-
-def render_cards(
-    session: CardSession,
-    footer_fields: list[str] | tuple[str, ...] | None = None,
-    title: str = DEFAULT_TITLE,
-    loading_gif_img_key: str | None = None,
-    interaction_mode: str = "callback",
-) -> list[Dict[str, Any]]:
     status = _render_status(session)
-    main_text = normalize_stream_text(session.visible_main_text) or ("正在思考..." if session.status == "thinking" else "")
-    effective_fields = list(DEFAULT_FOOTER_FIELDS) if footer_fields is None else list(footer_fields)
-    show_tool_summary = "tool_summary" in effective_fields
-    tool_summary = _render_tool_summary(session) if show_tool_summary else ""
+    primary_text = normalize_stream_text(session.answer_text)
+    if not primary_text:
+        if session.status == "thinking":
+            primary_text = _spinner_frame()
+        else:
+            primary_text = normalize_stream_text(session.visible_main_text)
     attachment_summary = _render_attachment_summary(session)
-    footer = _render_footer(session, effective_fields, loading_gif_img_key)
+    footer = _render_footer(session, footer_fields)
     header_title = title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE
+    elements = _render_main_content_elements(primary_text)
+    timeline_elements: list[Dict[str, Any]] = []
+    if show_reasoning:
+        timeline_elements = _render_timeline_elements(
+            session,
+            expanded=timeline_expanded,
+            max_items=max_timeline_items,
+            max_reasoning_chars=max_reasoning_chars,
+            max_tool_result_chars=max_tool_result_chars,
+        )
+        elements.extend(timeline_elements)
+    elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
+    if attachment_summary:
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": "attachment_summary",
+                "content": attachment_summary,
+            }
+        )
+    elements.append({"tag": "hr", "element_id": "main_divider"})
+    if not timeline_elements:
+        elements.append(
+            {
+                "tag": "markdown",
+                "element_id": "tool_summary",
+                "content": _render_tool_summary(session),
+            }
+        )
+    elements.append({"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"})
+    header = {
+        "template": status["template"],
+        "title": {"tag": "plain_text", "content": header_title},
+    }
+    if status["subtitle"]:
+        header["subtitle"] = {"tag": "plain_text", "content": status["subtitle"]}
 
-    content_parts = _split_content_by_tables(main_text)
-
-    if len(content_parts) <= 1:
-        elements = _render_main_content_elements(main_text)
-        elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
-        if attachment_summary:
-            elements.append(
-                {
-                    "tag": "markdown",
-                    "element_id": "attachment_summary",
-                    "content": attachment_summary,
-                }
-            )
-        elements.append({"tag": "hr", "element_id": "main_divider"})
-        if tool_summary:
-            elements.append(
-                {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
-            )
-        if isinstance(footer, list):
-            elements.extend(footer)
-        else:
-            elements.append(
-                {
-                    "tag": "markdown",
-                    "element_id": "footer",
-                    "content": footer,
-                    "text_size": "x-small",
-                }
-            )
-        return [_build_card(elements, status, header_title)]
-
-    cards = []
-    total_parts = len(content_parts)
-    for index, part_text in enumerate(content_parts):
-        is_first = index == 0
-        is_last = index == total_parts - 1
-        part_elements = _render_main_content_elements(part_text)
-
-        if is_first:
-            part_elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
-
-        if is_first and attachment_summary:
-            part_elements.append(
-                {
-                    "tag": "markdown",
-                    "element_id": "attachment_summary",
-                    "content": attachment_summary,
-                }
-            )
-
-        part_elements.append({"tag": "hr", "element_id": "main_divider"})
-
-        if is_last:
-            if tool_summary:
-                part_elements.append(
-                    {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary}
-                )
-            if isinstance(footer, list):
-                part_elements.extend(footer)
-            else:
-                part_elements.append(
-                    {
-                        "tag": "markdown",
-                        "element_id": "footer",
-                        "content": footer,
-                        "text_size": "x-small",
-                    }
-                )
-        else:
-            part_elements.append(
-                {
-                    "tag": "markdown",
-                    "element_id": "footer",
-                    "content": f"({index + 1}/{total_parts})",
-                    "text_size": "x-small",
-                }
-            )
-
-        part_status = status if is_first else {"subtitle": f"({index + 1}/{total_parts})", "template": status["template"]}
-        part_title = header_title if is_first else f"{header_title} (续)"
-        cards.append(_build_card(part_elements, part_status, part_title))
-
-    return cards
-
-
-def _build_card(
-    elements: list[Dict[str, Any]],
-    status: Dict[str, str],
-    title: str,
-) -> Dict[str, Any]:
     return {
         "schema": "2.0",
         "config": {
             "update_multi": True,
-            "summary": {"content": status["subtitle"]},
+            "summary": {"content": status.get("summary", status["subtitle"])},
         },
-        "header": {
-            "template": status["template"],
-            "title": {"tag": "plain_text", "content": title},
-            "subtitle": {"tag": "plain_text", "content": status["subtitle"]},
-        },
+        "header": header,
         "body": {
             "elements": elements
         },
     }
 
 
-def _split_content_by_tables(text: str) -> list[str]:
-    from .text import MAX_CARD_TABLES
-    
-    table_count = _count_markdown_tables(text)
-    if table_count <= MAX_CARD_TABLES:
-        return [text] if text else []
-    
-    blocks = _markdown_structure_blocks(text)
-    parts: list[str] = []
-    current_tables = 0
-    current_blocks: list[str] = []
-    
-    for block in blocks:
-        block_tables = _count_markdown_tables(block)
-        if current_tables + block_tables > MAX_CARD_TABLES and current_tables > 0:
-            parts.append("".join(current_blocks))
-            current_blocks = []
-            current_tables = 0
-        
-        current_blocks.append(block)
-        current_tables += block_tables
-    
-    if current_blocks:
-        parts.append("".join(current_blocks))
-    
-    return parts
-
-
-def _count_markdown_tables(text: str) -> int:
-    return len(re.findall(r'^\|[-: ]+\|', text, re.MULTILINE))
-
-
 def _render_status(session: CardSession) -> Dict[str, str]:
     if session.status == "completed":
-        subtitle = _generate_summary_subtitle(session.answer_text)
-        return {"subtitle": subtitle, "template": "green"}
+        return {"subtitle": "已完成", "template": "green"}
     if session.status == "failed":
         return {"subtitle": "处理失败", "template": "red"}
     if session.active_interaction is not None and session.active_interaction.status == "pending":
         return {"subtitle": "等待选择", "template": "orange"}
-    return {"subtitle": "思考中", "template": "indigo"}
+    if normalize_stream_text(session.answer_text).strip():
+        return {"subtitle": "", "summary": "生成中", "template": "blue"}
+    return {"subtitle": "", "summary": "思考中", "template": "indigo"}
 
-
-def _generate_summary_subtitle(text: str, max_length: int = 20) -> str:
-    if not text or not text.strip():
-        return "已完成"
-    cleaned = re.sub(r'```[\s\S]*?```', '', text)
-    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
-    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
-    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-    cleaned = re.sub(r'#+\s*', '', cleaned)
-    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
-    cleaned = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', cleaned)
-    cleaned = re.sub(r'[\*\#`\[\]()>|-]', '', cleaned)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    first_sentence = re.split(r'[。！？\n]', cleaned)[0].strip()
-    if len(first_sentence) > max_length:
-        return first_sentence[:max_length - 1] + "…"
-    return first_sentence if first_sentence else "已完成"
 
 def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
+    import re
+
+    from .text import count_markdown_tables, MAX_CARD_TABLES
+    table_count = count_markdown_tables(main_text)
+    if table_count > MAX_CARD_TABLES:
+        matches = list(re.finditer(r'^\|[-: ]+\|', main_text, re.MULTILINE))
+        cutoff = matches[MAX_CARD_TABLES - 1].end()
+        rest = main_text[cutoff:]
+        next_para = re.search(r'\n\n', rest)
+        if next_para:
+            cutoff += next_para.start()
+        main_text = main_text[:cutoff].rstrip() + (
+            "\n\n> 内容含超过 5 个表格，超出部分已省略。"
+        )
     chunks = split_markdown_blocks(main_text, MAIN_CONTENT_CHUNK_CHARS)
     elements = []
     for index, chunk in enumerate(chunks):
@@ -338,6 +271,133 @@ def _render_tool_summary(session: CardSession) -> str:
     return "\n".join(lines)
 
 
+def _render_timeline_elements(
+    session: CardSession,
+    *,
+    expanded: bool,
+    max_items: int,
+    max_reasoning_chars: int,
+    max_tool_result_chars: int,
+) -> list[Dict[str, Any]]:
+    if not getattr(session, "timeline", None):
+        return []
+    all_entries = session.timeline.snapshot()
+    entries = _select_timeline_entries(all_entries, max_items=max_items)
+    folded = max(0, len(all_entries) - len(entries))
+    if not entries and not folded:
+        return []
+    panel_elements: list[Dict[str, Any]] = []
+    if folded:
+        panel_elements.extend(
+            _timeline_markdown_elements(
+                f"> 已折叠 {folded} 条早期思考/工具记录",
+                "auxiliary_timeline_folded",
+                text_size="x-small",
+            )
+        )
+    for index, item in enumerate(entries):
+        if item.kind == "reasoning":
+            content = _limit_text(
+                item.content,
+                max_reasoning_chars,
+                overflow_label="思考内容过长，已截断",
+            )
+            lines = [f"**{item.title}** · {item.status}"]
+            if content:
+                lines.append(content)
+            panel_elements.extend(
+                _timeline_markdown_elements(
+                    "\n".join(lines),
+                    f"auxiliary_timeline_reasoningentry_{index}",
+                    text_size="small",
+                )
+            )
+        elif item.kind == "tool":
+            detail = _limit_text(
+                _redact_tool_detail(item.detail),
+                max_tool_result_chars,
+                overflow_label="工具详情过长，已截断",
+            )
+            lines = [f"`{item.title}` · {item.status}"]
+            if detail:
+                lines.append(detail)
+            panel_elements.extend(
+                _timeline_markdown_elements(
+                    _quote_markdown("\n".join(lines)),
+                    f"auxiliary_timeline_toolentry_{index}",
+                    text_size="x-small",
+                )
+            )
+    if not panel_elements:
+        return []
+    return [
+        {
+            "tag": "collapsible_panel",
+            "element_id": "auxiliary_timeline",
+            "expanded": expanded,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"思考与工具 · {session.tool_count} 次工具调用",
+                },
+                "vertical_align": "center",
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "padding": "8px 8px 8px 8px",
+            "elements": panel_elements,
+        }
+    ]
+
+
+def _timeline_markdown_elements(
+    content: str, element_id_prefix: str, *, text_size: str
+) -> list[Dict[str, Any]]:
+    return [
+        {
+            "tag": "markdown",
+            "element_id": element_id_prefix
+            if index == 0
+            else f"{element_id_prefix}_{index}",
+            "content": chunk,
+            "text_size": text_size,
+        }
+        for index, chunk in enumerate(
+            split_markdown_blocks(content, MAIN_CONTENT_CHUNK_CHARS)
+        )
+        if chunk.strip()
+    ]
+
+
+def _quote_markdown(content: str) -> str:
+    return "\n".join(f"> {line}" if line else ">" for line in content.splitlines())
+
+
+def _select_timeline_entries(entries: list[Any], *, max_items: int) -> list[Any]:
+    if max_items <= 0 or len(entries) <= max_items:
+        return list(entries)
+
+    selected_indexes = list(range(len(entries) - max_items, len(entries)))
+    if max_items <= 1:
+        return [entries[index] for index in selected_indexes]
+    if any(entries[index].kind == "reasoning" for index in selected_indexes):
+        return [entries[index] for index in selected_indexes]
+
+    latest_reasoning_index = next(
+        (
+            index
+            for index in range(len(entries) - 1, -1, -1)
+            if entries[index].kind == "reasoning"
+        ),
+        None,
+    )
+    if latest_reasoning_index is None:
+        return [entries[index] for index in selected_indexes]
+
+    selected_indexes = [latest_reasoning_index] + selected_indexes[1:]
+    selected_indexes = sorted(dict.fromkeys(selected_indexes))
+    return [entries[index] for index in selected_indexes]
+
+
 def _render_attachment_summary(session: CardSession) -> str:
     items = []
     for item in session.attachments:
@@ -354,14 +414,11 @@ def _render_attachment_summary(session: CardSession) -> str:
 def _render_footer(
     session: CardSession,
     footer_fields: list[str] | tuple[str, ...] | None = None,
-    loading_gif_img_key: str | None = None,
-) -> str | list[dict[str, Any]]:
+) -> str:
     if session.status == "failed":
         return "已停止"
     if session.status != "completed":
-        if loading_gif_img_key:
-            return _render_thinking_footer_gif(loading_gif_img_key)
-        return "生成中"
+        return _spinner_text("生成中")
     tokens = session.tokens if isinstance(session.tokens, dict) else {}
     input_tokens = _safe_int(tokens.get("input_tokens"))
     output_tokens = _safe_int(tokens.get("output_tokens"))
@@ -387,28 +444,10 @@ def _render_footer(
     selected = []
     fields = DEFAULT_FOOTER_FIELDS if footer_fields is None else footer_fields
     for field in fields:
-        if field == "tool_summary":
-            continue
         value = values.get(field)
         if value:
             selected.append(value)
-    return " · ".join(selected) if selected else values.get("duration", "")
-
-
-def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
-    """Render thinking-state footer as markdown with inline custom icon."""
-    return [
-        {
-            "tag": "markdown",
-            "content": "生成中",
-            "text_align": "left",
-            "text_size": "small",
-            "icon": {
-                "tag": "custom_icon",
-                "img_key": img_key,
-            },
-        },
-    ]
+    return " · ".join(selected) if selected else values["duration"]
 
 
 def _safe_int(value: Any) -> int:
@@ -443,3 +482,62 @@ def _format_scaled(value: int, factor: int, suffix: str) -> str:
     if scaled >= 100 or scaled.is_integer():
         return f"{int(round(scaled))}{suffix}"
     return f"{scaled:.1f}".rstrip("0").rstrip(".") + suffix
+
+
+def _limit_text(text: str, limit: int, *, overflow_label: str = "内容已折叠") -> str:
+    if limit <= 0 or len(text) <= limit:
+        return text
+    suffix = f"\n> {overflow_label}"
+    return text[: max(0, limit - len(suffix))].rstrip() + suffix
+
+
+def _redact_tool_detail(text: str) -> str:
+    if not text:
+        return text
+    structured = _parse_tool_detail(text)
+    if structured is not None:
+        return _dump_redacted_tool_detail(structured)
+    redacted = _TOOL_DETAIL_QUOTED_REDACTION_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{_TOOL_DETAIL_REDACTED}{match.group(4)}",
+        text,
+    )
+    return _TOOL_DETAIL_REDACTION_RE.sub(r"\1[REDACTED]", redacted)
+
+
+def _parse_tool_detail(text: str) -> tuple[str, Any] | None:
+    try:
+        return ("json", _redact_tool_detail_value(json.loads(text)))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    try:
+        return ("python", _redact_tool_detail_value(ast.literal_eval(text)))
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _redact_tool_detail_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            if _is_sensitive_tool_detail_key(str(key)):
+                redacted[key] = _TOOL_DETAIL_REDACTED
+            else:
+                redacted[key] = _redact_tool_detail_value(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_tool_detail_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_tool_detail_value(item) for item in value)
+    return value
+
+
+def _dump_redacted_tool_detail(parsed: tuple[str, Any]) -> str:
+    format_name, value = parsed
+    if format_name == "json":
+        return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    return repr(value)
+
+
+def _is_sensitive_tool_detail_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _REDACTABLE_TOOL_DETAIL_KEYS)

@@ -2,35 +2,79 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## 下一版计划：V3.6.0 / V3.7.0
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6
 
-详细路线见 [docs/roadmap-v3.6.0.md](docs/roadmap-v3.6.0.md)。
+详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
-### V3.5.2：安装补丁版
+### V3.8.0：卡片体验与流式稳定性（已完成）
 
-- [x] 更新 CHANGELOG、README 和 Release notes，说明一行安装、Release 包、checksum。
-- [x] 发布 tag 后验证 `.github/workflows/release-assets.yml` 能上传 macOS/Linux/Windows 安装包。
-- [x] 确认 `install.sh` 在 macOS 临时 Hermes fixture 上完整跑通。
-- [x] 补 Windows PowerShell 安装脚本的语法验证路径。
+- [x] 主回答与 reasoning / tool timeline 分离，默认突出最终答案。
+- [x] burst update coalescing 收敛高频 PATCH，减少快速 thinking / tool burst 下的重复更新。
+- [x] terminal completion 前 drain pending updates，避免终态卡片被陈旧中间态覆盖。
+- [x] 长 Markdown 表格和 fenced code block 跨卡片分块时保持结构安全。
+- [x] 可观测性补充 update queue length、coalesce count、terminal drain latency、Feishu API latency。
 
-### V3.6.0：安装与运维产品化
+### V3.8.1：高频流式修复与只读诊断（已完成）
 
-- [x] **P0 安装自救**：新增 `doctor --explain` / `doctor --json`，解释 hook strategy、manifest、backup 和 anchor 状态。
-- [x] **P0 安装修复**：新增 `setup --repair` 和 `repair` 子命令，处理 manifest/backup 缺失等可验证修复场景，并拒绝用户改动。
-- [x] **P0 媒体/文件消息处理**：识别结构化 attachments/files/media_files，在卡片中保留摘要，同时不抑制 Hermes 原生媒体/文件投递路径。
-- [x] **P1 多 Profile CLI**：`smoke-feishu-card`、`bots test` 支持 `--profile-id` 和 profile 维度排障。
-- [x] **P1 health routing 分组**：`/health.routing` 在多 Profile 下按 profile 分组展示 bot、chat binding、last_route、last_route_error 和 events。
-- [x] **P1 E2E 矩阵**：覆盖 Hermes `v2026.4.23`、`v2026.5.7`、`v2026.5.16+`、`v2026.5.29`、`0.13.x`、`0.14.x`。
-- [x] **P1 发布矩阵**：CI 验证 Release 打包 dry run、macOS/Linux install dry run、Windows PowerShell parser。
-- [ ] **P2 Docker 部署**：本版按用户要求暂不考虑，移入后续版本候选。
+- [x] issue #74：Gateway runtime 内合并高频 `thinking.delta` / `answer.delta`，降低 Hermes stream-reader 热路径压力。
+- [x] terminal event 前 flush 同一消息 pending delta，避免最终卡片缺少尾部内容。
+- [x] 飞书内提供 `/hfc help`、`/hfc status`、`/hfc doctor`、`/hfc monitor` 只读诊断命令。
+- [x] 安全清理：`/messages/{message_id}/summary` 返回中的 `chat_id` / Feishu `message_id` 改为 hash。
+- [x] patcher 兼容 V3.8.0 及更早无命令 hook block 的升级和卸载。
 
-### V3.7.0：体验增强候选
+### V3.8.2：卡片 timeline 阅读体验补丁（已完成）
 
-- [ ] 卡片思考过程折叠/展开，默认突出最终答案和关键工具状态。
+- [x] pre-tool answer 先停留在正文区，下一段 answer 或终态到来时再归档进“思考与工具”。
+- [x] 完成态正文剥离已归档的中间说明，只保留最终答案。
+- [x] raw `thinking.delta` 继续隐藏，不混入正文区或用户可见 timeline。
+- [x] 折叠区中思考和工具使用不同字号与灰度层级，工具详情更紧凑。
+- [x] README 增加 V3.8.2 折叠态和展开态真实截图。
+
+### V3.8.3：独立命令卡片（已完成）
+
+- [x] 明确职责边界：Agent 原卡片只承接授权、clarify / 对话选项等当前任务内交互；slash command 使用独立命令卡片。
+- [x] `/new`、`/reset`、`/undo` 以及 `/model <model>` 高成本模型确认走独立三按钮卡片，点击后执行 Hermes 原 handler，并把结果更新回同一张命令卡片。
+- [x] `/model` 无参数选择器走独立模型选择卡片；用户选择后调用 Hermes 原 `on_model_selected` callback，并在同一卡片展示切换结果。
+- [x] sidecar 不可用、卡片未发送或配置为文本模式时保留 Hermes 原生 text fallback。
+- [x] `/update` 不做交互卡片；后续单独评估后台升级完成/失败通知是否可靠送达飞书。
+- [x] 真实 Hermes + Feishu 本地 smoke：重启 Gateway 后 `/new` 已出现 Feishu/Lark WebSocket 原生按钮卡；原生卡片可用时跳过 sidecar 预交互，避免重复选择卡。
+
+### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）
+
+- [x] 修正 V3.8.3 在 Feishu/Lark WebSocket 长连接部署下 `/new`、`/reset`、`/undo` 仍退回灰色文本的问题。
+- [x] 动态补上 Feishu adapter `send_slash_confirm(...)`，按钮点击经 `_on_card_action_trigger` 调用 Hermes `tools.slash_confirm.resolve(...)`。
+- [x] `/model` 无参数选择器改走 Feishu 原生 interactive card，点击后执行 Hermes 原 `on_model_selected` callback 并回写同一卡片。
+- [x] WebSocket 原生卡片可用时跳过 sidecar `interaction.requested` 预卡片，避免 `/new` 同时出现两张选择卡。
+- [x] 修复旧安装标记残留导致 `send_slash_confirm(...)` 未真实挂载的问题，并为原生卡片发送失败补本地 warning。
+- [x] 保留 Hermes 原生文本 fallback：Feishu 原生卡片不可用、sidecar 不可用或回调失败时不阻断命令。
+- [x] 补齐 slash/model WebSocket 卡片发送与 action 解析回归测试。
+
+### V3.8.5：命令结果反馈卡片补丁（已完成）
+
+- [x] 修正 `destructive_slash_confirm: false` 或已始终允许时 `/new` 直通执行结果退回灰色原生文本的问题。
+- [x] 在 patcher 的 command-card hook 中传入当前 `event`，让 hook runtime 能识别独立 slash command 的返回结果。
+- [x] Feishu adapter `send()` 只对 `/new`、`/reset`、`/clear`、`/undo`、`/stop` 和直接 `/model <model>` 的结果做一次性卡片化。
+- [x] `/update` 保持 Hermes 后台升级命令，不纳入命令结果卡片化。
+- [x] 移除 card action 后额外调用 direct interactive `message.update` 的路径，改由 Feishu callback response 更新原卡片。
+- [x] 补齐 `/new` 直通结果卡片、一次性上下文、`/update` 保持普通路径和 V3.8.4 hook block 升级兼容测试。
+
+### V3.8.6：Docker / Hermes v0.18.0 兼容补丁（已完成）
+
+- [x] issue #70：Docker/source-stripped Hermes 缺少 `VERSION` 和 `.git` 元数据时，`doctor` / `install` / `setup` 用 `gateway/run.py` anchor 兜底识别。
+- [x] Hermes `v2026.7.1` / `0.18.0` / `v0.18.0` 加入兼容矩阵，继续使用 `gateway_run_013_plus`。
+- [x] 显式非法 `VERSION` 仍 fail-closed，只对缺失版本元数据启用 anchor fallback。
+- [x] README 首屏换成真实横向效果展示图，覆盖命令交互、命令结果反馈和工具 timeline。
+
+### V3.8.x 后续维护与扩展面（待办）
+
+- [ ] 卡片内提供“继续”“重试”“取消”等写操作入口，需要单独做权限、幂等和误触发设计。
 - [ ] 工具调用详情支持查看参数摘要、耗时、失败原因。
-- [ ] 卡片内提供“继续”“重试”“取消”等操作入口。
 - [ ] 群聊规则支持 @机器人触发、白名单、chat binding 自动提示。
-- [ ] 可观测性补充 update queue length、coalesce count、terminal drain latency、Feishu API latency。
+- [ ] 补齐 E2E / fixture 覆盖，验证 V3.8.x 卡片体验和终态 drain 主链路。
+- [ ] 完成 agent guide、维护手册和开放扩展面的文档整理。
+- [ ] 评估卡片 timeline/metrics 的长期兼容边界，并补发布回归清单。
+- [ ] 完全兜住极端 Markdown table 边界：当结构化拆分失败时输出安全折叠提示，避免回退 plain split。
+- [ ] 清理 terminal 后的 closed `FlushController`，并评估更有诊断价值的 queue depth / coalesced backlog 指标。
 
 ## V3.3.0 (已完成)
 

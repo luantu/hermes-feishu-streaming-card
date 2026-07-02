@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 import asyncio
 import logging
 import re
-from pathlib import Path
 from typing import Any, Dict
 
 from aiohttp import web
 
 from .bots import RouteResult
 from .events import EventValidationError, SidecarEvent
+from .flush import FlushController
 from .metrics import SidecarMetrics
-from .render import render_card, render_cards
+from .render import render_card
 from .session import CardSession
 
 FEISHU_CLIENT_KEY = web.AppKey("feishu_client", Any)
@@ -23,20 +24,16 @@ CARD_SUMMARIES_KEY = web.AppKey("card_summaries", dict)
 INTERACTION_RESULTS_KEY = web.AppKey("interaction_results", dict)
 MESSAGE_BOT_IDS_KEY = web.AppKey("message_bot_ids", dict)
 SESSION_CARD_CONFIGS_KEY = web.AppKey("session_card_configs", dict)
-UPDATE_TASKS_KEY = web.AppKey("update_tasks", dict)
-PENDING_UPDATE_REQUESTS_KEY = web.AppKey("pending_update_requests", dict)
 BOT_ROUTER_KEY = web.AppKey("bot_router", Any)
 ROUTING_DIAGNOSTICS_KEY = web.AppKey("routing_diagnostics", dict)
 PROFILE_DIAGNOSTICS_KEY = web.AppKey("profile_diagnostics", dict)
 PROCESS_TOKEN_KEY = web.AppKey("process_token", str)
 METRICS_KEY = web.AppKey("metrics", SidecarMetrics)
-LAST_UPDATE_AT_KEY = web.AppKey("last_update_at", dict)
 MESSAGE_LOCKS_KEY = web.AppKey("message_locks", dict)
 FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
 CARD_TITLE_KEY = web.AppKey("card_title", str)
 BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
-UPLOADED_GIF_IMG_KEYS_KEY = web.AppKey("uploaded_gif_img_keys", dict)
-RESEND_AFTER_SECONDS_KEY = web.AppKey("resend_after_seconds", float)
+FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
@@ -76,14 +73,11 @@ def create_app(
     app[INTERACTION_RESULTS_KEY] = {}
     app[MESSAGE_BOT_IDS_KEY] = {}
     app[SESSION_CARD_CONFIGS_KEY] = {}
-    app[UPDATE_TASKS_KEY] = {}
-    app[PENDING_UPDATE_REQUESTS_KEY] = {}
     app[BOT_ROUTER_KEY] = bot_router
     app[PROCESS_TOKEN_KEY] = process_token
     app[METRICS_KEY] = SidecarMetrics()
-    app[LAST_UPDATE_AT_KEY] = {}
     app[MESSAGE_LOCKS_KEY] = {}
-    app[UPLOADED_GIF_IMG_KEYS_KEY] = {}
+    app[FLUSH_CONTROLLERS_KEY] = {}
     app[DIAGNOSTICS_KEY] = {
         "last_update_error": "",
         "last_route_error": "",
@@ -96,51 +90,11 @@ def create_app(
     app[FOOTER_FIELDS_KEY] = list(footer_fields) if isinstance(footer_fields, list) else None
     title = card_config.get("title")
     app[CARD_TITLE_KEY] = title if isinstance(title, str) else "Hermes Agent"
-    raw_resend = card_config.get("resend_after_seconds", 60)
-    try:
-        app[RESEND_AFTER_SECONDS_KEY] = float(raw_resend) if raw_resend is not None else 60.0
-    except (TypeError, ValueError):
-        app[RESEND_AFTER_SECONDS_KEY] = 60.0
     app.router.add_get("/health", _health)
     app.router.add_get("/messages/{message_id}/summary", _message_summary)
-
-    _gif_path = str(Path(__file__).parent / "assets" / "loading.gif")
-    if os.path.isfile(_gif_path):
-        async def _startup_gif_upload(app: web.Application) -> None:
-            logger.info("Uploading loading GIF for card footer animation...")
-            uploaded: dict[str, str] = {}
-            feishu_client = app[FEISHU_CLIENT_KEY]
-            if isinstance(feishu_client, dict):
-                for profile_id, factory in feishu_client.items():
-                    try:
-                        client = factory.get_client("default")
-                        if hasattr(client, "upload_image"):
-                            img_key = await client.upload_image(_gif_path)
-                            uploaded[profile_id] = img_key
-                            logger.info("Uploaded loading GIF for profile %s: %s", profile_id, img_key)
-                    except Exception as exc:
-                        logger.warning("Failed to upload loading GIF for profile %s: %s", profile_id, exc)
-            else:
-                client = app[FEISHU_CLIENT_KEY]
-                if hasattr(client, "upload_image"):
-                    try:
-                        img_key = await client.upload_image(_gif_path)
-                        uploaded["default"] = img_key
-                        logger.info("Uploaded loading GIF: %s", img_key)
-                    except Exception as exc:
-                        logger.warning("Failed to upload loading GIF: %s", exc)
-            app[UPLOADED_GIF_IMG_KEYS_KEY] = uploaded
-            if uploaded:
-                logger.info("Loading GIF ready for profiles: %s", list(uploaded.keys()))
-            else:
-                logger.info("No loading GIF uploaded, footer will use plain text")
-
-        app.on_startup.append(_startup_gif_upload)
-    else:
-        logger.warning("Loading GIF not found at %s, footer will use plain text", _gif_path)
-
     app.router.add_get("/interactions/{interaction_id}", _interaction_result)
     app.router.add_post("/card/actions", _card_actions)
+    app.router.add_post("/commands", _commands)
     app.router.add_post("/events", _events)
     return app
 
@@ -156,14 +110,14 @@ async def _health(request: web.Request) -> web.Response:
         "metrics": metrics.snapshot(),
         "reply_index": {
             "entries": len(request.app[CARD_SUMMARIES_KEY]),
-            "last_lookup": diagnostics.get("last_reply_lookup", {}),
+            "last_lookup": _sanitize_health_diagnostics(diagnostics.get("last_reply_lookup", {})),
         },
         "cron": {
             "cards_sent": metrics.cron_cards_sent,
             "fallbacks": metrics.cron_fallbacks,
         },
         "sessions": {
-            message_id: {
+            _diagnostic_id_hash(message_id): {
                 "status": session.status,
                 "last_sequence": session.last_sequence,
                 "answer_chars": len(session.answer_text),
@@ -172,14 +126,13 @@ async def _health(request: web.Request) -> web.Response:
             }
             for message_id, session in sessions.items()
         },
-        "diagnostics": diagnostics,
-        "routing": request.app[ROUTING_DIAGNOSTICS_KEY],
-        "profile_diagnostics": request.app[PROFILE_DIAGNOSTICS_KEY],
-        "loading_gif_img_keys": request.app.get(UPLOADED_GIF_IMG_KEYS_KEY, {}),
+        "diagnostics": _sanitize_health_diagnostics(diagnostics),
+        "routing": _sanitize_health_diagnostics(request.app[ROUTING_DIAGNOSTICS_KEY]),
+        "profile_diagnostics": _sanitize_health_diagnostics(request.app[PROFILE_DIAGNOSTICS_KEY]),
     }
     process_token = request.app[PROCESS_TOKEN_KEY]
     if process_token:
-        response["process_token"] = process_token
+        response["process_token_hash"] = _full_diagnostic_hash(process_token)
 
     # Multi-profile stats
     boundary = request.app.get(FEISHU_CLIENT_KEY)
@@ -192,7 +145,7 @@ async def _health(request: web.Request) -> web.Response:
             profile_stats[profile_id] = {
                 "active_sessions": len(profile_sessions),
                 "sessions": {
-                    key.replace(f"{profile_id}:", ""): {
+                    _diagnostic_id_hash(key.replace(f"{profile_id}:", "")): {
                         "status": s.status,
                         "last_sequence": s.last_sequence,
                     }
@@ -277,6 +230,59 @@ async def _card_actions(request: web.Request) -> web.Response:
     )
 
 
+async def _commands(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+    except ValueError:
+        return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+    if not isinstance(payload, dict):
+        return web.json_response({"ok": False, "error": "payload must be an object"}, status=400)
+
+    command = _normalize_hfc_command(payload.get("command"))
+    chat_id = _safe_command_string(payload.get("chat_id"))
+    message_id = _safe_command_string(payload.get("message_id"))
+    reply_to_message_id = _safe_command_string(payload.get("reply_to_message_id"))
+    thread_id = _safe_command_string(payload.get("thread_id"))
+    if not chat_id or not message_id:
+        return web.json_response(
+            {"ok": False, "error": "chat_id and message_id are required"},
+            status=400,
+        )
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    for key in ("profile_id", "profile_source"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            data[key] = value.strip()
+    event = SidecarEvent(
+        schema_version="1",
+        event="message.started",
+        conversation_id=thread_id or chat_id,
+        message_id=message_id,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        platform="feishu",
+        sequence=0,
+        created_at=time.time(),
+        data=data,
+    )
+    route = _resolve_route(request, event)
+    card = _render_hfc_command_card(request, command, event, route)
+    feishu_message_id = await _send_card(
+        request,
+        chat_id,
+        card,
+        route.bot_id if route is not None else None,
+        thread_id=thread_id or None,
+        reply_to_message_id=reply_to_message_id or message_id,
+    )
+    if feishu_message_id is None:
+        return web.json_response({"ok": False, "error": "send failed"}, status=502)
+    return web.json_response({"ok": True, "handled": True, "command": command})
+
+
 async def _events(request: web.Request) -> web.Response:
     metrics: SidecarMetrics = request.app[METRICS_KEY]
     try:
@@ -294,6 +300,160 @@ async def _events(request: web.Request) -> web.Response:
     if post_lock_task is not None and _should_await_card_update(event):
         await post_lock_task
     return response
+
+
+def _normalize_hfc_command(value: Any) -> str:
+    command = str(value or "").strip().lower()
+    if command in {"status", "doctor", "monitor"}:
+        return command
+    return "help"
+
+
+def _safe_command_string(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _render_hfc_command_card(
+    request: web.Request,
+    command: str,
+    event: SidecarEvent,
+    route: RouteResult | None,
+) -> dict[str, Any]:
+    lines = _hfc_command_lines(request, command, event, route)
+    return {
+        "schema": "2.0",
+        "config": {
+            "update_multi": True,
+            "summary": {"content": f"/hfc {command}"},
+        },
+        "header": {
+            "template": "blue" if command != "doctor" else "green",
+            "title": {"tag": "plain_text", "content": request.app[CARD_TITLE_KEY]},
+            "subtitle": {"tag": "plain_text", "content": f"/hfc {command}"},
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "element_id": f"hfc_{command}",
+                    "content": "\n".join(lines),
+                }
+            ]
+        },
+    }
+
+
+def _hfc_command_lines(
+    request: web.Request,
+    command: str,
+    event: SidecarEvent,
+    route: RouteResult | None,
+) -> list[str]:
+    if command == "status":
+        return _hfc_status_lines(request, event, route)
+    if command == "doctor":
+        return _hfc_doctor_lines(request, event, route)
+    if command == "monitor":
+        return _hfc_monitor_lines(request, event)
+    return [
+        "**Hermes Feishu Card 诊断命令**",
+        "",
+        "- `/hfc help`: 查看只读命令列表",
+        "- `/hfc status`: 查看 sidecar、会话和路由摘要",
+        "- `/hfc doctor`: 查看安装/运行健康检查摘要",
+        "- `/hfc monitor`: 查看流式更新与飞书发送指标",
+        "",
+        *_hfc_context_lines(event, route),
+    ]
+
+
+def _hfc_status_lines(
+    request: web.Request,
+    event: SidecarEvent,
+    route: RouteResult | None,
+) -> list[str]:
+    sessions: Dict[str, CardSession] = request.app[SESSIONS_KEY]
+    metrics: SidecarMetrics = request.app[METRICS_KEY]
+    return [
+        "**/hfc status**",
+        "",
+        f"- sidecar: healthy",
+        f"- active_sessions: {len(sessions)}",
+        f"- events_received: {metrics.events_received}",
+        f"- events_applied: {metrics.events_applied}",
+        f"- feishu_send_successes: {metrics.feishu_send_successes}",
+        f"- update_queue_peak: {metrics.update_queue_peak}",
+        *_hfc_context_lines(event, route),
+    ]
+
+
+def _hfc_doctor_lines(
+    request: web.Request,
+    event: SidecarEvent,
+    route: RouteResult | None,
+) -> list[str]:
+    diagnostics = request.app[DIAGNOSTICS_KEY]
+    routing = request.app[ROUTING_DIAGNOSTICS_KEY]
+    last_update_error = str(diagnostics.get("last_update_error") or "")
+    last_route_error = str(diagnostics.get("last_route_error") or "")
+    return [
+        "**/hfc doctor**",
+        "",
+        f"- sidecar: healthy",
+        f"- routing: {'ok' if not last_route_error else 'warning'}",
+        f"- last_route_error: {last_route_error or 'none'}",
+        f"- last_update_error: {last_update_error or 'none'}",
+        f"- configured_bots: {routing.get('bot_count', 0)}",
+        f"- chat_bindings: {routing.get('chat_binding_count', 0)}",
+        *_hfc_context_lines(event, route),
+    ]
+
+
+def _hfc_monitor_lines(request: web.Request, event: SidecarEvent) -> list[str]:
+    metrics: SidecarMetrics = request.app[METRICS_KEY]
+    snapshot = metrics.snapshot()
+    keys = (
+        "events_received",
+        "events_applied",
+        "events_ignored",
+        "events_rejected",
+        "update_scheduled",
+        "update_coalesced",
+        "update_queue_peak",
+        "terminal_drains",
+        "terminal_drain_timeouts",
+        "feishu_send_attempts",
+        "feishu_send_successes",
+        "feishu_send_failures",
+        "feishu_update_attempts",
+        "feishu_update_successes",
+        "feishu_update_failures",
+        "feishu_update_retries",
+    )
+    lines = ["**/hfc monitor**", ""]
+    lines.extend([f"- {key}: {snapshot.get(key, 0)}" for key in keys])
+    lines.append(f"- active_sessions: {len(request.app[SESSIONS_KEY])}")
+    lines.extend(_hfc_context_lines(event, None))
+    return lines
+
+
+def _hfc_context_lines(event: SidecarEvent, route: RouteResult | None) -> list[str]:
+    lines = [
+        "",
+        "**上下文**",
+        f"- chat_id_hash: {_diagnostic_id_hash(event.chat_id)}",
+        f"- message_id_hash: {_diagnostic_id_hash(event.message_id)}",
+    ]
+    thread_hash = _diagnostic_id_hash(event.thread_id)
+    if thread_hash:
+        lines.append(f"- thread_id_hash: {thread_hash}")
+    if route is not None:
+        lines.append(f"- route: {route.reason}")
+        if route.bot_id:
+            lines.append(f"- bot_id: {route.bot_id}")
+    return lines
 
 
 def _session_key(event: SidecarEvent) -> str:
@@ -327,12 +487,22 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     sessions: Dict[str, CardSession] = request.app[SESSIONS_KEY]
     feishu_message_ids: Dict[str, str] = request.app[FEISHU_MESSAGE_IDS_KEY]
     message_bot_ids: Dict[str, str] = request.app[MESSAGE_BOT_IDS_KEY]
-    last_update_at: Dict[str, float] = request.app[LAST_UPDATE_AT_KEY]
-    update_tasks: Dict[str, asyncio.Task] = request.app[UPDATE_TASKS_KEY]
-    pending_update_requests: Dict[str, bool] = request.app[PENDING_UPDATE_REQUESTS_KEY]
     _record_profile_diagnostics(request.app, event)
     _record_attachment_diagnostics(request.app, event)
     session = sessions.get(_session_key(event))
+
+    if _skip_native_text_fallback_interaction(request.app, event):
+        metrics.events_ignored += 1
+        return web.json_response(
+            {
+                "ok": True,
+                "applied": False,
+                "interaction_mode": _interaction_mode_for_session_key(
+                    request.app,
+                    _session_key(event),
+                ),
+            }
+        ), None
 
     if event.event == "message.started":
         if session is not None:
@@ -473,7 +643,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 message_bot_ids[_session_key(event)] = route.bot_id
                 _store_card_summary(request.app, event, session, message_id)
                 request.app[DIAGNOSTICS_KEY]["last_terminal_event"] = {
-                    "message_id": event.message_id,
+                    "message_id_hash": _diagnostic_id_hash(event.message_id),
                     "event": event.event,
                     "sequence": event.sequence,
                     "applied": applied,
@@ -497,40 +667,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         ), None
 
     applied = session.apply(event)
-    # Duplicate terminal event for already-completed session: send a new card
-    # instead of returning applied=False (which causes gateway to emit plain text).
-    if not applied and session.status in {"completed", "failed"} and event.event in TERMINAL_EVENTS:
-        route = _resolve_route(request, event)
-        if route is not None:
-            cards_list = _render_session_cards(request, session)
-            new_card = cards_list[0] if cards_list else _render_session_card(request, session)
-            new_message_id = await _send_card(
-                request,
-                event.chat_id,
-                new_card,
-                route.bot_id,
-                thread_id=_thread_id_for_event(event),
-            )
-            if new_message_id is not None:
-                applied = True
-                _store_card_summary(request.app, event, session, new_message_id)
-                request.app[DIAGNOSTICS_KEY]["last_terminal_event"] = {
-                    "message_id": event.message_id,
-                    "event": event.event,
-                    "sequence": event.sequence,
-                    "applied": True,
-                    "session_status": session.status,
-                    "answer_chars": len(session.answer_text),
-                    "new_card": True,
-                    "new_message_id": new_message_id,
-                }
-                metrics.events_applied += 1
-                return web.json_response({"ok": True, "applied": True, "new_card": True, "new_message_id": new_message_id}), None
     if applied and event.event.startswith("interaction."):
         _store_interaction_result(request.app, session)
     if event.event in TERMINAL_EVENTS:
         request.app[DIAGNOSTICS_KEY]["last_terminal_event"] = {
-            "message_id": event.message_id,
+            "message_id_hash": _diagnostic_id_hash(event.message_id),
             "event": event.event,
             "sequence": event.sequence,
             "applied": applied,
@@ -542,71 +683,37 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         if event.event in TERMINAL_EVENTS:
             _store_card_summary(request.app, event, session, feishu_message_id)
         session_key = _session_key(event)
-        previous_task = update_tasks.get(session_key)
         is_terminal = event.event in TERMINAL_EVENTS
-        has_pending_update = previous_task is not None and not previous_task.done()
-        should_update = _should_update_card(last_update_at, event)
-        if should_update and has_pending_update and not is_terminal:
-            pending_update_requests[session_key] = True
-            should_update = False
-        if should_update:
-            if is_terminal:
-                pending_update_requests.pop(session_key, None)
-            last_update_at[session_key] = time.monotonic()
-            cards = _render_session_cards(request, session)
-            card = cards[0] if cards else _render_session_card(request, session)
-            bot_id = message_bot_ids.get(_session_key(event))
+        controller = _flush_controller_for_session(request.app, session_key)
+        bot_id = message_bot_ids.get(session_key)
 
-            async def _do_update():
-                if is_terminal:
-                    delay = _update_delay_seconds(last_update_at, event)
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                    resend_threshold = request.app[RESEND_AFTER_SECONDS_KEY]
-                    if session.elapsed >= resend_threshold:
-                        sent = await _delete_and_resend(
-                            request, session, feishu_message_id, cards, bot_id,
-                        )
-                        if sent:
-                            return
-                        metrics.feishu_resend_fallbacks += 1
-                updated = await _update_card_for_app(request.app, feishu_message_id, card, bot_id)
-                if not updated and is_terminal:
-                    await _retry_terminal_update(request.app, feishu_message_id, card, bot_id)
-                if is_terminal and updated and len(cards) > 1:
-                    await _send_extra_cards(request, session, cards[1:], bot_id, session_key)
+        async def _render_and_update() -> bool:
+            latest_session = sessions.get(session_key)
+            if latest_session is None:
+                return False
+            latest_card = _render_session_card(request, latest_session)
+            updated = await _update_card_for_app(
+                request.app,
+                feishu_message_id,
+                latest_card,
+                bot_id,
+            )
+            if not updated and is_terminal:
+                await _retry_terminal_update(
+                    request.app,
+                    feishu_message_id,
+                    latest_card,
+                    bot_id,
+                )
+            return updated
 
-            async def _queued_update():
-                if previous_task is not None:
-                    try:
-                        await previous_task
-                    except Exception:
-                        logger.exception("previous Feishu card update task failed")
-                try:
-                    await _do_update()
-                    while (
-                        not is_terminal
-                        and update_tasks.get(session_key) is current_task
-                        and pending_update_requests.pop(session_key, None) is not None
-                    ):
-                        latest_session = sessions.get(session_key)
-                        if latest_session is None or latest_session.status in {"completed", "failed"}:
-                            break
-                        last_update_at[session_key] = time.monotonic()
-                        latest_card = _render_session_card(request, latest_session)
-                        await _update_card_for_app(
-                            request.app,
-                            feishu_message_id,
-                            latest_card,
-                            bot_id,
-                        )
-                finally:
-                    if update_tasks.get(session_key) is current_task:
-                        update_tasks.pop(session_key, None)
-
-            current_task = asyncio.create_task(_queued_update())
-            update_tasks[session_key] = current_task
-            post_lock_task = current_task
+        if is_terminal:
+            await controller.drain(_final_drain_timeout_seconds(request.app, session_key))
+            current_task = controller.schedule(_render_and_update, terminal=True)
+            controller.close()
+        else:
+            current_task = controller.schedule(_render_and_update, terminal=False)
+        post_lock_task = current_task
     if applied:
         metrics.events_applied += 1
     else:
@@ -698,8 +805,9 @@ def _store_card_summary(
     app[CARD_SUMMARIES_KEY][feishu_message_id] = {
         "summary": summary[:4000],
         "profile_id": profile_id,
-        "chat_id": event.chat_id,
-        "message_id": feishu_message_id,
+        "chat_id_hash": _diagnostic_id_hash(event.chat_id),
+        "message_id_hash": _diagnostic_id_hash(feishu_message_id),
+        "source_message_id_hash": _diagnostic_id_hash(event.message_id),
     }
 
 
@@ -709,11 +817,11 @@ def _record_profile_diagnostics(app: web.Application, event: SidecarEvent) -> No
     source = str(data.get("profile_source") or "")
     diagnostics = app[PROFILE_DIAGNOSTICS_KEY].setdefault(
         profile_id,
-        {"events": 0, "last_profile_source": "", "last_message_id": ""},
+        {"events": 0, "last_profile_source": "", "last_message_id_hash": ""},
     )
     diagnostics["events"] += 1
     diagnostics["last_profile_source"] = source
-    diagnostics["last_message_id"] = event.message_id
+    diagnostics["last_message_id_hash"] = _diagnostic_id_hash(event.message_id)
 
 
 def _record_attachment_diagnostics(app: web.Application, event: SidecarEvent) -> None:
@@ -722,7 +830,7 @@ def _record_attachment_diagnostics(app: web.Application, event: SidecarEvent) ->
     if not isinstance(attachments, list) or not attachments:
         return
     app[DIAGNOSTICS_KEY]["last_attachment_event"] = {
-        "message_id": event.message_id,
+        "message_id_hash": _diagnostic_id_hash(event.message_id),
         "event": event.event,
         "attachment_count": len(
             [item for item in attachments if isinstance(item, dict)]
@@ -734,6 +842,19 @@ def _record_attachment_diagnostics(app: web.Application, event: SidecarEvent) ->
 def _delivery_kind(event: SidecarEvent) -> str:
     data = event.data if isinstance(event.data, dict) else {}
     return str(data.get("delivery_kind") or "").strip().lower()
+
+
+def _skip_native_text_fallback_interaction(
+    app: web.Application,
+    event: SidecarEvent,
+) -> bool:
+    if event.event != "interaction.requested":
+        return False
+    data = event.data if isinstance(event.data, dict) else {}
+    fallback_policy = str(data.get("fallback_policy") or "").strip().lower()
+    if fallback_policy != "native_text":
+        return False
+    return _interaction_mode_for_session_key(app, _session_key(event)) == "text"
 
 
 def _should_await_card_update(event: SidecarEvent) -> bool:
@@ -749,12 +870,42 @@ def _safe_profile_id(value: Any) -> str:
     return "default"
 
 
+def _safe_positive_int(value: Any, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def _safe_non_negative_int(value: Any, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number >= 0 else default
+
+
+def _safe_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return default
+
+
 def _render_session_card(request: web.Request, session: CardSession) -> dict[str, Any]:
-    cards = _render_session_cards(request, session)
-    return cards[0] if cards else {}
-
-
-def _render_session_cards(request: web.Request, session: CardSession) -> list[dict[str, Any]]:
     card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
         _session_key_for_session(request.app, session),
         {},
@@ -767,17 +918,26 @@ def _render_session_cards(request: web.Request, session: CardSession) -> list[di
     title = card_config.get("title", request.app[CARD_TITLE_KEY])
     if not isinstance(title, str):
         title = request.app[CARD_TITLE_KEY]
-    loading_gif_img_key = _resolve_gif_img_key(request.app, session)
     interaction_mode = _interaction_mode_for_session_key(
         request.app,
         _session_key_for_session(request.app, session),
     )
-    return render_cards(
+    return render_card(
         session,
         footer_fields=footer_fields,
         title=title,
-        loading_gif_img_key=loading_gif_img_key,
         interaction_mode=interaction_mode,
+        show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
+        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), False),
+        max_timeline_items=_safe_positive_int(
+            card_config.get("max_timeline_items"), 12
+        ),
+        max_reasoning_chars=_safe_positive_int(
+            card_config.get("max_reasoning_chars"), 1200
+        ),
+        max_tool_result_chars=_safe_positive_int(
+            card_config.get("max_tool_result_chars"), 600
+        ),
     )
 
 
@@ -791,16 +951,6 @@ def _interaction_mode_for_session_key(app: web.Application, session_key: str) ->
     if mode in {"text", "markdown", "reply"}:
         return "text"
     return "callback"
-
-
-def _resolve_gif_img_key(app: web.Application, session: CardSession) -> str | None:
-    """Look up the loading GIF img_key for the session's profile."""
-    uploaded = app.get(UPLOADED_GIF_IMG_KEYS_KEY, {})
-    if not uploaded:
-        return None
-    session_key = _session_key_for_session(app, session)
-    profile_id = session_key.split(":", 1)[0] if ":" in session_key else "default"
-    return uploaded.get(profile_id)
 
 
 def _session_key_for_session(app: web.Application, session: CardSession) -> str:
@@ -884,14 +1034,19 @@ async def _update_card_for_app(
         if attempt > 0:
             metrics.feishu_update_retries += 1
         metrics.feishu_update_attempts += 1
+        started_at = time.monotonic()
         try:
             await _client_for_bot(app, bot_id).update_card_message(message_id, card)
         except Exception as exc:
+            metrics.feishu_update_latency_ms = int(
+                (time.monotonic() - started_at) * 1000
+            )
             message = _safe_update_error_message(bot_id, exc)
             app[DIAGNOSTICS_KEY]["last_update_error"] = message[:500]
             logger.warning("Feishu card update failed: %s", message)
             metrics.feishu_update_failures += 1
             continue
+        metrics.feishu_update_latency_ms = int((time.monotonic() - started_at) * 1000)
         metrics.feishu_update_successes += 1
         return True
     return False
@@ -906,72 +1061,34 @@ async def _retry_terminal_update(
             return
 
 
-async def _delete_card_for_app(
-    app: web.Application, message_id: str, bot_id: str | None
-) -> bool:
-    metrics: SidecarMetrics = app[METRICS_KEY]
-    metrics.feishu_delete_attempts += 1
-    try:
-        await _client_for_bot(app, bot_id).delete_message(message_id)
-    except Exception:
-        metrics.feishu_delete_failures += 1
-        return False
-    metrics.feishu_delete_successes += 1
-    return True
+def _flush_controller_for_session(
+    app: web.Application, session_key: str
+) -> FlushController:
+    controllers: Dict[str, FlushController] = app[FLUSH_CONTROLLERS_KEY]
+    controller = controllers.get(session_key)
+    if controller is not None:
+        return controller
+    card_config = app[SESSION_CARD_CONFIGS_KEY].get(session_key, app[BASE_CARD_CONFIG_KEY])
+    default_interval_ms = max(0, int(UPDATE_MIN_INTERVAL_SECONDS * 1000))
+    interval_ms = _safe_non_negative_int(
+        card_config.get("flush_interval_ms"),
+        default_interval_ms,
+    )
+    controller = FlushController(
+        interval_seconds=interval_ms / 1000.0,
+        metrics=app[METRICS_KEY],
+    )
+    controllers[session_key] = controller
+    return controller
 
 
-async def _delete_and_resend(
-    request: web.Request,
-    session: CardSession,
-    old_message_id: str,
-    cards: list[dict[str, Any]],
-    bot_id: str | None,
-) -> bool:
-    metrics: SidecarMetrics = request.app[METRICS_KEY]
-    metrics.feishu_resend_attempts += 1
-    deleted = await _delete_card_for_app(request.app, old_message_id, bot_id)
-    if not deleted:
-        metrics.feishu_resend_failures += 1
-        return False
-    
-    new_message_ids: list[str] = []
-    for card in cards:
-        new_message_id = await _send_card(request, session.chat_id, card, bot_id)
-        if new_message_id is None:
-            metrics.feishu_resend_failures += 1
-            for mid in new_message_ids:
-                await _delete_card_for_app(request.app, mid, bot_id)
-            return False
-        new_message_ids.append(new_message_id)
-    
-    metrics.feishu_resend_successes += 1
-    session_key = _session_key_for_session(request.app, session)
-    feishu_message_ids: Dict[str, str] = request.app[FEISHU_MESSAGE_IDS_KEY]
-    feishu_message_ids[session_key] = new_message_ids[0]
-    feishu_message_ids[f"{session_key}:extra_cards"] = ",".join(new_message_ids[1:]) if len(new_message_ids) > 1 else ""
-    
-    summaries: Dict[str, dict[str, Any]] = request.app[CARD_SUMMARIES_KEY]
-    old_summary = summaries.pop(old_message_id, None)
-    if old_summary is not None and new_message_ids:
-        old_summary["message_id"] = new_message_ids[0]
-        summaries[new_message_ids[0]] = old_summary
-    return True
-
-
-async def _send_extra_cards(
-    request: web.Request,
-    session: CardSession,
-    extra_cards: list[dict[str, Any]],
-    bot_id: str | None,
-    session_key: str,
-) -> None:
-    feishu_message_ids: Dict[str, str] = request.app[FEISHU_MESSAGE_IDS_KEY]
-    extra_ids: list[str] = []
-    for card in extra_cards:
-        message_id = await _send_card(request, session.chat_id, card, bot_id)
-        if message_id:
-            extra_ids.append(message_id)
-    feishu_message_ids[f"{session_key}:extra_cards"] = ",".join(extra_ids) if extra_ids else ""
+def _final_drain_timeout_seconds(app: web.Application, session_key: str) -> float:
+    card_config = app[SESSION_CARD_CONFIGS_KEY].get(session_key, app[BASE_CARD_CONFIG_KEY])
+    timeout_ms = _safe_non_negative_int(
+        card_config.get("final_drain_timeout_ms"),
+        900,
+    )
+    return timeout_ms / 1000.0
 
 
 def _resolve_route(request: web.Request, event: SidecarEvent) -> RouteResult | None:
@@ -996,8 +1113,8 @@ def _resolve_route(request: web.Request, event: SidecarEvent) -> RouteResult | N
 
     if not _is_client_factory(feishu_client):
         diagnostics["last_route"] = {
-            "message_id": event.message_id,
-            "chat_id": event.chat_id,
+            "message_id_hash": _diagnostic_id_hash(event.message_id),
+            "chat_id_hash": _diagnostic_id_hash(event.chat_id),
             "bot_id": "",
             "reason": "legacy",
         }
@@ -1019,8 +1136,8 @@ def _resolve_route(request: web.Request, event: SidecarEvent) -> RouteResult | N
         return None
 
     route_diagnostics = {
-        "message_id": event.message_id,
-        "chat_id": event.chat_id,
+        "message_id_hash": _diagnostic_id_hash(event.message_id),
+        "chat_id_hash": _diagnostic_id_hash(event.chat_id),
         "bot_id": route.bot_id,
         "reason": route.reason,
     }
@@ -1202,6 +1319,51 @@ def _is_sensitive_key(key: str) -> bool:
     return any(part in lowered for part in ("secret", "token", "password", "key"))
 
 
+def _sanitize_health_diagnostics(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if lowered.endswith("_hash"):
+                sanitized[key_text] = item
+                continue
+            if _health_key_should_redact(lowered):
+                continue
+            if _health_key_should_hash(lowered):
+                sanitized[f"{key_text}_hash"] = _diagnostic_id_hash(item)
+                continue
+            sanitized[key_text] = _sanitize_health_diagnostics(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_health_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_health_diagnostics(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _health_key_should_redact(key: str) -> bool:
+    return any(part in key for part in ("secret", "token", "password"))
+
+
+def _health_key_should_hash(key: str) -> bool:
+    return any(part in key for part in ("chat_id", "open_id", "message_id"))
+
+
+def _diagnostic_id_hash(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _full_diagnostic_hash(value: str) -> str:
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _would_apply(session: CardSession, event: SidecarEvent) -> bool:
     return (
         event.conversation_id == session.conversation_id
@@ -1210,23 +1372,3 @@ def _would_apply(session: CardSession, event: SidecarEvent) -> bool:
         and event.sequence > session.last_sequence
         and session.status not in {"completed", "failed"}
     )
-
-
-def _should_update_card(last_update_at: Dict[str, float], event: SidecarEvent) -> bool:
-    if event.event in TERMINAL_EVENTS:
-        return True
-    if event.event in {"interaction.completed", "interaction.failed"}:
-        return True
-    previous = last_update_at.get(_session_key(event))
-    if previous is None:
-        return True
-    return time.monotonic() - previous >= UPDATE_MIN_INTERVAL_SECONDS
-
-
-def _update_delay_seconds(last_update_at: Dict[str, float], event: SidecarEvent) -> float:
-    if event.event not in TERMINAL_EVENTS:
-        return 0.0
-    previous = last_update_at.get(_session_key(event))
-    if previous is None:
-        return 0.0
-    return max(0.0, UPDATE_MIN_INTERVAL_SECONDS - (time.monotonic() - previous))
