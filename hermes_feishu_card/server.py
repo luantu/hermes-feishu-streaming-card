@@ -134,7 +134,10 @@ def create_app(
             except Exception as exc:
                 logger.warning("Loading GIF upload error: %s", exc)
 
-        app.on_startup.append(_startup_gif_upload)
+        async def _nonblocking_gif_upload(app: web.Application) -> None:
+            asyncio.create_task(_startup_gif_upload(app))
+
+        app.on_startup.append(_nonblocking_gif_upload)
 
     return app
 
