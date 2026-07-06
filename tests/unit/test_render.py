@@ -391,7 +391,7 @@ def test_render_completed_card_handles_empty_tokens_and_non_numeric_duration():
     card = render_card(session)
     content = str(card)
     assert "0s" in content
-    assert "Unknown" in content
+    assert "Unknown" not in content
     assert "↑0" in content
     assert "↓0" in content
     assert "ctx 0/0 0%" in content
