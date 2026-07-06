@@ -93,6 +93,11 @@ def create_app(
     app[MESSAGE_LOCKS_KEY] = {}
     app[FLUSH_CONTROLLERS_KEY] = {}
     app[UPLOADED_GIF_IMG_KEYS_KEY] = {}
+    raw_resend = card_config.get("resend_after_seconds", 60)
+    try:
+        app[RESEND_AFTER_SECONDS_KEY] = float(raw_resend) if raw_resend is not None else 60.0
+    except (TypeError, ValueError):
+        app[RESEND_AFTER_SECONDS_KEY] = 60.0
     app[DIAGNOSTICS_KEY] = {
         "last_update_error": "",
         "last_route_error": "",
@@ -817,6 +822,21 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             latest_session = sessions.get(session_key)
             if latest_session is None:
                 return False
+            resend_threshold = request.app[RESEND_AFTER_SECONDS_KEY]
+            if is_terminal and resend_threshold > 0 and latest_session.elapsed >= resend_threshold:
+                cards = _render_session_cards(request, latest_session)
+                new_card = cards[0] if cards else _render_session_card(request, latest_session)
+                sent = await _delete_and_resend(
+                    request, latest_session, feishu_message_id, cards, bot_id,
+                )
+                if sent:
+                    if len(cards) > 1:
+                        for extra_card in cards[1:]:
+                            try:
+                                await _send_card(request, event.chat_id, extra_card, bot_id)
+                            except Exception:
+                                pass
+                    return True
             latest_card = _render_session_card(request, latest_session)
             updated = await _update_card_for_app(
                 request.app,
@@ -1207,6 +1227,35 @@ async def _update_card(
     request: web.Request, message_id: str, card: dict[str, Any], bot_id: str | None
 ) -> bool:
     return await _update_card_for_app(request.app, message_id, card, bot_id)
+
+
+async def _delete_and_resend(
+    request: web.Request,
+    session: CardSession,
+    old_message_id: str,
+    cards: list[dict[str, Any]],
+    bot_id: str | None,
+) -> bool:
+    metrics: SidecarMetrics = request.app[METRICS_KEY]
+    metrics.feishu_delete_attempts += 1
+    try:
+        await _client_for_bot(request.app, bot_id).delete_message(old_message_id)
+        metrics.feishu_delete_successes += 1
+    except Exception:
+        metrics.feishu_delete_failures += 1
+    metrics.feishu_resend_attempts += 1
+    new_card = cards[0] if cards else _render_session_card(request, session)
+    new_message_id = await _send_card(
+        request, session.chat_id, new_card, bot_id,
+    )
+    if new_message_id is None:
+        metrics.feishu_resend_failures += 1
+        return False
+    metrics.feishu_resend_successes += 1
+    feishu_message_ids: Dict[str, str] = request.app[FEISHU_MESSAGE_IDS_KEY]
+    session_key = _session_key_for_session(request.app, session)
+    feishu_message_ids[session_key] = new_message_id
+    return True
 
 
 async def _update_card_for_app(
