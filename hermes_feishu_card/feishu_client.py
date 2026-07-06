@@ -10,6 +10,8 @@ from urllib.parse import quote, urlparse
 
 import aiohttp
 from aiohttp import FormData
+import ssl
+import certifi
 
 
 class FeishuAPIError(RuntimeError):
@@ -150,13 +152,14 @@ class FeishuClient:
         url = f"{self.config.base_url.rstrip('/')}/im/v1/images"
         headers = {"Authorization": f"Bearer {token}"}
         timeout = aiohttp.ClientTimeout(total=float(self.config.timeout_seconds))
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 with open(image_path, "rb") as f:
                     data = FormData()
                     data.add_field("image_type", "message")
                     data.add_field("image", f, filename="loading.gif", content_type="image/gif")
-                    async with session.request("POST", url, headers=headers, data=data) as response:
+                    async with session.request("POST", url, headers=headers, data=data, ssl=ssl_ctx) as response:
                         payload = await response.json(content_type=None)
             if not isinstance(payload, dict):
                 raise FeishuAPIError("Feishu image upload returned non-object response")
@@ -212,6 +215,7 @@ class FeishuClient:
             headers["Authorization"] = f"Bearer {token}"
 
         timeout = aiohttp.ClientTimeout(total=float(self.config.timeout_seconds))
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
@@ -220,6 +224,7 @@ class FeishuClient:
                     params=params,
                     json=json_body,
                     headers=headers,
+                    ssl=ssl_ctx,
                 ) as response:
                     try:
                         payload = await response.json(content_type=None)
