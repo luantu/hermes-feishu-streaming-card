@@ -216,24 +216,33 @@ class FeishuClient:
 
         timeout = aiohttp.ClientTimeout(total=float(self.config.timeout_seconds))
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.request(
-                    method,
-                    url,
-                    params=params,
-                    json=json_body,
-                    headers=headers,
-                    ssl=ssl_ctx,
-                ) as response:
-                    try:
-                        payload = await response.json(content_type=None)
-                    except (aiohttp.ContentTypeError, json.JSONDecodeError) as exc:
-                        raise FeishuAPIError(
-                            f"Feishu API returned non-json response: HTTP {response.status}"
-                        ) from exc
-        except aiohttp.ClientError as exc:
-            raise FeishuAPIError(f"Feishu API request failed: {exc.__class__.__name__}") from exc
+        last_exc: Exception | None = None
+        for _attempt in range(5):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.request(
+                        method,
+                        url,
+                        params=params,
+                        json=json_body,
+                        headers=headers,
+                        ssl=ssl_ctx,
+                    ) as response:
+                        try:
+                            payload = await response.json(content_type=None)
+                        except (aiohttp.ContentTypeError, json.JSONDecodeError) as exc:
+                            raise FeishuAPIError(
+                                f"Feishu API returned non-json response: HTTP {response.status}"
+                            ) from exc
+                break
+            except aiohttp.ClientConnectorSSLError as exc:
+                last_exc = exc
+                import time as _time
+                _time.sleep(0.3 * (_attempt + 1))
+            except aiohttp.ClientError as exc:
+                raise FeishuAPIError(f"Feishu API request failed: {exc.__class__.__name__}") from exc
+        else:
+            raise FeishuAPIError(f"Feishu API request failed: {last_exc.__class__.__name__}") from last_exc
 
         if not isinstance(payload, dict):
             raise FeishuAPIError("Feishu API returned non-object response")
