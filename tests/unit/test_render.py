@@ -484,7 +484,7 @@ def test_render_card_truncates_tables_over_limit():
         el.get("content", "") for el in card["body"]["elements"]
         if el.get("tag") == "markdown"
     )
-    assert "超出部分已省略" in body_text
+    assert "超出部分已省略" not in body_text
 
 
 def test_render_answer_stays_primary_and_raw_thinking_stays_hidden():

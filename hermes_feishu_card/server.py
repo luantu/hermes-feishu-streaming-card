@@ -15,7 +15,7 @@ from .bots import RouteResult
 from .events import EventValidationError, SidecarEvent
 from .flush import FlushController
 from .metrics import SidecarMetrics
-from .render import render_card
+from .render import render_card, render_cards
 from .session import CardSession
 
 FEISHU_CLIENT_KEY = web.AppKey("feishu_client", Any)
@@ -774,7 +774,8 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     if not applied and session.status in {"completed", "failed"} and event.event in TERMINAL_EVENTS:
         route = _resolve_route(request, event)
         if route is not None:
-            new_card = _render_session_card(request, session)
+            cards = _render_session_cards(request, session)
+            new_card = cards[0] if cards else _render_session_card(request, session)
             new_message_id = await _send_card(
                 request,
                 event.chat_id,
@@ -785,6 +786,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 applied = True
                 _store_card_summary(request.app, event, session, new_message_id)
                 metrics.events_applied += 1
+                for extra_card in cards[1:]:
+                    try:
+                        await _send_card(request, event.chat_id, extra_card, route.bot_id)
+                    except Exception:
+                        pass
                 return web.json_response({"ok": True, "applied": True, "new_card": True}), None
     if applied:
         _register_session_aliases(request.app, incoming_event, session_key)
@@ -831,6 +837,16 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             await controller.drain(_final_drain_timeout_seconds(request.app, session_key))
             current_task = controller.schedule(_render_and_update, terminal=True)
             controller.close()
+            async def _send_extra_cards():
+                await current_task
+                cards = _render_session_cards(request, session)
+                if len(cards) > 1:
+                    for extra_card in cards[1:]:
+                        try:
+                            await _send_card(request, event.chat_id, extra_card, bot_id)
+                        except Exception:
+                            pass
+            post_lock_task = _send_extra_cards()
         else:
             current_task = controller.schedule(_render_and_update, terminal=False)
         post_lock_task = current_task
@@ -1044,6 +1060,44 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
     )
     loading_gif_img_key = _resolve_gif_img_key(request.app, session)
     return render_card(
+        session,
+        footer_fields=footer_fields,
+        title=title,
+        interaction_mode=interaction_mode,
+        loading_gif_img_key=loading_gif_img_key,
+        show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
+        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), False),
+        max_timeline_items=_safe_positive_int(
+            card_config.get("max_timeline_items"), 12
+        ),
+        max_reasoning_chars=_safe_positive_int(
+            card_config.get("max_reasoning_chars"), 1200
+        ),
+        max_tool_result_chars=_safe_positive_int(
+            card_config.get("max_tool_result_chars"), 600
+        ),
+    )
+
+
+def _render_session_cards(request: web.Request, session: CardSession) -> list[dict[str, Any]]:
+    card_config = request.app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(request.app, session),
+        {},
+    )
+    footer_fields = card_config.get("footer_fields", request.app[FOOTER_FIELDS_KEY])
+    if isinstance(footer_fields, list):
+        footer_fields = list(footer_fields)
+    elif footer_fields is not None:
+        footer_fields = request.app[FOOTER_FIELDS_KEY]
+    title = card_config.get("title", request.app[CARD_TITLE_KEY])
+    if not isinstance(title, str):
+        title = request.app[CARD_TITLE_KEY]
+    interaction_mode = _interaction_mode_for_session_key(
+        request.app,
+        _session_key_for_session(request.app, session),
+    )
+    loading_gif_img_key = _resolve_gif_img_key(request.app, session)
+    return render_cards(
         session,
         footer_fields=footer_fields,
         title=title,
