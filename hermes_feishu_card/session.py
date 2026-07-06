@@ -51,7 +51,7 @@ class CardSession:
     answer_text: str = ""
     tools: Dict[str, ToolState] = field(default_factory=dict)
     tokens: Dict[str, Any] = field(default_factory=dict)
-    model: str = "Unknown"
+    model: str = ""
     context: Dict[str, Any] = field(default_factory=dict)
     duration: float = 0.0
     attachments: list[dict[str, str]] = field(default_factory=list)
@@ -194,7 +194,7 @@ class CardSession:
             tokens = event.data.get("tokens", {})
             self.tokens = dict(tokens) if isinstance(tokens, dict) else {}
             model = event.data.get("model")
-            self.model = model if isinstance(model, str) and model.strip() else "Unknown"
+            self.model = model if isinstance(model, str) and model.strip() else ""
             context = event.data.get("context", {})
             self.context = dict(context) if isinstance(context, dict) else {}
             try:
