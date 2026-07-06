@@ -205,6 +205,12 @@ def _is_local_sidecar_host(host: str) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import os as _os
+    try:
+        import certifi
+        _os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    except ImportError:
+        pass
     parser = argparse.ArgumentParser(prog="hermes-feishu-card-sidecar")
     parser.add_argument("--config", default="config.yaml.example")
     parser.add_argument("--token", default="")
