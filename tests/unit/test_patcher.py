@@ -181,6 +181,40 @@ def test_apply_patch_installs_feishu_command_card_adapter_methods():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_patch_installs_platform_notice_card_hook():
+    content = (
+        "class GatewayRunner:\n"
+        "    async def _handle_message(self, event):\n"
+        "        source = event.source\n"
+        "        return None\n"
+        "\n"
+        "    async def _deliver_platform_notice(self, source, content):\n"
+        "        adapter = self.adapters.get(source.platform)\n"
+        "        if not adapter:\n"
+        "            return None\n"
+        "        return await adapter.send(source.chat_id, content)\n"
+        "\n"
+        "    async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "        response = 'ok'\n"
+        "        _response_time = 1\n"
+        "        agent_result = {}\n"
+        "        return response\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert patcher.PLATFORM_NOTICE_PATCH_BEGIN in patched
+    assert "handle_platform_notice_from_hermes" in patched
+    assert (
+        "if _hfc_handle_platform_notice(self, source, content):" in patched
+    )
+    assert patched.index(patcher.PLATFORM_NOTICE_PATCH_BEGIN) < patched.index(
+        "adapter = self.adapters.get(source.platform)"
+    )
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
 def test_cron_marker_block_in_other_function_is_not_owned():
     content = (
         "def other():\n"

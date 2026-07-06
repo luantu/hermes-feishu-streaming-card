@@ -38,6 +38,7 @@ SUPPORTED_RUNTIME_EVENTS = {
     "tool.updated",
     "message.completed",
     "message.failed",
+    "system.notice",
     "interaction.requested",
     "interaction.completed",
     "interaction.failed",
@@ -81,6 +82,10 @@ _HFC_FEISHU_COMMAND_RESULT_CONTEXT: ContextVar[dict[str, str] | None] = ContextV
     "hfc_feishu_command_result_context",
     default=None,
 )
+_HFC_FEISHU_NOTICE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "hfc_feishu_notice_context",
+    default=None,
+)
 _HFC_COMMAND_RESULT_CARD_COMMANDS = {"new", "reset", "clear", "undo", "stop", "model"}
 
 
@@ -95,6 +100,7 @@ def reset_runtime_state() -> None:
     with _PENDING_DELTAS_LOCK:
         _PENDING_DELTAS.clear()
     _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
+    _HFC_FEISHU_NOTICE_CONTEXT.set(None)
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -604,11 +610,24 @@ def _reply_to_message_id_from_runtime(
     gateway_event_obj: Any,
 ) -> str:
     aliases = ("reply_to_message_id", "quote_message_id", "parent_message_id")
+    source_obj = local_vars.get("source")
     value = (
         _first_string(local_vars, aliases)
         or _first_attr_string(message_obj, aliases)
         or _first_attr_string(gateway_event_obj, aliases)
+        or _first_attr_string(source_obj, aliases)
     )
+    if not value:
+        source_message_id = _first_attr_string(
+            source_obj, ("message_id", "msg_id", "event_message_id")
+        )
+        event_message_id = _message_id_from_local_vars(local_vars)
+        if (
+            source_message_id
+            and source_message_id != event_message_id
+            and _thread_id_for_runtime_event(local_vars, message_obj, source_obj)
+        ):
+            value = source_message_id
     return value or ""
 
 
@@ -1253,6 +1272,8 @@ def _hfc_command_from_event(event: Any) -> str:
     command = command.strip()
     if command.startswith("/"):
         command = command[1:]
+    if not command:
+        return ""
     return command.split(None, 1)[0].strip().lower()
 
 
@@ -1329,6 +1350,224 @@ def _hfc_take_feishu_command_result_context(
     return context
 
 
+def _hfc_notice_context_from_event(event: Any) -> dict[str, str] | None:
+    if event is None:
+        return None
+    source = getattr(event, "source", None)
+    if _platform_name({}, source) != "feishu":
+        return None
+    return _hfc_notice_context_from_source(source, event=event)
+
+
+def _hfc_notice_context_from_source(
+    source: Any,
+    *,
+    event: Any = None,
+) -> dict[str, str] | None:
+    if _platform_name({}, source) != "feishu":
+        return None
+    chat_id = str(getattr(source, "chat_id", "") or "").strip()
+    if not chat_id:
+        return None
+    message_id = str(
+        getattr(source, "message_id", "")
+        or getattr(event, "message_id", "")
+        or ""
+    ).strip()
+    thread_id = str(
+        getattr(source, "thread_id", "")
+        or (getattr(event, "thread_id", "") if event is not None else "")
+        or ""
+    ).strip()
+    return {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "conversation_id": thread_id or chat_id,
+        "thread_id": thread_id,
+    }
+
+
+def _hfc_classify_system_notice(content: Any) -> dict[str, str] | None:
+    text = str(content or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if text.startswith("⏳") or lowered.startswith("working ") or "working —" in lowered:
+        return {
+            "title": "运行中",
+            "level": "info",
+            "notice_kind": "heartbeat",
+            "notice_id": "heartbeat",
+        }
+    if "caps context" in lowered and "auto-compaction" in lowered:
+        return {
+            "title": "上下文窗口提示",
+            "level": "info",
+            "notice_kind": "context-cap",
+            "notice_id": "context-cap",
+        }
+    if "session automatically reset" in lowered:
+        return {
+            "title": "会话已自动重置",
+            "level": "success",
+            "notice_kind": "session-reset",
+            "notice_id": "session-reset",
+        }
+    if "reading skill" in lowered:
+        return {
+            "title": "技能加载",
+            "level": "info",
+            "notice_kind": "skill-loading",
+            "notice_id": _hfc_content_notice_id("skill-loading", text),
+        }
+    if "self-improvement review" in lowered:
+        return {
+            "title": "自我改进",
+            "level": "info",
+            "notice_kind": "self-improvement",
+            "notice_id": _hfc_content_notice_id("self-improvement", text),
+        }
+    if "context compression" in lowered or "compression model" in lowered:
+        return {
+            "title": "上下文压缩提示",
+            "level": "info",
+            "notice_kind": "compression",
+            "notice_id": _hfc_content_notice_id("compression", text),
+        }
+    return None
+
+
+def _hfc_content_notice_id(kind: str, content: str) -> str:
+    digest = sha256(f"{kind}:{content}".encode("utf-8")).hexdigest()[:10]
+    return f"{kind}:{digest}"
+
+
+async def _hfc_send_system_notice_card(
+    adapter: Any,
+    *,
+    chat_id: str,
+    content: Any,
+    reply_to: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    existing_message_id: str | None = None,
+) -> Any:
+    notice = _hfc_classify_system_notice(content)
+    if notice is None:
+        return _send_result(False, error="not a system notice")
+    try:
+        config = load_runtime_config()
+        if not config.enabled:
+            return _send_result(False, error="disabled")
+        context = _HFC_FEISHU_NOTICE_CONTEXT.get()
+        if not isinstance(context, dict):
+            context = {}
+        message_id = str(existing_message_id or context.get("message_id") or "").strip()
+        if message_id and not message_id.startswith("notice_"):
+            payload = _hfc_build_system_notice_payload(
+                chat_id=chat_id,
+                content=str(content or ""),
+                reply_to=reply_to,
+                metadata=metadata,
+                context=context,
+                notice=notice,
+                notice_scope="session",
+                message_id=message_id,
+            )
+            post_result = await _post_json_ordered_response(
+                config.event_url,
+                payload,
+                max(_timeout_for_event(config, payload["event"]), TERMINAL_TIMEOUT_SECONDS),
+            )
+            if _hfc_notice_post_applied(post_result):
+                return _send_result(True, message_id=payload["message_id"])
+
+        independent_message_id = (
+            message_id
+            if message_id.startswith("notice_")
+            else _hfc_independent_notice_message_id(chat_id, str(content or ""), notice)
+        )
+        payload = _hfc_build_system_notice_payload(
+            chat_id=chat_id,
+            content=str(content or ""),
+            reply_to=reply_to,
+            metadata=metadata,
+            context=context,
+            notice=notice,
+            notice_scope="independent",
+            message_id=independent_message_id,
+        )
+        post_result = await _post_json_ordered_response(
+            config.event_url,
+            payload,
+            max(_timeout_for_event(config, payload["event"]), TERMINAL_TIMEOUT_SECONDS),
+        )
+        if _hfc_notice_post_applied(post_result):
+            return _send_result(True, message_id=payload["message_id"])
+    except Exception as exc:
+        _hfc_warn(f"send system notice card failed: {exc.__class__.__name__}: {exc}")
+        return _send_result(False, error=str(exc))
+    return _send_result(False, error="system notice card not applied")
+
+
+def _hfc_notice_post_applied(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return True
+    if result.get("ok") is False:
+        return False
+    return result.get("applied") is not False
+
+
+def _hfc_independent_notice_message_id(
+    chat_id: str,
+    content: str,
+    notice: dict[str, str],
+) -> str:
+    bucket = int(time.time() // 300)
+    raw = (
+        f"{chat_id}:"
+        f"{notice.get('notice_id', '')}:"
+        f"{content}:"
+        f"{bucket}"
+    ).encode("utf-8")
+    return "notice_" + sha256(raw).hexdigest()[:16]
+
+
+def _hfc_build_system_notice_payload(
+    *,
+    chat_id: str,
+    content: str,
+    reply_to: str | None,
+    metadata: dict[str, Any] | None,
+    context: dict[str, str],
+    notice: dict[str, str],
+    notice_scope: str,
+    message_id: str,
+) -> dict[str, Any]:
+    reply_id = str(reply_to or "").strip() or _metadata_reply_to(metadata)
+    conversation_id = str(context.get("conversation_id") or chat_id).strip() or chat_id
+    thread_id = str(context.get("thread_id") or "").strip()
+    source = SimpleNamespace(platform="feishu", chat_id=chat_id, thread_id=thread_id)
+    local_vars: dict[str, Any] = {
+        "source": source,
+        "chat_id": chat_id,
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+        "content": content,
+        "_hfc_notice_title": notice.get("title") or "运行提示",
+        "_hfc_notice_level": notice.get("level") or "info",
+        "_hfc_notice_kind": notice.get("notice_kind") or "system",
+        "_hfc_notice_id": notice.get("notice_id") or "",
+        "_hfc_notice_scope": notice_scope,
+        "delivery_kind": "notice" if notice_scope == "independent" else "chat",
+    }
+    if reply_id:
+        local_vars["reply_to_message_id"] = reply_id
+    payload = build_event("system.notice", local_vars)
+    if payload is None:
+        raise RuntimeError("failed to build system.notice payload")
+    return payload
+
+
 async def _hfc_send_native_command_result_card(
     adapter: Any,
     *,
@@ -1400,9 +1639,177 @@ async def _hfc_send_with_native_command_result_card(
         )
         if getattr(result, "success", False):
             return result
+    notice_result = await _hfc_send_system_notice_card(
+        self,
+        chat_id=chat_id,
+        content=content,
+        reply_to=reply_to,
+        metadata=metadata,
+    )
+    if getattr(notice_result, "success", False):
+        return notice_result
+    if _hfc_classify_system_notice(content) is not None:
+        error = getattr(notice_result, "error", None) or "system notice card not applied"
+        _hfc_warn(f"system notice native fallback suppressed: {error}")
+        return _send_result(
+            True,
+            message_id=(
+                str(reply_to or "").strip()
+                or _metadata_reply_to(metadata)
+                or "notice_suppressed"
+            ),
+        )
     if callable(original):
         return await original(self, chat_id, content, reply_to=reply_to, metadata=metadata)
     return _send_result(False, error="original Feishu send unavailable")
+
+
+async def _hfc_edit_message_with_system_notice_card(self: Any, *args: Any, **kwargs: Any) -> Any:
+    original = getattr(type(self), "_hfc_original_edit_message", None)
+    parsed = _hfc_parse_edit_message_args(args, kwargs)
+    if parsed is not None:
+        chat_id, message_id, content, metadata = parsed
+        notice_result = await _hfc_send_system_notice_card(
+            self,
+            chat_id=chat_id,
+            content=content,
+            metadata=metadata,
+            existing_message_id=message_id,
+        )
+        if getattr(notice_result, "success", False):
+            return notice_result
+    if callable(original):
+        return await original(self, *args, **kwargs)
+    return _send_result(False, error="original Feishu edit_message unavailable")
+
+
+def handle_platform_notice_from_hermes(runner: Any, source: Any, content: str) -> bool:
+    """Route Hermes native platform notices into Feishu cards before text fallback."""
+    try:
+        if _platform_name({}, source) != "feishu":
+            return False
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        if not chat_id:
+            return False
+        if _hfc_classify_system_notice(str(content or "")) is None:
+            return False
+        adapter = _hfc_feishu_adapter_from_runner(runner, source)
+        if adapter is None:
+            return False
+        _hfc_schedule_platform_notice_card(
+            adapter=adapter,
+            chat_id=chat_id,
+            content=str(content or ""),
+            reply_to=str(getattr(source, "message_id", "") or "").strip() or None,
+            notice_context=_hfc_notice_context_from_source(source),
+        )
+        return True
+    except Exception as exc:
+        _hfc_warn(
+            "platform notice hook failed: "
+            f"{exc.__class__.__name__}: {exc}"
+        )
+        return False
+
+
+async def _hfc_deliver_platform_notice_with_card(
+    self: Any,
+    source: Any,
+    content: str,
+) -> Any:
+    original = getattr(type(self), "_hfc_original_deliver_platform_notice", None)
+    if handle_platform_notice_from_hermes(self, source, content):
+        return _send_result(
+            True,
+            message_id=str(getattr(source, "message_id", "") or "").strip() or None,
+        )
+    if callable(original):
+        return await original(self, source, content)
+    return None
+
+
+def _hfc_feishu_adapter_from_runner(runner: Any, source: Any) -> Any:
+    adapters = getattr(runner, "adapters", {})
+    if not isinstance(adapters, dict):
+        return None
+    adapter = adapters.get(getattr(source, "platform", None))
+    if adapter is not None:
+        return adapter
+    for key, candidate in list(adapters.items()):
+        if _is_feishu_adapter_key(key, candidate):
+            return candidate
+    return None
+
+
+def _hfc_schedule_platform_notice_card(
+    *,
+    adapter: Any,
+    chat_id: str,
+    content: str,
+    reply_to: str | None,
+    notice_context: dict[str, str] | None,
+) -> None:
+    async def send_notice() -> None:
+        token = None
+        if notice_context is not None:
+            token = _HFC_FEISHU_NOTICE_CONTEXT.set(notice_context)
+        try:
+            notice_result = await _hfc_send_system_notice_card(
+                adapter,
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=None,
+            )
+            if not getattr(notice_result, "success", False):
+                error = getattr(notice_result, "error", None) or "unknown"
+                _hfc_warn(
+                    "system notice card delivery failed; native notice suppressed: "
+                    f"{error}"
+                )
+        except Exception as exc:
+            _hfc_warn(
+                "system notice card delivery failed; native notice suppressed: "
+                f"{exc.__class__.__name__}: {exc}"
+            )
+        finally:
+            if token is not None:
+                _HFC_FEISHU_NOTICE_CONTEXT.reset(token)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(send_notice())
+        return
+    loop.create_task(send_notice())
+
+
+def _hfc_parse_edit_message_args(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[str, str, str, dict[str, Any] | None] | None:
+    chat_id = str(kwargs.get("chat_id") or "").strip()
+    message_id = str(kwargs.get("message_id") or kwargs.get("msg_id") or "").strip()
+    content = kwargs.get("content", kwargs.get("text"))
+    metadata = kwargs.get("metadata")
+    if len(args) >= 3:
+        chat_id = chat_id or str(args[0] or "").strip()
+        message_id = message_id or str(args[1] or "").strip()
+        if content is None:
+            content = args[2]
+        if metadata is None and len(args) >= 4 and isinstance(args[3], dict):
+            metadata = args[3]
+    elif len(args) >= 2:
+        message_id = message_id or str(args[0] or "").strip()
+        if content is None:
+            content = args[1]
+    if not chat_id:
+        context = _HFC_FEISHU_NOTICE_CONTEXT.get()
+        if isinstance(context, dict):
+            chat_id = str(context.get("chat_id") or "").strip()
+    if not chat_id or not message_id or content is None:
+        return None
+    return chat_id, message_id, str(content or ""), metadata if isinstance(metadata, dict) else None
 
 
 def _hfc_slash_choice_label(choice: str) -> tuple[str, str]:
@@ -2170,10 +2577,35 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
         if not isinstance(adapters, dict):
             if event is not None:
                 _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
+            _HFC_FEISHU_NOTICE_CONTEXT.set(None)
             return False
+        runner_type = type(runner)
+        current_notice_delivery = runner_type.__dict__.get("_deliver_platform_notice")
+        if current_notice_delivery is _hfc_deliver_platform_notice_with_card:
+            setattr(runner_type, "_hfc_platform_notice_wrapped", True)
+        else:
+            original_notice_delivery = (
+                getattr(runner_type, "_hfc_original_deliver_platform_notice", None)
+                or current_notice_delivery
+                or getattr(runner_type, "_deliver_platform_notice", None)
+            )
+            if callable(original_notice_delivery):
+                setattr(
+                    runner_type,
+                    "_hfc_original_deliver_platform_notice",
+                    original_notice_delivery,
+                )
+                setattr(
+                    runner_type,
+                    "_deliver_platform_notice",
+                    _hfc_deliver_platform_notice_with_card,
+                )
+                setattr(runner_type, "_hfc_platform_notice_wrapped", True)
+
         command_result_context = (
             _hfc_command_result_context_from_event(event) if event is not None else None
         )
+        notice_context = _hfc_notice_context_from_event(event) if event is not None else None
         installed = False
         for key, adapter in list(adapters.items()):
             if not _is_feishu_adapter_key(key, adapter):
@@ -2253,6 +2685,30 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             elif callable(getattr(adapter_type, "send", None)):
                 adapter_ready = True
 
+            current_edit_message = adapter_type.__dict__.get("edit_message")
+            if current_edit_message is _hfc_edit_message_with_system_notice_card:
+                setattr(adapter_type, "_hfc_system_notice_edit_wrapped", True)
+                adapter_ready = True
+            elif not getattr(adapter_type, "_hfc_system_notice_edit_wrapped", False):
+                original_edit_message = current_edit_message or getattr(
+                    adapter_type, "edit_message", None
+                )
+                if callable(original_edit_message):
+                    setattr(
+                        adapter_type,
+                        "_hfc_original_edit_message",
+                        original_edit_message,
+                    )
+                    setattr(
+                        adapter_type,
+                        "edit_message",
+                        _hfc_edit_message_with_system_notice_card,
+                    )
+                    setattr(adapter_type, "_hfc_system_notice_edit_wrapped", True)
+                    adapter_ready = True
+            elif callable(getattr(adapter_type, "edit_message", None)):
+                adapter_ready = True
+
             if adapter_ready:
                 _hfc_refresh_feishu_event_handler(adapter)
                 setattr(adapter_type, "_hfc_command_card_methods_installed", True)
@@ -2261,11 +2717,13 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(
                 command_result_context if installed else None
             )
+            _HFC_FEISHU_NOTICE_CONTEXT.set(notice_context if installed else None)
         return installed
     except Exception:
         if event is not None:
             try:
                 _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
+                _HFC_FEISHU_NOTICE_CONTEXT.set(None)
             except Exception:
                 pass
         return False
@@ -2849,6 +3307,13 @@ def _event_data(
         "profile_id": profile_id,
         "profile_source": profile_source,
     }
+    reply_to_message_id = _reply_to_message_id_from_runtime(
+        local_vars,
+        message_obj,
+        local_vars.get("event"),
+    )
+    if reply_to_message_id:
+        data["reply_to_message_id"] = reply_to_message_id
     if event_name in {"thinking.delta", "answer.delta"}:
         text = _first_raw_string(local_vars, ("text", "delta", "delta_text", "content"))
         if text is None:
@@ -2857,6 +3322,44 @@ def _event_data(
         mode = _first_string(local_vars, ("mode", "_hfc_text_mode"))
         if mode:
             data["mode"] = mode
+        return data
+    if event_name == "system.notice":
+        content = _first_raw_string(local_vars, ("content", "text", "message"))
+        if content is None:
+            content = _first_attr_raw_string(message_obj, ("text", "content"))
+        title = _first_string(local_vars, ("_hfc_notice_title", "title")) or "运行提示"
+        level = _first_string(local_vars, ("_hfc_notice_level", "level")) or "info"
+        notice_kind = _first_string(local_vars, ("_hfc_notice_kind", "notice_kind")) or "system"
+        notice_id = _first_string(local_vars, ("_hfc_notice_id", "notice_id")) or ""
+        notice_scope = (
+            _first_string(local_vars, ("_hfc_notice_scope", "notice_scope"))
+            or "session"
+        )
+        data.update(
+            {
+                "title": title,
+                "content": content or "",
+                "level": level,
+                "notice_kind": notice_kind,
+                "notice_id": notice_id,
+                "notice_scope": notice_scope,
+            }
+        )
+        delivery_kind = _first_string(local_vars, ("delivery_kind",))
+        if delivery_kind:
+            data["delivery_kind"] = delivery_kind
+        reply_id = (
+            _first_string(
+                local_vars,
+                ("reply_to_message_id", "quote_message_id", "parent_message_id"),
+            )
+            or _first_attr_string(
+                message_obj,
+                ("reply_to_message_id", "quote_message_id", "parent_message_id"),
+            )
+        )
+        if reply_id:
+            data["reply_to_message_id"] = reply_id
         return data
     if event_name.startswith("interaction."):
         data.update(

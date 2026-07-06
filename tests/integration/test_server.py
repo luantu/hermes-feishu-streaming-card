@@ -544,6 +544,99 @@ async def test_message_started_sends_card_as_thread_reply(client):
     assert feishu_client.sent[0][3] == "om_user_message"
 
 
+async def test_topic_stream_event_with_reply_anchor_updates_existing_card(client):
+    test_client, feishu_client = client
+
+    started = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+
+    assert started.status == 200
+    assert await started.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    assert feishu_client.sent[0][2] == "omt_topic"
+    assert feishu_client.sent[0][3] == "om_topic_user"
+
+    tool = await test_client.post(
+        "/events",
+        json=event_payload(
+            "tool.updated",
+            1,
+            {
+                "reply_to_message_id": "om_topic_user",
+                "tool_id": "terminal",
+                "name": "terminal",
+                "status": "running",
+                "detail": "brew install ripgrep",
+            },
+            conversation_id="omt_topic",
+            message_id="om_topic_stream_reply",
+            thread_id="omt_topic",
+        ),
+    )
+
+    assert tool.status == 200
+    assert await tool.json() == {"ok": True, "applied": True}
+    message_id, card = await wait_for_card_update(feishu_client, "brew install ripgrep")
+    assert message_id == "feishu-message-1"
+    assert "terminal" in str(card)
+    assert len(feishu_client.sent) == 1
+
+
+async def test_topic_system_notice_with_reply_anchor_updates_existing_card(client):
+    test_client, feishu_client = client
+
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+
+    notice = await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            1,
+            {
+                "reply_to_message_id": "om_topic_user",
+                "title": "上下文窗口提示",
+                "content": (
+                    "ℹ️ Codex gpt-5.5 caps context at 272K, "
+                    "so auto-compaction was raised to 85%."
+                ),
+                "level": "info",
+                "notice_kind": "context-cap",
+                "notice_id": "context-cap",
+                "notice_scope": "session",
+            },
+            conversation_id="omt_topic",
+            message_id="om_topic_stream_reply",
+            thread_id="omt_topic",
+        ),
+    )
+
+    assert notice.status == 200
+    assert await notice.json() == {"ok": True, "applied": True}
+    message_id, card = await wait_for_card_update(feishu_client, "auto-compaction")
+    assert message_id == "feishu-message-1"
+    assert "上下文窗口提示" in str(card)
+    assert len(feishu_client.sent) == 1
+
+
 async def test_interaction_request_renders_buttons_and_callback_resolves(client):
     test_client, feishu_client = client
 
@@ -814,23 +907,73 @@ async def test_non_object_json_payload_returns_400_json(client):
     assert feishu_client.updated == []
 
 
-async def test_event_before_started_is_not_applied(client):
+@pytest.mark.parametrize(
+    ("event_name", "data", "expected_text"),
+    [
+        ("answer.delta", {"text": "提前到达的回答"}, "提前到达的回答"),
+        ("thinking.delta", {"text": "提前到达的思考"}, "Hermes Agent"),
+        (
+            "tool.updated",
+            {
+                "tool_id": "tool-1",
+                "name": "search",
+                "status": "running",
+                "detail": "提前到达的工具",
+            },
+            "search",
+        ),
+        ("message.completed", {"answer": "提前完成的回答"}, "提前完成的回答"),
+    ],
+)
+async def test_message_event_without_started_creates_initial_card(
+    client, event_name, data, expected_text
+):
     test_client, feishu_client = client
 
     response = await test_client.post(
         "/events",
-        json=event_payload("thinking.delta", 1, {"text": "提前到达"}),
+        json=event_payload(event_name, 1, data),
     )
 
     assert response.status == 200
-    assert await response.json() == {"ok": True, "applied": False}
-    assert feishu_client.sent == []
+    assert await response.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    assert expected_text in str(feishu_client.sent[0][1])
     assert feishu_client.updated == []
     health = await test_client.get("/health")
     metrics = (await health.json())["metrics"]
     assert metrics["events_received"] == 1
-    assert metrics["events_applied"] == 0
-    assert metrics["events_ignored"] == 1
+    assert metrics["events_applied"] == 1
+    assert metrics["events_ignored"] == 0
+
+
+async def test_independent_system_notice_without_started_sends_notice_card(client):
+    test_client, feishu_client = client
+
+    response = await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            1,
+            {
+                "title": "上下文窗口提示",
+                "content": "Codex gpt-5.5 caps context at 272K.",
+                "notice_scope": "independent",
+                "level": "info",
+            },
+            message_id="notice_context_cap",
+        ),
+    )
+
+    assert response.status == 200
+    assert await response.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    card = feishu_client.sent[0][1]
+    assert card["header"]["title"]["content"] == "上下文窗口提示"
+    assert card["header"]["template"] == "blue"
+    assert "Codex gpt-5.5 caps context at 272K." in str(card)
+    assert "生成中" not in str(card)
+    assert feishu_client.updated == []
 
 
 async def test_cron_completed_event_sends_completed_card_without_started(client):

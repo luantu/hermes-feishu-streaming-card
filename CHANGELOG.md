@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## Unreleased
+
+### Fixed
+- issue #79: `install.sh` and `install-docker.sh` now suppress pip's root-user warning by default and keep recoverable `externally-managed-environment` output from looking like a fatal install failure.
+- Docker installs now retry PEP 668 externally managed Python environments with `--break-system-packages`, matching the macOS/Linux installer behavior.
+
+### Tests
+- Added installer regression coverage for pip root-user warning suppression and Debian/Ubuntu externally managed Python retry output.
+
+## V3.8.9 — 2026-07-04
+
+See also: [docs/release-notes-v3.8.9.md](docs/release-notes-v3.8.9.md)
+
+### Fixed
+- Fixed Feishu/Lark topic replies where the initial card appeared but later `answer.delta`, `thinking.delta`, `tool.updated`, or `system.notice` events could fail to update the same card when Hermes used a different streaming `message_id`.
+- Session-scoped native Hermes notices in topics now resolve back to the active card by `reply_to_message_id`, so accepted notices return `applied: true` and do not fall through to duplicate gray native messages.
+- Recognized Hermes system notices no longer fall back to native gray Feishu/Lark text when card delivery times out. This suppresses the duplicate external notice while the active topic card continues to own the run state.
+- Hook runtime stream events now preserve the original Feishu reply anchor from Relay `source.message_id`, allowing topic updates to stay associated with the triggering user message even when Hermes' internal stream id changes.
+
+### Tests
+- Added Feishu topic regression coverage for stream/tool updates and `system.notice` updates that use a different event `message_id` but the same `reply_to_message_id`.
+- Added hook runtime coverage for topic stream events carrying `reply_to_message_id` from Relay source metadata.
+- Added a timeout regression for native Feishu adapter `send()` proving classified system notices are suppressed instead of being resent as gray text when the card attempt misses its deadline.
+
+## V3.8.8 — 2026-07-03
+
+See also: [docs/release-notes-v3.8.8.md](docs/release-notes-v3.8.8.md)
+
+### Added
+- Added `system.notice` event support for native Hermes runtime/status notices that previously appeared as separate gray Feishu/Lark text messages.
+- Added card/timeline rendering for session-scoped notices and compact standalone notice cards for task-external notices.
+- Added runtime classification for covered Hermes notices: `Working` heartbeats, context-window/auto-compaction notices, automatic session reset notices, skill-loading notices, self-improvement review notices, and context-compression notices.
+
+### Fixed
+- Long-running heartbeat notices now update the same timeline entry via `notice_id` instead of appending repeated entries.
+- Native Feishu adapter `send()` and `edit_message()` wrappers now try notice card delivery first and fall back to Hermes native text/edit paths if the sidecar is unavailable or the notice is not recognized.
+- Fixed an empty slash-command parsing edge case in the Feishu adapter patch path so normal Feishu messages with `get_command() == ""` do not trip command-card installation.
+
+### Tests
+- Added unit and integration coverage for `system.notice` schema parsing, session timeline updates, independent notice cards, compact notice rendering, sidecar card creation, Feishu adapter send interception, independent fallback, and heartbeat edit updates.
+
+## V3.8.7 — 2026-07-02
+
+See also: [docs/release-notes-v3.8.7.md](docs/release-notes-v3.8.7.md)
+
+### Fixed
+- Fixed issue #75 for newer Hermes event streams that can start with `answer.delta`, `thinking.delta`, `tool.updated`, or `message.completed` without a prior `message.started`. The sidecar now creates the card session and sends the initial Feishu/Lark card from those first events instead of ignoring the whole stream.
+- Preserved the existing cron completion behavior while sharing the same first-event session creation path, including card summary and terminal diagnostics.
+
+### Tests
+- Added regression coverage for missing-`message.started` first events across answer delta, thinking delta, tool update, and completed answer cases.
+
 ## V3.8.6 — 2026-07-02
 
 See also: [docs/release-notes-v3.8.6.md](docs/release-notes-v3.8.6.md)

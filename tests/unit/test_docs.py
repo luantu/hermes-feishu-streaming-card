@@ -10,13 +10,9 @@ def read_doc(path: str) -> str:
 
 def test_readme_documents_sidecar_only_and_supported_hermes_version():
     readme = read_doc("README.md")
+    guide = read_doc("docs/user-guide.md")
 
     assert readme.startswith("# Hermes 飞书流式卡片插件\n")
-    assert "V3.6.6" in readme
-    assert "V3.6.5" in readme
-    assert "V3.6.4" in readme
-    assert "V3.6.3" in readme
-    assert "V3.6.2" in readme
     assert "[English](README.en.md)" in readme
     assert "img.shields.io/github/stars/baileyh8/hermes-feishu-streaming-card" in readme
     assert "img.shields.io/github/v/release/baileyh8/hermes-feishu-streaming-card" in readme
@@ -26,8 +22,11 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "img.shields.io/badge/Runtime-Sidecar--only" in readme
     assert "docs/assets/readme-cover.png" in readme
     assert "docs/assets/feishu-card-showcase-v385.png" in readme
-    assert "项目亮点" in readme
-    assert "解决的真实痛点" in readme
+    assert "docs/assets/feishu-topic-card-showcase-v389.png" in readme
+    assert "docs/user-guide.md" in readme
+    assert "PR #76" in readme
+    assert "你能看到什么" in readme
+    assert "适用场景" in readme
     assert "Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片" in readme
     assert "/hfc status" in readme
     assert "HERMES_FEISHU_CARD_DELTA_COALESCE_MS" in readme
@@ -40,87 +39,98 @@ def test_readme_documents_sidecar_only_and_supported_hermes_version():
     assert "thinking.delta" in readme
     assert "v2026.4.23" in readme
     assert "Git tag `v2026.4.23+`" in readme
+    assert len(readme.splitlines()) <= 260
     assert (ROOT / "docs/assets/readme-cover.png").exists()
     assert (ROOT / "docs/assets/feishu-card-showcase-v385.png").exists()
     assert (ROOT / "docs/assets/feishu-weather-card.png").exists()
-    assert "V3.2" in readme
+    assert "V3.6.6" in guide
+    assert "V3.6.5" in guide
+    assert "V3.6.4" in guide
+    assert "V3.6.3" in guide
+    assert "V3.6.2" in guide
+    assert "V3.2" in guide
     assert "多 bot" in readme
     assert "群聊" in readme
     assert "bindings.chats" in readme
-    assert "group_rules" in readme
+    assert "group_rules" in guide
 
 
 def test_readme_documents_v340_hermes_compatibility():
     readme = read_doc("README.md")
+    guide = read_doc("docs/user-guide.md")
+    docs = readme + "\n" + guide
 
-    assert "V3.6.0" in readme
-    assert "issue #41" in readme
-    assert "PR #42" in readme
-    assert "授权/选项按钮" in readme
-    assert "issue #39" in readme
-    assert "v0.14.0" in readme
-    assert "0.15.x" in readme
-    assert "v2026.5.16+" in readme
-    assert "issue #31" in readme
-    assert "issue #25" in readme
-    assert "Hermes 0.13.0" in readme
-    assert "旧版本" in readme
-    assert "hook_strategy" in readme
-    assert "gateway_run_013_plus" in readme
-    assert "legacy_gateway_run" in readme
-    assert "compatibility" in readme
-    assert "anchor" in readme or "anchors" in readme
-    assert "重新安装 hook" in readme
-    assert "install --hermes-dir" in readme
-    assert "issue #23" in readme
-    assert "多 profile / multi bot" in readme
-    assert "per-bot/profile title" in readme
-    assert "cron final cards" in readme
-    assert "attachment summaries + native media delivery" in readme
-    assert "routing profile diagnostics" in readme
-    assert "safe repair" in readme
-    assert "reply card context" in readme
+    assert "V3.6.0" in docs
+    assert "issue #41" in docs
+    assert "PR #42" in docs
+    assert "授权/选项按钮" in docs
+    assert "issue #39" in docs
+    assert "v0.14.0" in docs
+    assert "0.15.x" in docs
+    assert "v2026.5.16+" in docs
+    assert "issue #31" in docs
+    assert "issue #25" in docs
+    assert "Hermes 0.13.0" in docs
+    assert "旧版本" in docs
+    assert "hook_strategy" in docs
+    assert "gateway_run_013_plus" in docs
+    assert "legacy_gateway_run" in docs
+    assert "compatibility" in docs
+    assert "anchor" in docs or "anchors" in docs
+    assert "重新安装 hook" in docs
+    assert "install --hermes-dir" in docs
+    assert "issue #23" in docs
+    assert "多 profile / multi bot" in docs
+    assert "per-bot/profile title" in docs
+    assert "cron final cards" in docs
+    assert "attachment summaries + native media delivery" in docs
+    assert "routing profile diagnostics" in docs
+    assert "safe repair" in docs
+    assert "reply card context" in docs
 
 
 def test_english_readme_documents_v340_hermes_compatibility():
     readme = read_doc("README.en.md")
+    guide = read_doc("docs/user-guide.en.md")
+    docs = readme + "\n" + guide
 
-    assert "V3.6.6" in readme
-    assert "V3.6.5" in readme
-    assert "V3.6.4" in readme
-    assert "V3.6.3" in readme
-    assert "V3.6.2" in readme
-    assert "issue #41" in readme
-    assert "PR #42" in readme
-    assert "Approval/choice interactions" in readme
-    assert "issue #39" in readme
-    assert "v0.14.0" in readme
-    assert "0.15.x" in readme
-    assert "v2026.5.16+" in readme
-    assert "issue #31" in readme
-    assert "issue #25" in readme
-    assert "Hermes 0.13.0" in readme
-    assert "older Hermes" in readme
-    assert "hook_strategy" in readme
-    assert "gateway_run_013_plus" in readme
-    assert "legacy_gateway_run" in readme
-    assert "compatibility" in readme
-    assert "anchor" in readme or "anchors" in readme
-    assert "Reinstall the hook" in readme
-    assert "install --hermes-dir" in readme
-    assert "issue #23" in readme
-    assert "Multi-profile / multi-bot" in readme
-    assert "per-bot/profile title" in readme
-    assert "cron final cards" in readme
-    assert "attachment summaries + native media delivery" in readme
-    assert "routing profile diagnostics" in readme
-    assert "safe `repair`" in readme
-    assert "reply card context" in readme
+    assert "V3.6.6" in guide
+    assert "V3.6.5" in guide
+    assert "V3.6.4" in guide
+    assert "V3.6.3" in guide
+    assert "V3.6.2" in guide
+    assert "issue #41" in docs
+    assert "PR #42" in docs
+    assert "Approval/choice interactions" in docs
+    assert "issue #39" in docs
+    assert "v0.14.0" in docs
+    assert "0.15.x" in docs
+    assert "v2026.5.16+" in docs
+    assert "issue #31" in docs
+    assert "issue #25" in docs
+    assert "Hermes 0.13.0" in docs
+    assert "older Hermes" in docs
+    assert "hook_strategy" in docs
+    assert "gateway_run_013_plus" in docs
+    assert "legacy_gateway_run" in docs
+    assert "compatibility" in docs
+    assert "anchor" in docs or "anchors" in docs
+    assert "Reinstall the hook" in docs
+    assert "install --hermes-dir" in docs
+    assert "issue #23" in docs
+    assert "Multi-profile / multi-bot" in docs
+    assert "per-bot/profile title" in docs
+    assert "cron final cards" in docs
+    assert "attachment summaries + native media delivery" in docs
+    assert "routing profile diagnostics" in docs
+    assert "safe `repair`" in docs
+    assert "reply card context" in docs
 
 
 def test_readme_documents_one_line_install_and_release_packages():
     readme = read_doc("README.md")
     english_readme = read_doc("README.en.md")
+    guide = read_doc("docs/user-guide.md")
     install_doc = read_doc("README-install.md")
     workflow = read_doc(".github/workflows/release-assets.yml")
 
@@ -130,35 +140,38 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "install-docker.sh" in readme
     assert "docker-compose.example.yml" in readme
     assert "Docker" in install_doc
-    assert "v3.8.6" in install_doc
+    assert "v3.8.9" in install_doc
     assert "v3.8.5" not in install_doc
     assert "version_source: gateway anchors" in install_doc
+    assert "docs/release-notes-v3.8.9.md" in readme
+    assert "docs/release-notes-v3.8.8.md" in readme
+    assert "docs/release-notes-v3.8.7.md" in readme
     assert "docs/release-notes-v3.8.6.md" in readme
     assert "docs/release-notes-v3.8.5.md" in readme
-    assert "docs/release-notes-v3.8.4.md" in readme
-    assert "docs/release-notes-v3.8.3.md" in readme
-    assert "docs/release-notes-v3.8.2.md" in readme
-    assert "docs/release-notes-v3.8.1.md" in readme
-    assert "docs/release-notes-v3.8.0.md" in readme
-    assert "docs/release-notes-v3.6.6.md" in readme
-    assert "docs/release-notes-v3.6.5.md" in readme
-    assert "docs/release-notes-v3.6.4.md" in readme
-    assert "docs/release-notes-v3.6.3.md" in readme
-    assert "docs/release-notes-v3.6.2.md" in readme
-    assert "docs/release-notes-v3.6.1.md" in readme
-    assert "docs/release-notes-v3.6.0.md" in readme or "v3.6.0" in readme
-    assert "docs/release-notes-v3.5.2.md" in readme or "v3.5.2" in readme
-    assert "docs/roadmap-v3.6.0.md" in readme
-    assert "hermes-feishu-card-<version>-macos.tar.gz" in readme
-    assert "hermes-feishu-card-<version>-linux.tar.gz" in readme
-    assert "hermes-feishu-card-<version>-windows.zip" in readme
+    assert "release-notes-v3.8.4.md" in guide
+    assert "release-notes-v3.8.3.md" in guide
+    assert "release-notes-v3.8.2.md" in guide
+    assert "release-notes-v3.8.1.md" in guide
+    assert "release-notes-v3.8.0.md" in guide
+    assert "release-notes-v3.6.6.md" in guide
+    assert "release-notes-v3.6.5.md" in guide
+    assert "release-notes-v3.6.4.md" in guide
+    assert "release-notes-v3.6.3.md" in guide
+    assert "release-notes-v3.6.2.md" in guide
+    assert "release-notes-v3.6.1.md" in guide
+    assert "release-notes-v3.6.0.md" in guide or "v3.6.0" in guide
+    assert "release-notes-v3.5.2.md" in guide or "v3.5.2" in guide
+    assert "roadmap-v3.6.0.md" in guide
+    assert "hermes-feishu-card-<version>-macos.tar.gz" in guide
+    assert "hermes-feishu-card-<version>-linux.tar.gz" in guide
+    assert "hermes-feishu-card-<version>-windows.zip" in guide
 
-    assert "One-Line Install" in english_readme
+    assert "Quick Install" in english_readme
     assert "README-install.md" in english_readme
     assert "bash install.sh" in install_doc
     assert "install.ps1" in install_doc
     assert "HFC_VERSION" in install_doc
-    assert "v3.8.6" in install_doc
+    assert "v3.8.9" in install_doc
     assert "v3.6.6" in install_doc
 
     assert (ROOT / "install.sh").exists()
@@ -175,6 +188,9 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert (ROOT / "docs/roadmap-v3.6.0.md").exists()
     assert (ROOT / "install-docker.sh").exists()
     assert (ROOT / "docker-compose.example.yml").exists()
+    assert (ROOT / "docs/release-notes-v3.8.9.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.8.md").exists()
+    assert (ROOT / "docs/release-notes-v3.8.7.md").exists()
     assert (ROOT / "docs/release-notes-v3.8.6.md").exists()
     assert (ROOT / "docs/release-notes-v3.8.5.md").exists()
     assert (ROOT / "docs/release-notes-v3.8.4.md").exists()
@@ -191,8 +207,11 @@ def test_readme_documents_one_line_install_and_release_packages():
     assert "${NAME}-windows.zip" in workflow
 
 
-def test_v386_release_notes_are_linked():
+def test_v389_release_notes_are_linked():
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    v389_release_notes = Path("docs/release-notes-v3.8.9.md")
+    v388_release_notes = Path("docs/release-notes-v3.8.8.md")
+    v387_release_notes = Path("docs/release-notes-v3.8.7.md")
     v386_release_notes = Path("docs/release-notes-v3.8.6.md")
     v385_release_notes = Path("docs/release-notes-v3.8.5.md")
     v384_release_notes = Path("docs/release-notes-v3.8.4.md")
@@ -200,6 +219,33 @@ def test_v386_release_notes_are_linked():
     release_notes = Path("docs/release-notes-v3.8.2.md")
     compose = Path("docker-compose.example.yml").read_text(encoding="utf-8")
 
+    assert v389_release_notes.exists()
+    assert "## V3.8.9 — 2026-07-04" in changelog
+    assert "V3.8.9" in changelog
+    assert "[docs/release-notes-v3.8.9.md](docs/release-notes-v3.8.9.md)" in changelog
+    v389_text = v389_release_notes.read_text(encoding="utf-8")
+    assert "reply_to_message_id" in v389_text
+    assert "system.notice" in v389_text
+    assert "source.message_id" in v389_text
+    assert "hermes-feishu-card-v3.8.9-macos.tar.gz" in v389_text
+    assert v388_release_notes.exists()
+    assert "## V3.8.8 — 2026-07-03" in changelog
+    assert "V3.8.8" in changelog
+    assert "[docs/release-notes-v3.8.8.md](docs/release-notes-v3.8.8.md)" in changelog
+    v388_text = v388_release_notes.read_text(encoding="utf-8")
+    assert "system.notice" in v388_text
+    assert "Working" in v388_text
+    assert "self-improvement" in v388_text
+    assert "hermes-feishu-card-v3.8.8-macos.tar.gz" in v388_text
+    assert v387_release_notes.exists()
+    assert "## V3.8.7 — 2026-07-02" in changelog
+    assert "V3.8.7" in changelog
+    assert "[docs/release-notes-v3.8.7.md](docs/release-notes-v3.8.7.md)" in changelog
+    v387_text = v387_release_notes.read_text(encoding="utf-8")
+    assert "issue #75" in v387_text
+    assert "message.started" in v387_text
+    assert "answer.delta" in v387_text
+    assert "hermes-feishu-card-v3.8.7-macos.tar.gz" in v387_text
     assert v386_release_notes.exists()
     assert "## V3.8.6 — 2026-07-02" in changelog
     assert "V3.8.6" in changelog
@@ -249,18 +295,21 @@ def test_v386_release_notes_are_linked():
     assert "thinking.delta" in release_text
     assert "feishu-v382-readme-showcase.png" in release_text
     assert "hermes-feishu-card-v3.8.2-macos.tar.gz" in release_text
-    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.6}"' in compose
+    assert 'HFC_VERSION: "${HFC_VERSION:-v3.8.9}"' in compose
 
 
 def test_todo_points_to_v38_public_plan_docs():
     todo = read_doc("TODO.md")
 
-    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6" in todo
+    assert "## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9" in todo
     assert "### V3.8.2：卡片 timeline 阅读体验补丁（已完成）" in todo
     assert "### V3.8.3：独立命令卡片（已完成）" in todo
     assert "### V3.8.4：Feishu WebSocket 命令卡片热修（已完成）" in todo
     assert "### V3.8.5：命令结果反馈卡片补丁（已完成）" in todo
     assert "### V3.8.6：Docker / Hermes v0.18.0 兼容补丁（已完成）" in todo
+    assert "### V3.8.7：缺失 message.started 的新版 Hermes 流修复（已完成）" in todo
+    assert "### V3.8.8：Hermes 原生系统提示卡片化（已完成）" in todo
+    assert "### V3.8.9：飞书话题卡片连续更新补丁（已完成）" in todo
     assert "### V3.8.x 后续维护与扩展面（待办）" in todo
     assert "[docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md)" in todo
     assert "[docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)" in todo
@@ -285,20 +334,21 @@ def test_english_readme_and_docs_are_linked():
     assert "Hermes Feishu Streaming Card turns Hermes Agent Gateway replies" in english_readme
     assert "/hfc status" in english_readme
     assert "HERMES_FEISHU_CARD_DELTA_COALESCE_MS" in english_readme
-    assert "Project Highlights" in english_readme
-    assert "Pain Points Solved" in english_readme
+    assert "What You Get" in english_readme
+    assert "Problems Solved" in english_readme
     assert "img.shields.io/github/stars/baileyh8/hermes-feishu-streaming-card" in english_readme
     assert "docs/assets/readme-cover.png" in english_readme
     assert "docs/assets/feishu-card-showcase-v385.png" in english_readme
+    assert "PR #76" in english_readme
     assert "setup --hermes-dir" in english_readme
-    assert "Hermes Gateway Streaming And Thinking" in english_readme
+    assert "Hermes Streaming Config" in english_readme
     assert "streaming.enabled" in english_readme
     assert "display.platforms.feishu.streaming" in english_readme
     assert "Do not treat `display.show_reasoning`" in english_readme
     assert "thinking.delta" in english_readme
     assert "Multi-bot" in english_readme
     assert "group chat" in english_readme
-    assert "pytest" in english_readme
+    assert "pytest" in read_doc("docs/testing.en.md")
     assert "425 passed" not in readme
     assert "398 passed" not in readme
     assert "425 passed" not in english_readme
@@ -341,17 +391,19 @@ def test_event_protocol_documents_card_status_labels():
 
 def test_docs_describe_event_forwarding_and_real_e2e_completion():
     readme = read_doc("README.md")
+    guide = read_doc("docs/user-guide.md")
     architecture = read_doc("docs/architecture.md")
     todo = read_doc("TODO.md")
     docs = "\n".join(
         [
             readme,
+            guide,
             architecture,
             todo,
         ]
     )
 
-    assert "真实 Feishu E2E 主链路" in readme
+    assert "真实 Feishu E2E 主链路" in docs
     assert "Hermes hook 到 sidecar `/events` 的 fail-open 转发链路已经落地" in architecture
     assert "Feishu CardKit HTTP client 已实现" in docs
     assert "真实 Hermes Gateway E2E" in docs

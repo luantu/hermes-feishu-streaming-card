@@ -38,6 +38,12 @@ python3 -m pytest tests/integration/test_cli_process.py -q
 
 `/health` 和 `status` 指标由 `tests/integration/test_server.py` 与 `tests/integration/test_cli_process.py` 覆盖，包括 `events_received`、`events_applied`、`events_rejected`、`feishu_send_successes`、`feishu_update_failures` 和 `feishu_update_retries`。更新卡片会验证一次有限重试；创建卡片失败会返回 JSON 错误并清理本地 session，避免盲目重试造成重复卡片。
 
+V3.8.7 增加新版 Hermes 兼容回归：如果首个普通消息事件直接是 `answer.delta`、`thinking.delta`、`tool.updated` 或 `message.completed`，sidecar 应创建初始卡片而不是把事件计入 `events_ignored`。
+
+V3.8.8 增加 Hermes 原生系统提示卡片化回归：`system.notice` 事件应能进入 session timeline 或创建独立提示卡片；Feishu adapter 的 `send` / `edit_message` 拦截在 sidecar 可用时抑制灰色原生文本，在不可用或无法识别时保持 fail-open fallback。
+
+V3.8.9 增加飞书/Lark 话题回复回归：当首张卡片使用原始话题消息 `message_id` 创建，而后续 `tool.updated`、`answer.delta` 或 `system.notice` 使用不同流式 `message_id` 时，sidecar 应通过 `reply_to_message_id` 更新同一张卡片，不新增重复卡片，也不让系统提示回退成外部灰色消息；即使已识别系统提示的卡片投递超时，也应抑制原生灰色文本兜底。
+
 ## Feishu HTTP client tests
 
 ```bash
