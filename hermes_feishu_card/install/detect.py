@@ -19,7 +19,7 @@ OPTIONAL_CAPABILITIES = (
     "reply_context",
     "attachment_delivery",
 )
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$")
 _HERMES_PROJECT_RE = re.compile(r"(?im)^\s*Project:\s*(.+?)\s*$")
 
 
@@ -245,8 +245,8 @@ def _parse_version(version: str) -> tuple[int, int, int] | None:
     match = _VERSION_RE.match(version.strip())
     if match is None:
         return None
-    # Treat components as semantic numeric fields, not calendar month/day bounds.
-    return tuple(int(part) for part in match.groups())
+    parts = match.groups()
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def _select_hook_strategy(version: str) -> str:
