@@ -46,6 +46,10 @@ V3.8.9 增加飞书/Lark 话题回复回归：当首张卡片使用原始话题�
 
 V3.8.10 增加群聊诊断和工具详情回归：`bindings.group_rules` 只作为安全诊断输入，不能泄漏真实 chat/user id；群内 `/hfc status` 应提示 chat binding、fallback/default 路由和 slash command 行为边界；`tool.updated` 应尽量把参数摘要、耗时和失败原因带入紧凑 timeline。
 
+V3.8.11 增加 `/hfc` 原生 unknown 抑制回归：`/commands` 接受 `/hfc status` 后必须先返回 `handled: true`，真实 Feishu/Lark 卡片发送放到后台；patcher 的早期 `/hfc` 拦截必须位于 Hermes 原生 slash fallback 前，避免卡片和灰色 `Unknown command /hfc` 双发。
+
+V3.8.12 增加 issue #82 附件摘要重复 reply 回归：普通 `attachments` 摘要应在卡片完成后抑制原生最终回复；`MEDIA:/tmp/...`、本地文件路径、`files`、`media_files` 和 image/audio/video locals 仍应保留 Hermes 原生文件/媒体投递路径。
+
 ## Feishu HTTP client tests
 
 ```bash
@@ -102,7 +106,7 @@ python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-d
 
 当前 CLI 的 `doctor` 需要显式传入 `--config`。`--skip-hermes` 适合仓库内 dry-run；真实安装前应使用 `--hermes-dir` 做只读 Hermes 检测。输出包含 `version_source`、`version`、`minimum_supported_version`、`run_py_exists`、`hook_strategy`、`compatibility`、anchors、`reason` 和 `runtime_import`，不写入 Hermes 文件、备份或 manifest。`--json` 用于 issue/自动化，`--explain` 用于人工排障并会提示是否可运行 `repair --hermes-dir ... --yes`。
 
-自动化矩阵显式覆盖 Hermes `v2026.4.23`、`v2026.5.7`、`v2026.5.16`、`v2026.5.29`、`v2026.6.19+`、`v2026.7.1`、`0.13.0`、`v0.13.0`、`0.14.0`、`v0.14.0`、`0.15.1`、`v0.15.1`、`0.17.x`、`0.18.0` 和 `v0.18.0` 的 hook strategy。Hermes `0.13.0+`、`0.14.0`、`0.15.x`、`0.17.x`、`0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 应显示 `gateway_run_013_plus`，旧版本 Hermes `v2026.4.23` 到 `v2026.4.x` 应显示 `legacy_gateway_run`。缺少 `VERSION` 和 `.git` 元数据但存在可验证 `gateway/run.py` anchor 时，应显示 `version_source: gateway anchors`。
+自动化矩阵显式覆盖 Hermes `v2026.4.23`、`v2026.5.7`、`v2026.5.16`、`v2026.5.29`、`v2026.6.19+`、`v2026.7.1`、`v2026.7.7.2`、`0.13.0`、`v0.13.0`、`0.14.0`、`v0.14.0`、`0.15.1`、`v0.15.1`、`0.17.x`、`0.18.0`、`v0.18.0`、`0.18.2`、`v0.18.2` 和描述型 `Hermes Agent v0.18.2 (...)` 的 hook strategy。Hermes `0.13.0+`、`0.14.0`、`0.15.x`、`0.17.x`、`0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 应显示 `gateway_run_013_plus`，旧版本 Hermes `v2026.4.23` 到 `v2026.4.x` 应显示 `legacy_gateway_run`。缺少 `VERSION` 和 `.git` 元数据但存在可验证 `gateway/run.py` anchor 时，应显示 `version_source: gateway anchors`；`VERSION` 存在但不可解析且 anchors 可验证时，应显示 `version_source: VERSION + gateway anchors`。
 
 ## 真实飞书联调
 

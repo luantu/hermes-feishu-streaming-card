@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.13 — 2026-07-08
+
+See also: [docs/release-notes-v3.8.13.md](docs/release-notes-v3.8.13.md)
+
+### Fixed
+- Fixed Hermes upgrade compatibility for `v2026.7.7.2` / `0.18.2`, where the installer could reject a valid Gateway only because the upstream Git tag used four numeric components.
+- Version detection now extracts numeric tokens from descriptive metadata such as `Hermes Agent v0.18.2 (...)` and falls back to verified `gateway/run.py` anchors when readable version metadata is unparseable.
+- Reinstall and repair now handle stale install state left by a Hermes upgrade that replaced `gateway/run.py` with an unpatched upstream file, allowing the hook to be safely installed again without restoring an old Hermes file.
+
+### Tests
+- Added regression coverage for four-component Hermes tags, descriptive version metadata, unparseable-version anchor fallback, and stale unpatched install-state repair/reinstall paths.
+
+## V3.8.12 — 2026-07-08
+
+See also: [docs/release-notes-v3.8.12.md](docs/release-notes-v3.8.12.md)
+
+### Fixed
+- Fixed issue #82 recurrence where completed cards with attachment summaries such as `colors.csv` / `styles.csv` could still be followed by a duplicate native Feishu/Lark reply containing the full final answer.
+- Completed events now distinguish card attachment summaries from native file/media delivery requirements via `native_delivery`, so generic `attachments` stay card-only after successful Feishu delivery.
+- Native Hermes file/media paths remain fail-open: `MEDIA:/tmp/...`, local file paths, `files`, `media_files`, and image/audio/video file locals still allow Hermes' native attachment delivery path instead of being swallowed by card suppression.
+
+### Tests
+- Added regression coverage for generic attachment summaries suppressing the native Feishu final reply.
+- Added coverage proving real media/file delivery paths still bypass native response suppression.
+- Updated patcher and integration coverage for the new `native_delivery` completion guard.
+
+## V3.8.11 — 2026-07-08
+
+See also: [docs/release-notes-v3.8.11.md](docs/release-notes-v3.8.11.md)
+
+### Fixed
+- Fixed `/hfc` diagnostics in real Feishu/Lark Gateway flows where `/hfc status` could render the Hermes Agent card and still fall through to Feishu's gray native `Unknown command /hfc` reply when card delivery took longer than the Gateway hook timeout.
+- `/commands` now ACKs accepted `/hfc` requests before slow Feishu card delivery finishes, then sends the command card in the background with failure logging.
+- The Gateway patch intercepts accepted `/hfc` commands before Hermes' native slash-command fallback, and the hook runtime reads command text from `event.text` / `event.content` when Gateway metadata does not expose the command helper.
+
+### Tests
+- Added regression coverage for slow Feishu command-card delivery proving `/commands` returns before the send completes.
+- Added hook runtime and patcher coverage for real Gateway event text extraction and early `/hfc` slash-command interception.
+
 ## V3.8.10 — 2026-07-07
 
 See also: [docs/release-notes-v3.8.10.md](docs/release-notes-v3.8.10.md)

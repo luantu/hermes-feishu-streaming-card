@@ -17,11 +17,14 @@ class FakeFeishuClient:
         self.sent = []
         self.updated = []
         self.fail_send = False
+        self.send_delay = 0.0
         self.update_failures_remaining = 0
         self.update_error_message = "update unavailable"
         self.update_delay = 0.0
 
     async def send_card(self, chat_id, card, thread_id=None, reply_to_message_id=None):
+        if self.send_delay:
+            await asyncio.sleep(self.send_delay)
         if self.fail_send:
             raise RuntimeError("send unavailable")
         self.sent.append((chat_id, card, thread_id, reply_to_message_id))
@@ -204,6 +207,61 @@ async def test_hfc_help_command_sends_read_only_diagnostic_card(client):
     assert "oc_secret_chat" not in content
     assert "om_secret_message" not in content
     assert "omt_secret_thread" not in content
+
+
+async def test_hfc_command_request_returns_before_slow_feishu_send():
+    class BlockingFeishuClient(FakeFeishuClient):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send_card(self, chat_id, card, thread_id=None, reply_to_message_id=None):
+            self.started.set()
+            await self.release.wait()
+            return await super().send_card(
+                chat_id,
+                card,
+                thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+
+    feishu_client = BlockingFeishuClient()
+    app = create_app(feishu_client)
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    post_task = asyncio.create_task(
+        test_client.post(
+            "/commands",
+            json={
+                "command": "status",
+                "chat_id": "oc_secret_chat",
+                "message_id": "om_secret_message",
+            },
+        )
+    )
+    try:
+        await asyncio.wait_for(feishu_client.started.wait(), timeout=1.0)
+        try:
+            response = await asyncio.wait_for(asyncio.shield(post_task), timeout=0.05)
+        except asyncio.TimeoutError as exc:
+            raise AssertionError("/commands waited for Feishu card delivery") from exc
+        body = await response.json()
+        assert response.status == 200
+        assert body == {"ok": True, "handled": True, "command": "status"}
+        assert feishu_client.sent == []
+
+        feishu_client.release.set()
+        for _ in range(80):
+            if feishu_client.sent:
+                break
+            await _REAL_ASYNCIO_SLEEP(0.01)
+        assert len(feishu_client.sent) == 1
+    finally:
+        feishu_client.release.set()
+        await post_task
+        await test_client.close()
 
 
 async def test_hfc_status_group_unbound_shows_binding_hint_and_slash_guidance():

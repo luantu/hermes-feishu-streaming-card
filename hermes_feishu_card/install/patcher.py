@@ -25,6 +25,8 @@ COMMAND_CARD_PATCH_BEGIN = "# HERMES_FEISHU_CARD_COMMAND_CARD_PATCH_BEGIN"
 COMMAND_CARD_PATCH_END = "# HERMES_FEISHU_CARD_COMMAND_CARD_PATCH_END"
 PLATFORM_NOTICE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_PLATFORM_NOTICE_PATCH_BEGIN"
 PLATFORM_NOTICE_PATCH_END = "# HERMES_FEISHU_CARD_PLATFORM_NOTICE_PATCH_END"
+HFC_COMMAND_PATCH_BEGIN = "# HERMES_FEISHU_CARD_HFC_COMMAND_PATCH_BEGIN"
+HFC_COMMAND_PATCH_END = "# HERMES_FEISHU_CARD_HFC_COMMAND_PATCH_END"
 
 _HANDLER_NAME = "_handle_message_with_agent"
 _CRON_DELIVER_NAME = "_deliver_result"
@@ -42,6 +44,7 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
     if strategy == "gateway_run_013_plus":
         content = _apply_cron_patch(content)
         content = _apply_command_card_adapter_patch(content)
+        content = _apply_hfc_command_patch(content)
         content = _apply_platform_notice_patch(content)
         content = _apply_slash_confirm_patch(content)
     content = _apply_callback_patch(
@@ -311,6 +314,43 @@ def _apply_platform_notice_patch(content: str) -> str:
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
+def _apply_hfc_command_patch(content: str) -> str:
+    owned_block = _find_simple_marker_block(
+        content,
+        HFC_COMMAND_PATCH_BEGIN,
+        HFC_COMMAND_PATCH_END,
+        "hfc command patch markers",
+    )
+    if owned_block is not None:
+        lines = content.splitlines(keepends=True)
+        begin_index, end_index = owned_block
+        indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
+        newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+        expected = _render_hfc_command_hook_block(indent, newline)
+        if lines[begin_index : end_index + 1] == expected:
+            return content
+        return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
+
+    tree = _parse_content(content)
+    func = _find_async_function(tree, "_handle_message")
+    if func is None:
+        return content
+    lines = content.splitlines(keepends=True)
+    start = max(func.lineno - 1, 0)
+    end = getattr(func, "end_lineno", None)
+    if end is None:
+        end = len(lines)
+    anchor = "_quick_key = self._session_key_for_source(source)"
+    for index in range(start, min(end, len(lines))):
+        if _strip_line_ending(lines[index]).strip() != anchor:
+            continue
+        indent = _leading_whitespace(_strip_line_ending(lines[index]))
+        newline = _line_ending(lines[index]) or _detect_newline(content)
+        hook = _render_hfc_command_hook_block(indent, newline)
+        return "".join(lines[: index + 1] + hook + lines[index + 1 :])
+    return content
+
+
 def remove_patch(content: str) -> str:
     """Remove the owned Feishu card hook block from patched Hermes content."""
     content = _remove_cron_patch(content)
@@ -320,6 +360,13 @@ def remove_patch(content: str) -> str:
         COMMAND_CARD_PATCH_END,
         _render_command_card_adapter_hook_block,
         "command card patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        HFC_COMMAND_PATCH_BEGIN,
+        HFC_COMMAND_PATCH_END,
+        _render_hfc_command_hook_block,
+        "hfc command patch markers",
     )
     content = _remove_simple_owned_patch(
         content,
@@ -418,6 +465,7 @@ def remove_patch_lenient(content: str) -> str:
         (CLARIFY_PATCH_BEGIN, CLARIFY_PATCH_END),
         (APPROVAL_PATCH_BEGIN, APPROVAL_PATCH_END),
         (COMMAND_CARD_PATCH_BEGIN, COMMAND_CARD_PATCH_END),
+        (HFC_COMMAND_PATCH_BEGIN, HFC_COMMAND_PATCH_END),
         (PLATFORM_NOTICE_PATCH_BEGIN, PLATFORM_NOTICE_PATCH_END),
         (SLASH_CONFIRM_PATCH_BEGIN, SLASH_CONFIRM_PATCH_END),
         (QUEUED_COMPLETE_PATCH_BEGIN, QUEUED_COMPLETE_PATCH_END),
@@ -1189,12 +1237,15 @@ def _render_complete_hook_block(indent: str, newline: str):
         f"{inner_indent}}}{newline}",
         f"{inner_indent}_hfc_completed_event = _hfc_build_event(\"message.completed\", _hfc_completed_locals, preview=True){newline}",
         f"{inner_indent}_hfc_attachments = []{newline}",
+        f"{inner_indent}_hfc_native_delivery = \"allowed\"{newline}",
         f"{inner_indent}if _hfc_completed_event is not None:{newline}",
-        f"{deeper_indent}_hfc_attachments = _hfc_completed_event.get(\"data\", {{}}).get(\"attachments\", []){newline}",
+        f"{deeper_indent}_hfc_completed_data = _hfc_completed_event.get(\"data\", {{}}){newline}",
+        f"{deeper_indent}_hfc_attachments = _hfc_completed_data.get(\"attachments\", []){newline}",
+        f"{deeper_indent}_hfc_native_delivery = _hfc_completed_data.get(\"native_delivery\", \"required\" if _hfc_attachments else \"allowed\"){newline}",
         f"{inner_indent}_hfc_card_delivered = await _hfc_emit_async(_hfc_completed_locals, event_name=\"message.completed\"){newline}",
-f"{inner_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
-f"{inner_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):{newline}",
-f"{deeper_indent}return None{newline}",
+        f"{inner_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
+        f"{inner_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments, _hfc_native_delivery):{newline}",
+        f"{deeper_indent}return None{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{COMPLETE_PATCH_END}{newline}",
     ]
@@ -1235,12 +1286,15 @@ def _render_queued_complete_hook_block(indent: str, newline: str):
         f"{deeper_indent}}}{newline}",
         f"{deeper_indent}_hfc_completed_event = _hfc_build_event(\"message.completed\", _hfc_completed_locals, preview=True){newline}",
         f"{deeper_indent}_hfc_attachments = []{newline}",
+        f"{deeper_indent}_hfc_native_delivery = \"allowed\"{newline}",
         f"{deeper_indent}if _hfc_completed_event is not None:{newline}",
-        f"{deeper_indent}    _hfc_attachments = _hfc_completed_event.get(\"data\", {{}}).get(\"attachments\", []){newline}",
+        f"{deeper_indent}    _hfc_completed_data = _hfc_completed_event.get(\"data\", {{}}){newline}",
+        f"{deeper_indent}    _hfc_attachments = _hfc_completed_data.get(\"attachments\", []){newline}",
+        f"{deeper_indent}    _hfc_native_delivery = _hfc_completed_data.get(\"native_delivery\", \"required\" if _hfc_attachments else \"allowed\"){newline}",
         f"{deeper_indent}_hfc_card_delivered = await _hfc_emit_async(_hfc_completed_locals, event_name=\"message.completed\"){newline}",
-f"{deeper_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
-f"{deeper_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):{newline}",
-f"{deeper_indent}    _already_streamed = True{newline}",
+        f"{deeper_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
+        f"{deeper_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments, _hfc_native_delivery):{newline}",
+        f"{deeper_indent}    _already_streamed = True{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{QUEUED_COMPLETE_PATCH_END}{newline}",
     ]
@@ -1553,6 +1607,28 @@ def _render_platform_notice_hook_block(indent: str, newline: str):
         f"{deeper_indent}return None{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{PLATFORM_NOTICE_PATCH_END}{newline}",
+    ]
+
+
+def _render_hfc_command_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{HFC_COMMAND_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import handle_hfc_command_from_hermes_locals as _hfc_handle_command{newline}"
+        ),
+        f"{inner_indent}_hfc_command_message_id = None{newline}",
+        f"{inner_indent}try:{newline}",
+        f"{deeper_indent}_hfc_command_message_id = self._reply_anchor_for_event(event){newline}",
+        f"{inner_indent}except Exception:{newline}",
+        f"{deeper_indent}_hfc_command_message_id = getattr(event, \"message_id\", None){newline}",
+        f"{inner_indent}if _hfc_handle_command({{**locals(), \"message_id\": _hfc_command_message_id}}):{newline}",
+        f"{deeper_indent}return None{newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{HFC_COMMAND_PATCH_END}{newline}",
     ]
 
 

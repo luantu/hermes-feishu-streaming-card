@@ -337,17 +337,48 @@ async def _commands(request: web.Request) -> web.Response:
     )
     route = _resolve_route(request, event)
     card = _render_hfc_command_card(request, command, event, route)
-    feishu_message_id = await _send_card(
-        request,
+    task = asyncio.create_task(
+        _send_command_card(
+            request.app,
+            chat_id,
+            card,
+            route.bot_id if route is not None else None,
+            thread_id=thread_id or None,
+            reply_to_message_id=reply_to_message_id or message_id,
+        )
+    )
+    task.add_done_callback(_log_background_task_failure)
+    await asyncio.sleep(0)
+    return web.json_response({"ok": True, "handled": True, "command": command})
+
+
+async def _send_command_card(
+    app: web.Application,
+    chat_id: str,
+    card: dict[str, Any],
+    bot_id: str | None,
+    thread_id: str | None = None,
+    reply_to_message_id: str | None = None,
+) -> None:
+    message_id = await _send_card_for_app(
+        app,
         chat_id,
         card,
-        route.bot_id if route is not None else None,
-        thread_id=thread_id or None,
-        reply_to_message_id=reply_to_message_id or message_id,
+        bot_id,
+        thread_id=thread_id,
+        reply_to_message_id=reply_to_message_id,
     )
-    if feishu_message_id is None:
-        return web.json_response({"ok": False, "error": "send failed"}, status=502)
-    return web.json_response({"ok": True, "handled": True, "command": command})
+    if message_id is None:
+        logger.warning("HFC command card send failed: chat_id=%s bot_id=%s", chat_id, bot_id)
+
+
+def _log_background_task_failure(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.warning("HFC command card background task failed", exc_info=True)
 
 
 async def _events(request: web.Request) -> web.Response:
@@ -1236,10 +1267,28 @@ async def _send_card(
     thread_id: str | None = None,
     reply_to_message_id: str | None = None,
 ) -> str | None:
-    metrics: SidecarMetrics = request.app[METRICS_KEY]
+    return await _send_card_for_app(
+        request.app,
+        chat_id,
+        card,
+        bot_id,
+        thread_id=thread_id,
+        reply_to_message_id=reply_to_message_id,
+    )
+
+
+async def _send_card_for_app(
+    app: web.Application,
+    chat_id: str,
+    card: dict[str, Any],
+    bot_id: str | None,
+    thread_id: str | None = None,
+    reply_to_message_id: str | None = None,
+) -> str | None:
+    metrics: SidecarMetrics = app[METRICS_KEY]
     metrics.feishu_send_attempts += 1
     try:
-        message_id = await _client_for_bot(request.app, bot_id).send_card(
+        message_id = await _client_for_bot(app, bot_id).send_card(
             chat_id,
             card,
             thread_id=thread_id,

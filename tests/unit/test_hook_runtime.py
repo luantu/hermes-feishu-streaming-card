@@ -284,6 +284,33 @@ def test_handle_hfc_command_posts_command_without_building_normal_event(monkeypa
     assert payload["thread_id"] == ""
 
 
+def test_handle_hfc_command_reads_gateway_event_text(monkeypatch):
+    posted = []
+    monkeypatch.setenv("HERMES_FEISHU_CARD_EVENT_URL", "http://sidecar.test/events")
+
+    class HfcEventObject:
+        text = "/hfc status"
+        message_id = "om_event_command"
+
+    def fake_post(url, payload, timeout):
+        posted.append((url, payload, timeout))
+        return True
+
+    monkeypatch.setattr(hook_runtime, "_post_json_sync", fake_post)
+
+    handled = hook_runtime.handle_hfc_command_from_hermes_locals(
+        {
+            "source": SourceObject(),
+            "event": HfcEventObject(),
+            "message_id": "om_event_command",
+        }
+    )
+
+    assert handled is True
+    assert posted[0][1]["command"] == "status"
+    assert posted[0][1]["message_id"] == "om_event_command"
+
+
 def test_handle_hfc_command_ignores_regular_messages(monkeypatch):
     posted = []
     monkeypatch.setattr(
@@ -429,6 +456,7 @@ def test_build_completed_event_preserves_duration_and_tokens():
         "profile_source": "fallback_default",
         "answer": "最终答案",
         "attachments": [],
+        "native_delivery": "allowed",
         "duration": 2.75,
         "model": "MiniMax M2.7",
         "tokens": {"input_tokens": 12, "output_tokens": 34},
@@ -2153,12 +2181,7 @@ def test_completed_event_extracts_attachment_summaries_from_response():
     )
 
     attachments = payload["data"]["attachments"]
-    assert {
-        "kind": "file",
-        "name": "report.pdf",
-        "summary": "report.pdf",
-        "is_media": True,
-    } in attachments
+    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in attachments
     assert {"kind": "image", "name": "chart.png", "summary": "chart.png"} in attachments
 
 
@@ -2176,7 +2199,6 @@ def test_completed_event_extracts_attachment_summaries_from_response_field():
         "kind": "audio",
         "name": "audio.mp3",
         "summary": "audio.mp3",
-        "is_media": True,
     } in payload["data"]["attachments"]
 
 
@@ -2203,11 +2225,37 @@ def test_completed_event_extracts_structured_attachment_fields():
     )
 
     attachments = payload["data"]["attachments"]
-    assert {"kind": "file", "name": "report.pdf", "summary": "季度报告.pdf", "is_media": True} in attachments
-    assert {"kind": "image", "name": "photo.jpg", "summary": "photo.jpg", "is_media": True} in attachments
-    assert {"kind": "audio", "name": "audio.wav", "summary": "audio.wav", "is_media": True} in attachments
-    assert {"kind": "image", "name": "diagram.webp", "summary": "diagram.webp", "is_media": True} in attachments
-    assert {"kind": "file", "name": "archive.zip", "summary": "archive.zip", "is_media": True} in attachments
+    assert {"kind": "file", "name": "report.pdf", "summary": "季度报告.pdf"} in attachments
+    assert {"kind": "image", "name": "photo.jpg", "summary": "photo.jpg"} in attachments
+    assert {"kind": "audio", "name": "audio.wav", "summary": "audio.wav"} in attachments
+    assert {"kind": "image", "name": "diagram.webp", "summary": "diagram.webp"} in attachments
+    assert {"kind": "file", "name": "archive.zip", "summary": "archive.zip"} in attachments
+
+
+def test_completed_event_allows_card_only_for_generic_attachment_summaries():
+    payload = hook_runtime.build_event(
+        "message.completed",
+        {
+            "chat_id": "oc_1",
+            "message_id": "m_1",
+            "answer": "已整理配色表，见卡片附件摘要。",
+            "attachments": [
+                {"name": "colors.csv", "summary": "colors.csv", "kind": "file"},
+                {"name": "styles.csv", "summary": "styles.csv", "kind": "file"},
+            ],
+        },
+    )
+
+    attachments = payload["data"]["attachments"]
+    assert {"kind": "file", "name": "colors.csv", "summary": "colors.csv"} in attachments
+    assert {"kind": "file", "name": "styles.csv", "summary": "styles.csv"} in attachments
+    assert payload["data"]["native_delivery"] == "allowed"
+    assert (
+        hook_runtime.should_suppress_native_response(
+            "feishu", True, attachments, payload["data"]["native_delivery"]
+        )
+        is True
+    )
 
 
 def test_completed_event_extracts_hermes_media_files_for_native_delivery_guard():
@@ -2225,10 +2273,13 @@ def test_completed_event_extracts_hermes_media_files_for_native_delivery_guard()
     )
 
     attachments = payload["data"]["attachments"]
-    assert {"kind": "video", "name": "demo.mp4", "summary": "demo.mp4", "is_media": True} in attachments
-    assert {"kind": "image", "name": "cover.png", "summary": "cover.png", "is_media": True} in attachments
+    assert {"kind": "video", "name": "demo.mp4", "summary": "demo.mp4"} in attachments
+    assert {"kind": "image", "name": "cover.png", "summary": "cover.png"} in attachments
+    assert payload["data"]["native_delivery"] == "required"
     assert (
-        hook_runtime.should_suppress_native_response("feishu", True, attachments)
+        hook_runtime.should_suppress_native_response(
+            "feishu", True, attachments, payload["data"]["native_delivery"]
+        )
         is False
     )
 
@@ -2320,7 +2371,7 @@ def test_completed_event_strips_trailing_attachment_punctuation_and_deduplicates
     )
 
     assert payload["data"]["attachments"] == [
-        {"kind": "file", "name": "report.pdf", "summary": "report.pdf", "is_media": True}
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
     ]
 
 
@@ -2331,11 +2382,10 @@ def test_completed_event_strips_trailing_attachment_punctuation_and_deduplicates
         ("feishu", True, [], True),
         ("feishu", False, None, False),
         ("slack", True, None, False),
-        ("feishu", True, [{"kind": "image", "name": "chart.png"}], True),
-        ("feishu", True, [{"kind": "file", "name": "report.pdf", "is_media": True}], False),
+        ("feishu", True, [{"kind": "image", "name": "chart.png"}], False),
     ],
 )
-def test_should_suppress_native_response_requires_feishu_delivery(
+def test_should_suppress_native_response_requires_feishu_delivery_without_attachments(
     platform, delivered, attachments, expected
 ):
     assert (
@@ -2365,12 +2415,9 @@ def test_build_cron_event_from_feishu_job_origin():
     assert payload["data"]["delivery_kind"] == "cron"
     assert payload["data"]["profile_id"] == "default"
     assert payload["data"]["profile_source"] == "fallback_default"
-    assert {
-        "kind": "file",
-        "name": "report.pdf",
-        "summary": "report.pdf",
-        "is_media": True,
-    } in payload["data"]["attachments"]
+    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in payload[
+        "data"
+    ]["attachments"]
 
 
 def test_build_cron_event_extracts_chat_id_from_deliver_string():
@@ -2566,12 +2613,9 @@ def test_build_event_preview_does_not_advance_sequence_or_retire_fallback():
     assert preview is not None
     assert preview["message_id"] == started["message_id"]
     assert preview["sequence"] == 1
-    assert {
-        "kind": "file",
-        "name": "report.pdf",
-        "summary": "report.pdf",
-        "is_media": True,
-    } in preview["data"]["attachments"]
+    assert {"kind": "file", "name": "report.pdf", "summary": "report.pdf"} in preview[
+        "data"
+    ]["attachments"]
     assert completed is not None
     assert completed["message_id"] == started["message_id"]
     assert completed["sequence"] == 1
@@ -2603,10 +2647,13 @@ def test_attachment_guard_uses_preview_before_terminal_emit_retires_fallback():
     attachments = preview["data"]["attachments"] if preview is not None else []
 
     assert attachments == [
-        {"kind": "file", "name": "report.pdf", "summary": "report.pdf", "is_media": True}
+        {"kind": "file", "name": "report.pdf", "summary": "report.pdf"}
     ]
+    assert preview["data"]["native_delivery"] == "required"
     assert (
-        hook_runtime.should_suppress_native_response("feishu", delivered, attachments)
+        hook_runtime.should_suppress_native_response(
+            "feishu", delivered, attachments, preview["data"]["native_delivery"]
+        )
         is False
     )
 
@@ -2642,7 +2689,7 @@ async def test_async_terminal_emit_uses_sidecar_applied_response(monkeypatch):
     assert await hook_runtime.emit_from_hermes_locals_async(
         local_vars, event_name="message.completed"
     )
-    assert await hook_runtime.emit_from_hermes_locals_async(
+    assert not await hook_runtime.emit_from_hermes_locals_async(
         local_vars, event_name="message.completed"
     )
     assert not await hook_runtime.emit_from_hermes_locals_async(

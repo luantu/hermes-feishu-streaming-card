@@ -46,6 +46,10 @@ V3.8.9 adds Feishu/Lark topic reply regressions: when the first card is created 
 
 V3.8.10 adds group-diagnostic and tool-detail regressions: `bindings.group_rules` is diagnostic input only and must not leak raw chat/user ids; group `/hfc status` should explain chat binding, fallback/default routing, and slash-command boundaries; `tool.updated` should carry argument summaries, duration, and failure reason into the compact timeline when available.
 
+V3.8.11 adds `/hfc` native unknown suppression regressions: `/commands` must return `handled: true` after accepting `/hfc status` while real Feishu/Lark card sending continues in the background; the patcher's early `/hfc` interception must stay before Hermes' native slash fallback so cards do not double-send with the gray `Unknown command /hfc` reply.
+
+V3.8.12 adds issue #82 attachment-summary duplicate-reply regressions: generic `attachments` summaries should suppress the native final reply after the completed card is delivered; `MEDIA:/tmp/...`, local file paths, `files`, `media_files`, and image/audio/video locals should still preserve Hermes native file/media delivery.
+
 ## Feishu HTTP Client Tests
 
 ```bash
@@ -102,7 +106,7 @@ python3 -m hermes_feishu_card.cli doctor --config config.yaml.example --hermes-d
 
 `doctor` requires an explicit `--config`. `--skip-hermes` is useful for repository dry-runs; real installation should use `--hermes-dir` for read-only Hermes detection. Output includes `version_source`, `version`, `minimum_supported_version`, `run_py_exists`, `hook_strategy`, `compatibility`, anchors, `reason`, and `runtime_import`. It does not write Hermes files, backups, or manifests. `--json` is for issues/automation, while `--explain` is for human troubleshooting and reports whether `repair --hermes-dir ... --yes` is available.
 
-The automated matrix explicitly covers Hermes `v2026.4.23`, `v2026.5.7`, `v2026.5.16`, `v2026.5.29`, `v2026.6.19+`, `v2026.7.1`, `0.13.0`, `v0.13.0`, `0.14.0`, `v0.14.0`, `0.15.1`, `v0.15.1`, `0.17.x`, `0.18.0`, and `v0.18.0` hook strategy selection. Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` should report `gateway_run_013_plus`; older Hermes from `v2026.4.23` through `v2026.4.x` should report `legacy_gateway_run`. When `VERSION` and `.git` metadata are missing but verifiable `gateway/run.py` anchors exist, diagnostics should report `version_source: gateway anchors`.
+The automated matrix explicitly covers Hermes `v2026.4.23`, `v2026.5.7`, `v2026.5.16`, `v2026.5.29`, `v2026.6.19+`, `v2026.7.1`, `v2026.7.7.2`, `0.13.0`, `v0.13.0`, `0.14.0`, `v0.14.0`, `0.15.1`, `v0.15.1`, `0.17.x`, `0.18.0`, `v0.18.0`, `0.18.2`, `v0.18.2`, and descriptive `Hermes Agent v0.18.2 (...)` hook strategy selection. Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` should report `gateway_run_013_plus`; older Hermes from `v2026.4.23` through `v2026.4.x` should report `legacy_gateway_run`. When `VERSION` and `.git` metadata are missing but verifiable `gateway/run.py` anchors exist, diagnostics should report `version_source: gateway anchors`; when `VERSION` exists but is unparseable and anchors validate, diagnostics should report `version_source: VERSION + gateway anchors`.
 
 ## Real Feishu Integration
 

@@ -112,7 +112,7 @@ streaming:
 
 不要设置 `display.platforms.feishu.streaming: false`。也不要把 `display.show_reasoning` 当成本插件必需开关；它可能把 reasoning 追加到最终回复里，反而干扰卡片流式体验。插件会直接处理 Hermes 的 `thinking.delta` / `answer.delta`。
 
-Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 均有兼容策略；`doctor` 会优先从 `VERSION` 或 Git tag `v2026.4.23+` 判断支持状态。升级 Hermes 或插件后建议重新执行 `setup` 或 `install --hermes-dir ... --yes`。
+Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 均有兼容策略；`doctor` 会优先读取 `VERSION` 或 Git tag `v2026.4.23+`，也会在版本 metadata 不完整或不可解析时用 `gateway/run.py` anchors 兜底。升级 Hermes 或插件后建议重新执行 `setup` 或 `install --hermes-dir ... --yes`。
 
 ## Docker 容器内安装
 
@@ -121,7 +121,7 @@ Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x �
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.10
+export HFC_VERSION=v3.8.13
 bash install-docker.sh
 ```
 
@@ -163,6 +163,9 @@ bash install-docker.sh
 
 | 版本 | 重点 |
 |---|---|
+| [v3.8.13](docs/release-notes-v3.8.13.md) | Hermes `v2026.7.7.2` / `0.18.2` 升级后可用 anchors 兜底并修复 stale install state |
+| [v3.8.12](docs/release-notes-v3.8.12.md) | 修复带 `colors.csv` / `styles.csv` 等附件摘要的完成卡片仍重复发送原生 reply 的问题 |
+| [v3.8.11](docs/release-notes-v3.8.11.md) | `/hfc status` 卡片接管后不再同时触发灰色 `Unknown command /hfc` 原生回复 |
 | [v3.8.10](docs/release-notes-v3.8.10.md) | 群聊 `/hfc status` 自动提示 chat binding 与 slash command 边界；工具详情显示参数、耗时和失败原因 |
 | [v3.8.9](docs/release-notes-v3.8.9.md) | 飞书/Lark 话题内卡片连续更新，`system.notice` 不再重复外溢 |
 | [v3.8.8](docs/release-notes-v3.8.8.md) | Hermes 原生系统提示卡片化：Working、上下文压缩、skill loading、自我改进 review |

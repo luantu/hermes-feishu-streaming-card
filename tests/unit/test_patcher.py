@@ -181,6 +181,42 @@ def test_apply_patch_installs_feishu_command_card_adapter_methods():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_patch_013_plus_intercepts_hfc_command_before_unknown_slash():
+    content = (
+        "class GatewayRunner:\n"
+        "    async def _handle_message(self, event):\n"
+        "        source = event.source\n"
+        "        if not self._is_user_authorized(source):\n"
+        "            return None\n"
+        "        _quick_key = self._session_key_for_source(source)\n"
+        "        command = event.get_command()\n"
+        "        if command:\n"
+        "            return f\"Unknown command `/{command}`. Type /commands.\"\n"
+        "        return None\n"
+        "\n"
+        "    def _reply_anchor_for_event(self, event):\n"
+        "        return getattr(event, 'reply_to_message_id', None) or event.message_id\n"
+        "\n"
+        "    async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "        response = 'ok'\n"
+        "        _response_time = 1\n"
+        "        agent_result = {}\n"
+        "        return response\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    assert patcher.HFC_COMMAND_PATCH_BEGIN in patched
+    assert "handle_hfc_command_from_hermes_locals as _hfc_handle_command" in patched
+    assert '"message_id": _hfc_command_message_id' in patched
+    assert (
+        patched.index(patcher.HFC_COMMAND_PATCH_BEGIN)
+        < patched.index("Unknown command")
+    )
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
 def test_apply_patch_installs_platform_notice_card_hook():
     content = (
         "class GatewayRunner:\n"
@@ -286,7 +322,16 @@ def test_apply_patch_inserts_completion_hook_before_response_return():
         "_hfc_card_delivered = await _hfc_emit_async"
     )
     assert 'getattr(source.platform, "value", source.platform)' in patched
-    assert "if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments):" in patched
+    assert '_hfc_native_delivery = "allowed"' in patched
+    assert (
+        '_hfc_native_delivery = _hfc_completed_data.get("native_delivery", '
+        '"required" if _hfc_attachments else "allowed")'
+    ) in patched
+    assert (
+        "if _hfc_should_suppress("
+        "_hfc_platform, _hfc_card_delivered, _hfc_attachments, _hfc_native_delivery"
+        "):"
+    ) in patched
     assert "        return None\n" in patched
     assert '"model": agent_result.get("model", ""),' in patched
     assert '"context": {' in patched
@@ -314,6 +359,10 @@ def test_apply_patch_suppresses_queued_followup_native_resend():
 
     assert patcher.QUEUED_COMPLETE_PATCH_BEGIN in patched
     assert "_hfc_card_delivered = await _hfc_emit_async" in patched
+    assert (
+        '_hfc_native_delivery = _hfc_completed_data.get("native_delivery", '
+        '"required" if _hfc_attachments else "allowed")'
+    ) in patched
     assert "_already_streamed = True" in patched
     assert patched.index(patcher.QUEUED_COMPLETE_PATCH_BEGIN) < patched.index(
         "    if first_response and not _already_streamed:\n"

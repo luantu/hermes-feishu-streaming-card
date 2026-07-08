@@ -29,6 +29,9 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 - **运行提示收束**：V3.8.8 起，Hermes 原生 `Working` 心跳、上下文窗口/压缩提示、自动 session reset、skill 加载和自我改进 review 会优先进入卡片或独立小卡片，减少灰色原生消息散落。
 - **话题内体验一致**：V3.8.9 起，飞书/Lark 话题回复里的流式事件和系统提示会回到同一张卡片更新，避免话题面板中 timeline 不动、灰色提示重复外溢。
 - **群聊诊断更清楚**：V3.8.10 起，群内 `/hfc status` 会提示 chat binding、fallback/default 路由、绑定命令和 slash command 行为边界。
+- **诊断命令不双发**：V3.8.11 起，已接管的 `/hfc status` 不会再同时触发灰色 `Unknown command /hfc` 原生回复。
+- **附件摘要不再重复 reply**：V3.8.12 起，完成卡片里的 `colors.csv` / `styles.csv` 等附件摘要不会再导致整段最终答案以原生 reply 重复发送。
+- **Hermes 升级更稳**：V3.8.13 起，安装器以 `gateway/run.py` 的可验证 anchor 作为最终准入条件；版本字符串支持 `v2026.7.7.2` 和 `Hermes Agent v0.18.2 (...)` 这类新版格式，完全不可解析时也可在 anchors 通过后继续安装。
 - **长内容更稳**：长 Markdown 表格和 fenced code block 按结构边界切分，降低飞书 raw markdown 和半截代码围栏问题。
 - **工具详情更可读**：`tool.updated` 可展示参数摘要、耗时和失败原因，长详情仍保持紧凑折叠。
 - **多 bot / 多 profile**：支持多飞书机器人、多 Hermes profile、群聊绑定、群聊安全诊断、bot/profile 标题和路由诊断。
@@ -44,10 +47,42 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | Hermes 运行中不断冒出 Working、上下文提示、skill loading 等灰色提示 | `system.notice` 卡片化：当前任务内进入“思考与工具”，任务外用独立小卡片 |
 | 飞书话题里卡片发出来了，但思考/工具不更新，系统提示还在外面重复出现 | 话题事件按 `reply_to_message_id` 回到原卡片，系统提示被 sidecar 接管后不再原生重复发送 |
 | 群聊里不知道是否已经绑定到正确 bot，或 slash command 和普通会话行为不一致 | `/hfc status` 在群内给出 binding 提示、fallback 路由说明和 slash command 边界 |
+| `/hfc status` 已经出卡片，但下面还出现灰色 `Unknown command /hfc` | 已接管的 `/hfc` 命令会快速 ACK Hermes Gateway，卡片发送转后台，避免原生 unknown fallback |
+| 卡片完成后已经显示附件摘要，但下面又出现一条内容相同的原生 reply | 普通附件摘要保持 card-only；真实媒体/文件路径才保留 Hermes 原生投递 |
 | Hermes 请求授权、让用户选择选项，或 slash 命令需要确认时，需要手工输入编号 | Agent 任务内选项留在当前卡片，独立 slash 命令使用独立命令卡片；不可用时退回编号文本 |
 | 长表格/长代码块被飞书渲染成 raw markdown | Markdown-aware split，重复表头和完整 code fence |
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、`group_rules` 安全诊断、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
+
+## V3.8.13 Hermes 升级兼容补丁
+
+V3.8.13 修复 Hermes 升级到 `v2026.7.7.2` / `0.18.2` 后卡片失效的问题：新版 Hermes 可能使用四段 Git tag，并在升级时覆盖 `gateway/run.py`，导致旧 hook 不在但 backup/manifest 还残留。现在检测、repair 和 reinstall 都能识别这个升级场景。
+
+- **版本格式更宽容**：`v2026.7.7.2`、`0.18.2`、`Hermes Agent v0.18.2 (...)` 这类版本 metadata 都能识别。
+- **anchor 优先保持可用**：版本 metadata 完全不可解析时，只要 `gateway/run.py` anchors 可验证，仍可用 `VERSION + gateway anchors` / `git tag + gateway anchors` 兜底。
+- **升级残留可修复**：Hermes 升级后如果 `run.py` 已是未打补丁的上游文件，`repair` 会清理 stale backup/manifest，然后 `install` 可重新安装 hook。
+
+完整发布说明见 [V3.8.13 release notes](release-notes-v3.8.13.md)。
+
+## V3.8.12 附件摘要重复 reply 抑制补丁
+
+V3.8.12 修复 issue #82 的后续复现：完成卡片已经包含 `colors.csv` / `styles.csv` 等附件摘要时，插件之前会保守放行 Hermes 原生最终 reply，导致卡片下方又出现一条内容相同的 reply。现在 completed event 会区分普通卡片摘要和真实原生文件/媒体投递需求。
+
+- **普通附件摘要保持 card-only**：`attachments` 中的展示摘要不会再强制放行整段最终回复。
+- **真实文件/媒体路径仍 fail-open**：`MEDIA:/tmp/...`、本地文件路径、`files`、`media_files` 和 image/audio/video locals 仍保留 Hermes 原生投递路径。
+- **Gateway completion guard 更精细**：patcher 通过 `native_delivery` 判断是否需要保留 native delivery，而不是只看 attachments 是否为空。
+
+完整发布说明见 [V3.8.12 release notes](release-notes-v3.8.12.md)。
+
+## V3.8.11 `/hfc` 原生未知命令抑制补丁
+
+V3.8.11 修复真实 Feishu/Lark 里 `/hfc status` 已经触发 Hermes Agent 卡片，但 Gateway 仍继续发送灰色原生 `Unknown command /hfc` 的竞态。根因是 `/commands` 等待真实卡片发送完成，而 Gateway hook 的接管超时时间较短；现在 sidecar 接受命令后会先返回 `handled: true`，再后台发送卡片。
+
+- **卡片接管后不再双发**：`/hfc status` 的预期结果是一张 Hermes Agent 诊断卡片，不再附带灰色 unknown command。
+- **慢 Feishu 发送不影响接管判断**：真实卡片发送、网络或 tenant token 请求变慢时，Gateway 仍知道该 `/hfc` 命令已经由插件接管。
+- **Gateway 文本解析更稳**：hook runtime 会从 `event.text` / `event.content` 补读 slash command 文本，覆盖真实 Gateway event 中 helper 不完整的情况。
+
+完整发布说明见 [V3.8.11 release notes](release-notes-v3.8.11.md)。
 
 ## V3.8.10 群聊诊断与工具详情增强
 
@@ -100,7 +135,7 @@ V3.8.6 修复 issue #70 的 Docker 容器安装场景：Hermes v0.18.0 / `v2026.
 
 - **Hermes v0.18.0**：`v2026.7.1` / `0.18.0` / `v0.18.0` 已加入兼容矩阵，继续使用 `gateway_run_013_plus`。
 - **Docker 无 VERSION 兜底**：诊断会显示 `version_source: gateway anchors`、`version: unknown` 和推断出的 `hook_strategy`。
-- **显式坏版本仍 fail-closed**：只有缺失版本元数据才走 anchor 兜底；如果 `VERSION` 文件内容非法，仍会拒绝安装。
+- **版本文案更宽容**：后续版本会从描述型 `VERSION` 中提取数字版本；如果版本文案完全不可解析，但 `gateway/run.py` anchors 可验证，诊断会显示 `VERSION + gateway anchors` 并继续安装。文件不可读、symlink、必要 anchor 缺失或结构不兼容仍 fail-closed。
 
 完整发布说明见 [V3.8.6 release notes](release-notes-v3.8.6.md)。
 
@@ -303,7 +338,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.8.10`、`v3.6.6` 或 `main` |
+| `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.8.13`、`v3.6.6` 或 `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `HFC_CONFIG` 同目录 `.env` | 飞书凭据保存位置 |
@@ -327,7 +362,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v3.8.10`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v3.8.13`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -335,7 +370,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.10
+export HFC_VERSION=v3.8.13
 bash install-docker.sh
 ```
 
@@ -356,7 +391,7 @@ export FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-`setup` 是整合安装器：自动生成配置、检查 Hermes 版本和代码 anchor、把插件安装到 Hermes Gateway 实际运行的 venv Python、安装 hook、启动 sidecar 并做健康检查。它支持 `v2026.4.23` 起的旧版 Hermes，也支持 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 新版 anchor；Hermes `VERSION` 可带或不带 `v` 前缀。V3.8.6 起，Docker/source-stripped 环境缺少 `VERSION` 和 `.git` 时也可用 `gateway/run.py` anchor 兜底识别。
+`setup` 是整合安装器：自动生成配置、检查 Hermes 版本和代码 anchor、把插件安装到 Hermes Gateway 实际运行的 venv Python、安装 hook、启动 sidecar 并做健康检查。它支持 `v2026.4.23` 起的旧版 Hermes，也支持 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 新版 anchor；Hermes `VERSION` 可带或不带 `v` 前缀，也可从 `Hermes Agent v0.18.2 (...)` 这类描述型版本中提取数字版本。V3.8.6 起，Docker/source-stripped 环境缺少 `VERSION` 和 `.git` 时也可用 `gateway/run.py` anchor 兜底识别；当前版本在 `VERSION` 可读但不可解析时，也会在 anchors 可验证后继续安装。
 
 如果你使用 Hermes 默认目录，也可以把凭据放在 `~/.hermes/.env`：
 
@@ -377,7 +412,7 @@ V3.6.2 会继续自动读取 `~/.hermes/config.yaml` 同目录的 `~/.hermes/.en
 
 ## 升级
 
-从 V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.9 升级到 V3.8.10 向后兼容，**单 Profile 配置无需任何修改**。如果 Hermes 使用自己的 venv，升级后请重新跑 `setup` 或 `install`，让插件同时进入 Hermes runtime Python 并刷新 hook。V3.8.10 保留 V3.8.9 的话题连续更新能力，并新增群内 `/hfc status` 绑定提示、群内 slash command 行为说明和工具详情参数/耗时/失败原因展示；建议升级后执行一次 `doctor --explain`，并在普通会话、话题和目标群聊里各发送一次普通问题、`/hfc status`、`/new` 或 `/model` 验证状态。
+从 V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.12 升级到 V3.8.13 向后兼容，**单 Profile 配置无需任何修改**。如果 Hermes 使用自己的 venv，升级后请重新跑 `setup` 或 `install`，让插件同时进入 Hermes runtime Python 并刷新 hook。V3.8.13 保留 V3.8.10 的群聊诊断、V3.8.11 的 `/hfc` 命令接管修复、V3.8.12 的附件摘要重复 reply 抑制，并修复 Hermes `v2026.7.7.2` / `0.18.2` 升级后的 hook 兼容和 stale install state 问题；建议升级后执行一次 `doctor --explain`，并在普通会话、话题和目标群聊里各发送一次普通问题、`/hfc status`、`/new` 或 `/model` 验证状态。
 
 ```bash
 # 1. 停止 sidecar
@@ -385,7 +420,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. 更新代码
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.8.10
+git checkout v3.8.13
 pip install -e ".[test]" --upgrade
 
 # 3. 诊断 Hermes hook strategy 与 anchors
@@ -400,7 +435,7 @@ python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --
 python3 -m hermes_feishu_card.cli start --config ~/.hermes_feishu_card/config.yaml
 ```
 
-`doctor` 会优先从 `VERSION` 或 Git tag `v2026.4.23+` 判断 Hermes 支持状态。Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 应命中 `gateway_run_013_plus`；旧版本 Hermes 应命中 `legacy_gateway_run`。如果 Docker 镜像缺少 `VERSION` 和 `.git` 元数据，V3.8.6 会用 `gateway/run.py` anchor 兜底，输出 `version_source: gateway anchors`。若 `doctor --explain` 提示可自动修复，先执行 `repair --hermes-dir ... --yes` 再重新安装 hook。
+`doctor` 会优先从 `VERSION` 或 Git tag `v2026.4.23+` 判断 Hermes 支持状态。Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 应命中 `gateway_run_013_plus`；旧版本 Hermes 应命中 `legacy_gateway_run`。如果 Docker 镜像缺少 `VERSION` 和 `.git` 元数据，V3.8.6 会用 `gateway/run.py` anchor 兜底，输出 `version_source: gateway anchors`；如果 `VERSION` 或 Git tag 存在但格式不可解析，当前版本会在 anchors 可验证时输出 `VERSION + gateway anchors` 或 `git tag + gateway anchors`。若 `doctor --explain` 提示可自动修复，先执行 `repair --hermes-dir ... --yes` 再重新安装 hook。
 
 ## 核心功能
 
@@ -593,6 +628,9 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v3.8.13](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.13) | 2026-07 | Hermes `v2026.7.7.2` / `0.18.2` 升级兼容，anchor fallback 与 stale install state repair |
+| [v3.8.12](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.12) | 2026-07 | issue #82，带 `colors.csv` / `styles.csv` 等附件摘要的完成卡片不再重复发送原生最终 reply |
+| [v3.8.11](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.11) | 2026-07 | `/hfc status` 卡片接管后不再同时触发灰色 `Unknown command /hfc` 原生回复 |
 | [v3.8.10](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.10) | 2026-07 | 群内 `/hfc status` 提示 chat binding、fallback/default 路由和 slash command 边界；工具详情展示参数摘要、耗时和失败原因 |
 | [v3.8.9](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.9) | 2026-07 | 飞书/Lark 话题内卡片连续更新：后续流式事件和 `system.notice` 通过 `reply_to_message_id` 回到原卡片，避免 timeline 停住和灰色提示重复 |
 | [v3.8.8](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.8) | 2026-07 | Hermes 原生系统提示卡片化：Working 心跳、上下文窗口/压缩提示、session reset、skill loading、自我改进 review 进入卡片或独立小卡片 |
