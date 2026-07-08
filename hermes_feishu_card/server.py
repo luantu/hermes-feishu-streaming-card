@@ -1115,7 +1115,7 @@ def _render_session_card(request: web.Request, session: CardSession) -> dict[str
         interaction_mode=interaction_mode,
         loading_gif_img_key=loading_gif_img_key,
         show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
-        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), False),
+        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), session.status not in {"completed", "failed"}),
         max_timeline_items=_safe_positive_int(
             card_config.get("max_timeline_items"), 12
         ),
@@ -1153,7 +1153,7 @@ def _render_session_cards(request: web.Request, session: CardSession) -> list[di
         interaction_mode=interaction_mode,
         loading_gif_img_key=loading_gif_img_key,
         show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
-        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), False),
+        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), session.status not in {"completed", "failed"}),
         max_timeline_items=_safe_positive_int(
             card_config.get("max_timeline_items"), 12
         ),
