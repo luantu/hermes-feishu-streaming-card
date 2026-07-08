@@ -42,6 +42,7 @@
 - topic 后续事件使用不同内部 `message_id` 时，必须先查 reply anchor。
 - terminal 事件前要 flush pending delta，避免尾部文本丢失。
 - 卡片已完成时不能让 Hermes 原生 resend 泄漏成灰色消息。
+- 群聊 `/hfc status` 只做路由诊断和 binding 提示；@机器人触发、白名单和群消息准入属于 Hermes Gateway。
 
 ### `hermes_feishu_card/install/patcher.py`
 
@@ -62,6 +63,7 @@
 | 改动 | 先跑 | 发布前还要跑 |
 |---|---|---|
 | runtime event 抽取、topic、notice | `python -m pytest tests/unit/test_hook_runtime.py tests/integration/test_server.py -q` | `python -m pytest -q` |
+| 群聊路由诊断 / 工具详情 | `python -m pytest tests/unit/test_bots.py tests/unit/test_session.py tests/unit/test_render.py tests/integration/test_server.py -q` | `python -m pytest -q` |
 | patcher / install hook | `python -m pytest tests/unit/test_patcher.py tests/integration/test_cli_install.py -q` | `python -m pytest -q` |
 | renderer / timeline / Markdown | `python -m pytest tests/unit/test_render.py tests/unit/test_session.py -q` | `python -m pytest -q` |
 | CLI / doctor / install scripts | `python -m pytest tests/integration/test_cli.py tests/unit/test_install_scripts.py -q` | `python -m pytest -q` |
@@ -75,4 +77,3 @@
 - 保持 hook fail-open，但对已识别且已接管的 Feishu 卡片消息要抑制重复原生文本。
 - 真实 Feishu 凭据、chat id、token 不进入仓库。
 - 截图入库前脱敏；优先展示项目能力，不展示私人内容。
-

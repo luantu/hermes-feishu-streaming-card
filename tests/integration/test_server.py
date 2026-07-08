@@ -206,6 +206,52 @@ async def test_hfc_help_command_sends_read_only_diagnostic_card(client):
     assert "omt_secret_thread" not in content
 
 
+async def test_hfc_status_group_unbound_shows_binding_hint_and_slash_guidance():
+    factory = FakeFeishuClientFactory()
+
+    def bot_router(event):
+        assert event.data["chat_type"] == "group"
+        return RouteResult(
+            "default",
+            "bindings.fallback_bot",
+            metadata={
+                "group": {
+                    "is_group": True,
+                    "enabled": True,
+                    "chat_bound": False,
+                    "chat_allowed": True,
+                    "require_mention": True,
+                }
+            },
+        )
+
+    app = create_app(factory, bot_router=bot_router)
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        response = await test_client.post(
+            "/commands",
+            json={
+                "command": "status",
+                "chat_id": "oc_group",
+                "message_id": "om_group_status",
+                "data": {"chat_type": "group"},
+            },
+        )
+    finally:
+        await test_client.close()
+
+    assert response.status == 200
+    assert len(factory.clients["default"].sent) == 1
+    card = factory.clients["default"].sent[0][1]
+    content = str(card)
+    assert "当前群未绑定" in content
+    assert "bots bind-chat oc_group default" in content
+    assert "群内 slash command" in content
+    assert "Hermes @/白名单" in content
+
+
 async def test_hfc_monitor_command_reports_safe_metrics(client):
     test_client, feishu_client = client
     metrics = test_client.app[sidecar_server.METRICS_KEY]

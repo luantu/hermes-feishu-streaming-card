@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前包版本为 `3.8.9`。这一版延续 sidecar-only 主线，在 V3.8.0 卡片体验升级、V3.8.1 高频 delta 合并、V3.8.2 timeline 阅读体验、V3.8.3 独立命令卡片、V3.8.4 WebSocket 原生命令卡片、V3.8.5 命令结果反馈、V3.8.6 Docker/Hermes v0.18.0 兼容、V3.8.7 新版 Hermes 首事件兼容和 V3.8.8 原生系统提示卡片化基础上，修复飞书/Lark 话题内后续流式事件与 `system.notice` 没有回到原卡片的问题。
+当前包版本为 `3.8.10`。这一版延续 sidecar-only 主线，保留 V3.8.2 timeline 阅读体验、V3.8.9 飞书/Lark 话题卡片连续更新能力，并补齐群内 `/hfc status` 的 chat binding 自动提示、群内 slash command 行为说明，以及工具详情中的参数摘要、耗时和失败原因展示。
 
 ## 已具备
 
@@ -27,8 +27,10 @@
 - Gateway runtime 会在 Hermes 进程内合并高频 `thinking.delta` / `answer.delta`，覆盖 V3.8.1 的 issue #74，降低 stream-reader 线程压力。
 - terminal event 前会 flush 同一消息 pending delta，避免最终卡片缺少尾部内容。
 - 飞书内 `/hfc help/status/doctor/monitor` 提供只读诊断卡片，且只展示 hash 后的上下文 id。
+- 群内 `/hfc status` 会展示 chat binding 状态、fallback/default 路由、建议 `bots bind-chat` 命令和群内 slash command 行为边界；真实 @机器人触发和白名单准入仍由 Hermes Gateway 控制。
 - pre-tool answer 会先显示在正文区，并在下一段 answer 或终态到来时归档进辅助 timeline；终态卡片会剥离已归档的中间说明。
 - 辅助 timeline 中思考条目和工具详情使用不同字号和灰度层级，raw `thinking.delta` 不进入用户可见 timeline。
+- 工具详情可展示参数摘要、耗时和失败原因，并继续按紧凑 timeline 渲染。
 - 独立 slash 命令确认支持 Feishu command card：`/new`、`/reset`、`/undo` 和高成本 `/model <model>` 确认会优先渲染为独立命令卡片。
 - Feishu/Lark WebSocket 长连接部署会动态获得原生 `send_slash_confirm(...)` 和 `send_model_picker(...)` 卡片能力；按钮点击经 `_on_card_action_trigger` 回到 Hermes 原 handler。
 - WebSocket 原生卡片可用时跳过 sidecar `interaction.requested` 预交互，避免同一 slash 命令同时出现 sidecar 选项卡和原生按钮卡。

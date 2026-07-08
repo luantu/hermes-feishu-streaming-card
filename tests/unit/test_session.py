@@ -73,6 +73,30 @@ def test_tool_updates_count_all_events():
     assert session.tools["t1"].status == "completed"
 
 
+def test_tool_update_builds_compact_detail_from_arguments_duration_and_error():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "tool.updated",
+            1,
+            {
+                "tool_id": "search-1",
+                "name": "web_search",
+                "status": "failed",
+                "arguments": {"query": "广州天气", "limit": 3},
+                "duration_ms": 1234,
+                "error": "timeout",
+            },
+        )
+    )
+
+    detail = session.tools["search-1"].detail
+    assert "参数: {\"query\": \"广州天气\", \"limit\": 3}" in detail
+    assert "耗时: 1.23s" in detail
+    assert "失败: timeout" in detail
+
+
 def test_completion_replaces_thinking_with_answer():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.apply(event("thinking.delta", 1, {"text": "思考内容。"}))

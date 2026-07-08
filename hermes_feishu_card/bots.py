@@ -35,6 +35,40 @@ class RoutingContext:
 class RouteResult:
     bot_id: str
     reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GroupRules:
+    enabled: bool = False
+    require_mention: bool = True
+    allowed_chats: frozenset[str] = frozenset()
+    allowed_users: frozenset[str] = frozenset()
+
+    def status(self, context: RoutingContext, *, chat_bound: bool) -> dict[str, Any]:
+        chat_type = str(context.chat_type or "").strip().lower()
+        is_group = chat_type in {"group", "forum", "channel", "thread"}
+        chat_id = str(context.chat_id or "").strip()
+        chat_allowed = True
+        if self.enabled and is_group and self.allowed_chats:
+            chat_allowed = "*" in self.allowed_chats or chat_id in self.allowed_chats
+        return {
+            "is_group": is_group,
+            "enabled": self.enabled,
+            "chat_bound": bool(chat_bound),
+            "chat_allowed": bool(chat_allowed),
+            "require_mention": bool(self.require_mention),
+            "allowed_chat_count": len(self.allowed_chats),
+            "allowed_user_count": len(self.allowed_users),
+        }
+
+    def safe_diagnostics(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "require_mention": bool(self.require_mention),
+            "allowed_chat_count": len(self.allowed_chats),
+            "allowed_user_count": len(self.allowed_users),
+        }
 
 
 class BotRegistry:
@@ -44,6 +78,7 @@ class BotRegistry:
         bots: dict[str, BotConfig],
         default_bot_id: str,
         chat_bindings: dict[str, str] | None = None,
+        group_rules: GroupRules | None = None,
         default_reason: str = "default",
     ) -> None:
         if not bots:
@@ -56,6 +91,7 @@ class BotRegistry:
         self._bots = dict(bots)
         self.default_bot_id = normalized_default
         self.chat_bindings = dict(chat_bindings or {})
+        self.group_rules = group_rules or GroupRules()
         self._default_reason = default_reason
 
         for chat_id, bot_id in self.chat_bindings.items():
@@ -98,11 +134,13 @@ class BotRegistry:
             str(chat_id): _normalize_bot_id(bot_id)
             for chat_id, bot_id in _mapping_or_empty(bindings.get("chats")).items()
         }
+        group_rules = _group_rules_from_mapping(bindings.get("group_rules"))
 
         return cls(
             bots=bots,
             default_bot_id=default_bot_id,
             chat_bindings=chat_bindings,
+            group_rules=group_rules,
             default_reason=default_reason,
         )
 
@@ -117,15 +155,33 @@ class BotRegistry:
         return [self._bots[bot_id] for bot_id in sorted(self._bots)]
 
     def resolve(self, context: RoutingContext) -> RouteResult:
+        metadata = self._route_metadata(context)
         if context.chat_id in self.chat_bindings:
-            return RouteResult(self.chat_bindings[context.chat_id], "bindings.chats")
-        return RouteResult(self.default_bot_id, self._default_reason)
+            return RouteResult(
+                self.chat_bindings[context.chat_id],
+                "bindings.chats",
+                metadata=metadata,
+            )
+        return RouteResult(self.default_bot_id, self._default_reason, metadata=metadata)
+
+    def group_status(self, context: RoutingContext) -> dict[str, Any]:
+        return self.group_rules.status(
+            context,
+            chat_bound=context.chat_id in self.chat_bindings,
+        )
+
+    def _route_metadata(self, context: RoutingContext) -> dict[str, Any]:
+        group = self.group_status(context)
+        if not group.get("is_group"):
+            return {}
+        return {"group": group}
 
     def safe_diagnostics(self) -> dict[str, Any]:
         return {
             "default_bot": self.default_bot_id,
             "bot_count": len(self._bots),
             "chat_binding_count": len(self.chat_bindings),
+            "group_rules": self.group_rules.safe_diagnostics(),
             "bots": [
                 {
                     "bot_id": bot.bot_id,
@@ -202,6 +258,16 @@ def _select_default_bot_id(
     return "default", "default"
 
 
+def _group_rules_from_mapping(value: object) -> GroupRules:
+    data = _mapping_or_empty(value)
+    return GroupRules(
+        enabled=_coerce_bool(data.get("enabled"), default=False),
+        require_mention=_coerce_bool(data.get("require_mention"), default=True),
+        allowed_chats=frozenset(_string_items(data.get("allowed_chats"))),
+        allowed_users=frozenset(_string_items(data.get("allowed_users"))),
+    )
+
+
 def _bot_from_mapping(bot_id: str, name: str, value: dict[str, Any]) -> BotConfig:
     normalized = _normalize_bot_id(bot_id)
     app_id = str(value.get("app_id") or "").strip()
@@ -237,3 +303,33 @@ def _normalize_bot_id(value: object) -> str:
 
 def _mapping_or_empty(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _coerce_bool(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _string_items(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    items = []
+    for item in raw_items:
+        text = str(item).strip()
+        if text:
+            items.append(text)
+    return items

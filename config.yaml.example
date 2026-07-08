@@ -76,7 +76,12 @@ bindings:
   # oc_xxxxxxxxxxxx: sales
   # oc_yyyyyyyyyyyy: support
   group_rules:
-    enabled: false  # V3.3.0 does not filter group triggers
+    # Hermes Gateway owns real @robot and allowlist admission.
+    # V3.8.10 reads this section for safe diagnostics and /hfc status hints.
+    enabled: false
+    require_mention: true
+    allowed_chats: []
+    allowed_users: []
 
 # ── Multi-Profile (V3.3.0+, optional) ────────────────────────────────────────
 # For setups with multiple Hermes profiles sharing one sidecar process.

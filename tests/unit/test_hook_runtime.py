@@ -221,6 +221,27 @@ def test_build_stream_event_carries_topic_reply_anchor_from_source_message_id():
     assert payload["data"]["reply_to_message_id"] == "om_topic_user"
 
 
+def test_build_tool_event_carries_arguments_duration_and_error():
+    payload = hook_runtime.build_event(
+        "tool.updated",
+        {
+            "platform": "feishu",
+            "chat_id": "oc_group",
+            "message_id": "om_tool",
+            "tool_id": "tool-1",
+            "name": "terminal",
+            "status": "failed",
+            "arguments": {"command": "date"},
+            "duration_ms": 250,
+            "error": "exit 1",
+        },
+    )
+
+    assert payload["data"]["arguments"] == {"command": "date"}
+    assert payload["data"]["duration_ms"] == 250
+    assert payload["data"]["error"] == "exit 1"
+
+
 def test_build_event_ignores_non_feishu_platforms():
     assert (
         hook_runtime.build_event(

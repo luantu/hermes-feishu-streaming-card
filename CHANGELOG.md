@@ -7,12 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.10 — 2026-07-07
+
+See also: [docs/release-notes-v3.8.10.md](docs/release-notes-v3.8.10.md)
+
+### Added
+- Added safe `bindings.group_rules` diagnostics for group chats. Hermes Gateway still owns real @bot and allowlist admission; the sidecar reports the configured counts, mention policy, binding state, and routing reason without leaking raw chat/user ids.
+- Added group-aware `/hfc status` guidance. In an unbound group it now explains that the chat is using fallback/default routing, prints the suggested `bots bind-chat ...` command, and documents that `/new`, `/model`, `/reset`, and similar slash commands first pass Hermes group admission before rendering command cards.
+- Tool timeline details now include compact argument summaries, duration, and failure reason when Hermes exposes those values in `tool.updated` locals.
+
 ### Fixed
 - issue #79: `install.sh` and `install-docker.sh` now suppress pip's root-user warning by default and keep recoverable `externally-managed-environment` output from looking like a fatal install failure.
 - Docker installs now retry PEP 668 externally managed Python environments with `--break-system-packages`, matching the macOS/Linux installer behavior.
 
 ### Tests
 - Added installer regression coverage for pip root-user warning suppression and Debian/Ubuntu externally managed Python retry output.
+- Added regression coverage for tool detail extraction/rendering, hook-runtime tool metadata extraction, safe group diagnostics, route metadata, and group `/hfc status` binding guidance.
 
 ## V3.8.9 — 2026-07-04
 

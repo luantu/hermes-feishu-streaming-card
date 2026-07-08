@@ -3407,6 +3407,15 @@ def _event_data(
         status = _first_string(local_vars, ("status", "tool_status")) or "running"
         detail = _first_string(local_vars, ("detail", "tool_detail")) or ""
         data.update({"tool_id": tool_id, "name": name, "status": status, "detail": detail})
+        arguments = _tool_arguments(local_vars)
+        if arguments is not None:
+            data["arguments"] = arguments
+        duration_ms = _tool_duration_milliseconds(local_vars)
+        if duration_ms is not None:
+            data["duration_ms"] = duration_ms
+        error = _tool_error(local_vars)
+        if error:
+            data["error"] = error
         return data
     if event_name == "message.completed":
         answer = _completion_answer(local_vars)
@@ -3477,6 +3486,53 @@ def _profile_identity(local_vars: dict[str, Any], source_obj: Any, message_obj: 
     if profile:
         return _safe_profile_identity(profile, "hermes_home")
     return "default", "fallback_default"
+
+
+def _tool_arguments(local_vars: dict[str, Any]) -> Any:
+    for name in ("arguments", "parameters", "args", "tool_args", "tool_input", "input"):
+        if name not in local_vars:
+            continue
+        value = local_vars.get(name)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return _json_safe_tool_value(value)
+    return None
+
+
+def _tool_duration_milliseconds(local_vars: dict[str, Any]) -> int | float | None:
+    for name in ("duration_ms", "elapsed_ms", "tool_duration_ms"):
+        value = _finite_float(local_vars.get(name))
+        if value is not None and value >= 0:
+            return int(value) if value.is_integer() else value
+    for name in ("duration", "elapsed", "tool_duration"):
+        value = _finite_float(local_vars.get(name))
+        if value is not None and value >= 0:
+            milliseconds = value * 1000
+            return int(milliseconds) if milliseconds.is_integer() else milliseconds
+    return None
+
+
+def _tool_error(local_vars: dict[str, Any]) -> str:
+    for name in ("error", "exception", "tool_error", "error_message", "failure_reason"):
+        value = local_vars.get(name)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _json_safe_tool_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe_tool_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_tool_value(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 def _safe_profile_identity(value: str, source: str) -> tuple[str, str]:

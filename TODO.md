@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -88,11 +88,17 @@
 - [x] hook runtime 保留 Hermes Relay `source.message_id` 作为原始 Feishu reply anchor，覆盖真实 WebSocket 长连接话题元数据。
 - [x] 补齐 topic stream/tool、topic `system.notice` 和 hook runtime reply anchor 回归测试。
 
+### V3.8.10：群聊能力与工具详情增强（已完成）
+
+- [x] 工具调用详情支持参数摘要、耗时和失败原因，并继续用紧凑 timeline 渲染。
+- [x] `bindings.group_rules` 从占位升级为安全诊断输入，记录 enabled、require_mention、allowed counts，不泄漏真实 chat/user id。
+- [x] 群内 `/hfc status` 提示当前 chat binding、fallback/default 路由、建议 `bots bind-chat` 命令和群内 slash command 行为边界。
+- [x] 明确 @机器人触发和白名单准入仍由 Hermes Gateway 控制，sidecar 只负责卡片路由、诊断和已接管消息的呈现。
+- [x] 补齐 session/render/hook/bot/server 回归测试。
+
 ### V3.8.x 后续维护与扩展面（待办）
 
 - [ ] 卡片内提供“继续”“重试”“取消”等写操作入口，需要单独做权限、幂等和误触发设计。
-- [ ] 工具调用详情支持查看参数摘要、耗时、失败原因。
-- [ ] 群聊规则支持 @机器人触发、白名单、chat binding 自动提示。
 - [ ] 补齐 E2E / fixture 覆盖，验证 V3.8.x 卡片体验和终态 drain 主链路。
 - [ ] 完成 agent guide、维护手册和开放扩展面的文档整理。
 - [ ] 评估卡片 timeline/metrics 的长期兼容边界，并补发布回归清单。
@@ -100,7 +106,7 @@
 - [ ] 清理 terminal 后的 closed `FlushController`，并评估更有诊断价值的 queue depth / coalesced backlog 指标。
 - [ ] V3.8.x 候选：按真实使用反馈补充更多 Hermes 原生 notice 分类、去重策略和中英文文案微调。
 - [ ] V3.9 候选：Docker 完整运维体验（镜像内安装、外部 Hermes 目录挂载、doctor 一键诊断、升级流程）。
-- [ ] V3.9 候选：群聊能力（@bot、白名单、会话绑定提示、群内 slash command 行为差异）。
+- [ ] V3.9 候选：群聊体验后续（可视化配置向导、更多真实 E2E fixture、跨群会话迁移策略）。
 - [ ] V4.0 候选：卡片交互中台化（slash command、授权请求、对话选项、运行提示统一 action/state 模型）。
 
 ## V3.3.0 (已完成)

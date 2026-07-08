@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+import json
 import secrets
 from typing import Any, Dict
 
@@ -130,10 +131,9 @@ class CardSession:
             self._has_seen_tool_event = True
             name = event.data.get("name")
             status = event.data.get("status")
-            detail = event.data.get("detail")
             resolved_name = name if isinstance(name, str) else tool_id
             resolved_status = status if isinstance(status, str) else "running"
-            resolved_detail = detail if isinstance(detail, str) else ""
+            resolved_detail = _tool_detail_from_event_data(event.data)
             self.tools[tool_id] = ToolState(
                 tool_id=tool_id,
                 name=resolved_name,
@@ -300,6 +300,81 @@ def _interaction_options(value: Any) -> list[InteractionOption]:
         style = str(item.get("style") or item.get("type") or "default").strip() or "default"
         options.append(InteractionOption(label=label, value=option_value, style=style))
     return options
+
+
+def _tool_detail_from_event_data(data: dict[str, Any]) -> str:
+    lines: list[str] = []
+    detail = data.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        lines.append(normalize_stream_text(detail).strip())
+
+    arguments = _first_tool_value(data, ("arguments", "parameters", "args", "input"))
+    if arguments is not None:
+        rendered = _compact_tool_value(arguments)
+        if rendered:
+            lines.append(f"参数: {rendered}")
+
+    duration = _tool_duration_text(data)
+    if duration:
+        lines.append(f"耗时: {duration}")
+
+    error = _first_tool_value(data, ("error", "error_message", "failure_reason"))
+    if error is not None:
+        rendered_error = normalize_stream_text(str(error)).strip()
+        if rendered_error:
+            lines.append(f"失败: {rendered_error}")
+
+    return "\n".join(lines)
+
+
+def _first_tool_value(data: dict[str, Any], names: tuple[str, ...]) -> Any:
+    for name in names:
+        if name not in data:
+            continue
+        value = data.get(name)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _compact_tool_value(value: Any) -> str:
+    if isinstance(value, str):
+        return normalize_stream_text(value).strip()
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+    except (TypeError, ValueError):
+        return normalize_stream_text(str(value)).strip()
+
+
+def _tool_duration_text(data: dict[str, Any]) -> str:
+    milliseconds = _tool_duration_milliseconds(data)
+    if milliseconds is None:
+        return ""
+    if milliseconds < 1000:
+        return f"{int(round(milliseconds))}ms"
+    seconds = milliseconds / 1000.0
+    return f"{seconds:.2f}".rstrip("0").rstrip(".") + "s"
+
+
+def _tool_duration_milliseconds(data: dict[str, Any]) -> float | None:
+    for name in ("duration_ms", "elapsed_ms", "tool_duration_ms"):
+        try:
+            value = float(data.get(name))
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            return value
+    for name in ("duration", "elapsed", "tool_duration"):
+        try:
+            value = float(data.get(name))
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            return value * 1000
+    return None
 
 
 def _notice_level(value: Any) -> str:

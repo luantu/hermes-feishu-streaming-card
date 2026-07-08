@@ -44,6 +44,8 @@ V3.8.8 adds native Hermes system notice cardification regressions: `system.notic
 
 V3.8.9 adds Feishu/Lark topic reply regressions: when the first card is created from the original topic message `message_id` but later `tool.updated`, `answer.delta`, or `system.notice` events use a different streaming `message_id`, the sidecar should update the same card through `reply_to_message_id`, create no duplicate card, and avoid gray native fallback for applied system notices. Recognized system notices should also suppress native gray text if the card delivery attempt times out.
 
+V3.8.10 adds group-diagnostic and tool-detail regressions: `bindings.group_rules` is diagnostic input only and must not leak raw chat/user ids; group `/hfc status` should explain chat binding, fallback/default routing, and slash-command boundaries; `tool.updated` should carry argument summaries, duration, and failure reason into the compact timeline when available.
+
 ## Feishu HTTP Client Tests
 
 ```bash

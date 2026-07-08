@@ -1019,6 +1019,44 @@ def test_render_timeline_redacts_sensitive_tool_detail():
     assert "lark_send" in content
 
 
+def test_render_timeline_shows_compact_tool_arguments_duration_and_error():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="tool.updated",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={
+                "tool_id": "tool-1",
+                "name": "terminal",
+                "status": "failed",
+                "arguments": {"command": "gh issue list", "token": "secret-token"},
+                "duration_ms": 250,
+                "error": "exit 1",
+            },
+        )
+    )
+
+    card = render_card(session)
+    timeline = next(
+        item for item in card["body"]["elements"] if item.get("element_id") == "auxiliary_timeline"
+    )
+    content = str(timeline)
+
+    assert "参数:" in content
+    assert "gh issue list" in content
+    assert "耗时: 250ms" in content
+    assert "失败: exit 1" in content
+    assert "secret-token" not in content
+
+
 def test_render_timeline_redacts_sensitive_tool_detail_in_json_and_repr():
     from hermes_feishu_card.events import SidecarEvent
 

@@ -520,6 +520,35 @@ def _hfc_context_lines(event: SidecarEvent, route: RouteResult | None) -> list[s
         lines.append(f"- route: {route.reason}")
         if route.bot_id:
             lines.append(f"- bot_id: {route.bot_id}")
+        lines.extend(_hfc_group_context_lines(event, route))
+    return lines
+
+
+def _hfc_group_context_lines(event: SidecarEvent, route: RouteResult) -> list[str]:
+    metadata = getattr(route, "metadata", {}) or {}
+    group = metadata.get("group") if isinstance(metadata, dict) else None
+    if not isinstance(group, dict) or not group.get("is_group"):
+        return []
+    lines = [
+        "",
+        "**群聊**",
+        "- @机器人触发: 由 Hermes @/白名单准入控制，sidecar 只负责卡片路由和诊断。",
+        "- 群内 slash command: `/new`、`/model`、`/reset` 等独立命令先通过 Hermes @/白名单，再使用独立命令卡片；`/update` 仍保持 Hermes 后台升级流程。",
+    ]
+    if group.get("enabled"):
+        allowed = "yes" if group.get("chat_allowed") else "no"
+        mention = "yes" if group.get("require_mention") else "no"
+        lines.append(
+            f"- group_rules: enabled, allowed={allowed}, require_mention={mention}"
+        )
+    if not group.get("chat_bound"):
+        bot_id = str(route.bot_id or "default").split(":", 1)[-1]
+        lines.extend(
+            [
+                "- 当前群未绑定到指定 Bot，正在使用 fallback/default 路由。",
+                f"- 建议绑定: `hermes-feishu-card bots bind-chat {event.chat_id} {bot_id} --config config.yaml`",
+            ]
+        )
     return lines
 
 

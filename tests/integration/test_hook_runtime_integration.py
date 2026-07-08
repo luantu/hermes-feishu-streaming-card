@@ -178,6 +178,7 @@ async def test_installed_hook_forwards_streaming_tool_and_completion_events(
             "name": "fixture_tool",
             "status": "running",
             "detail": "fixture tool preview",
+            "arguments": {"query": "fixture"},
         }
         assert received[3]["data"] == {
             "profile_id": "default",

@@ -98,6 +98,62 @@ def test_unbound_chat_uses_fallback_bot():
     assert result.reason == "bindings.fallback_bot"
 
 
+def test_group_rules_report_safe_status_without_leaking_ids():
+    registry = BotRegistry.from_config(
+        {
+            "feishu": {"app_id": "cli_default", "app_secret": "default-secret"},
+            "bindings": {
+                "fallback_bot": "default",
+                "group_rules": {
+                    "enabled": True,
+                    "require_mention": True,
+                    "allowed_chats": ["oc_allowed"],
+                    "allowed_users": ["ou_owner"],
+                },
+            },
+        }
+    )
+
+    status = registry.group_status(RoutingContext(chat_id="oc_allowed", chat_type="group"))
+    diagnostics = registry.safe_diagnostics()
+
+    assert status["is_group"] is True
+    assert status["enabled"] is True
+    assert status["chat_allowed"] is True
+    assert status["chat_bound"] is False
+    assert status["require_mention"] is True
+    assert diagnostics["group_rules"] == {
+        "enabled": True,
+        "require_mention": True,
+        "allowed_chat_count": 1,
+        "allowed_user_count": 1,
+    }
+    assert "oc_allowed" not in str(diagnostics)
+    assert "ou_owner" not in str(diagnostics)
+
+
+def test_group_route_metadata_marks_unbound_allowed_group():
+    registry = BotRegistry.from_config(
+        {
+            "feishu": {"app_id": "cli_default", "app_secret": "default-secret"},
+            "bindings": {
+                "fallback_bot": "default",
+                "group_rules": {
+                    "enabled": True,
+                    "allowed_chats": ["oc_allowed"],
+                },
+            },
+        }
+    )
+
+    result = registry.resolve(RoutingContext(chat_id="oc_allowed", chat_type="group"))
+
+    assert result.bot_id == "default"
+    assert result.reason == "bindings.fallback_bot"
+    assert result.metadata["group"]["chat_allowed"] is True
+    assert result.metadata["group"]["chat_bound"] is False
+
+
 def test_fallback_bot_takes_precedence_over_bots_default_for_unbound_chat():
     registry = BotRegistry.from_config(
         {

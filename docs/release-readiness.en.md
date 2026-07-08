@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current package version: `3.8.9`. This release keeps the sidecar-only mainline, builds on V3.8.0 card UX, V3.8.1 high-frequency delta coalescing, V3.8.2 timeline readability, V3.8.3 standalone command cards, V3.8.4 WebSocket-native command cards, V3.8.5 command result cards, V3.8.6 Docker/Hermes v0.18.0 compatibility, V3.8.7 newer-Hermes first-event compatibility, and V3.8.8 native system notice cardification, then fixes Feishu/Lark topic replies whose later stream events or `system.notice` messages did not resolve back to the original card.
+Current package version: `3.8.10`. This release keeps the sidecar-only mainline, preserves the V3.8.2 timeline readability work and V3.8.9 Feishu/Lark topic card continuity, then adds group `/hfc status` chat-binding hints, group slash-command behavior guidance, and richer tool details with arguments, duration, and failure reasons.
 
 ## Ready
 
@@ -27,8 +27,10 @@ Current package version: `3.8.9`. This release keeps the sidecar-only mainline, 
 - Gateway runtime coalesces high-frequency `thinking.delta` / `answer.delta` events inside the Hermes process, covering V3.8.1 issue #74 and reducing stream-reader thread pressure.
 - Terminal events flush pending deltas for the same message before final card rendering.
 - Feishu-side `/hfc help/status/doctor/monitor` commands return read-only diagnostic cards with hashed context ids.
+- Group `/hfc status` reports chat binding state, fallback/default routing, the suggested `bots bind-chat` command, and group slash-command behavior boundaries while real @robot and allowlist admission remains owned by Hermes Gateway.
 - Pre-tool answers stay in the primary body first, then archive into the auxiliary timeline when the next answer or terminal event arrives; terminal cards strip already archived intermediate prefaces.
 - Auxiliary timeline reasoning and tool details use separate text sizes and visual weight, while raw `thinking.delta` stays out of the user-visible timeline.
+- Tool details can show argument summaries, duration, and failure reasons while keeping timeline rendering compact.
 - Independent slash-command confirmations support Feishu command cards: `/new`, `/reset`, `/undo`, and high-cost `/model <model>` prompts render as standalone command cards when available.
 - Feishu/Lark WebSocket long-connection deployments dynamically gain native `send_slash_confirm(...)` and `send_model_picker(...)` card support; button clicks route through `_on_card_action_trigger` back into Hermes' original handlers.
 - When WebSocket-native cards are available, the sidecar `interaction.requested` pre-card is skipped so the same slash command does not show both a sidecar choice card and a native button card.
