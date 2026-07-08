@@ -40,7 +40,6 @@ def test_load_config_missing_file_returns_defaults(tmp_path):
             "title": "Hermes Agent",
             "interaction_mode": "auto",
             "show_reasoning": True,
-            "timeline_expanded": False,
             "max_timeline_items": 12,
             "max_reasoning_chars": 1200,
             "max_tool_result_chars": 600,
@@ -96,7 +95,6 @@ card:
         "title": "Hermes Agent",
         "interaction_mode": "auto",
         "show_reasoning": True,
-        "timeline_expanded": False,
         "max_timeline_items": 12,
         "max_reasoning_chars": 1200,
         "max_tool_result_chars": 600,
@@ -179,7 +177,6 @@ def test_load_config_defaults_include_v38_card_options(tmp_path):
     assert config["card"]["flush_interval_ms"] == 200
     assert config["card"]["final_drain_timeout_ms"] == 900
     assert config["card"]["show_reasoning"] is True
-    assert config["card"]["timeline_expanded"] is False
     assert config["card"]["max_timeline_items"] == 12
     assert config["card"]["max_reasoning_chars"] == 1200
     assert config["card"]["max_tool_result_chars"] == 600
