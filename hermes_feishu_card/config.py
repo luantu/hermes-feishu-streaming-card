@@ -27,7 +27,6 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "title": "Hermes Agent",
         "interaction_mode": "auto",
         "show_reasoning": True,
-        "timeline_expanded": False,
         "max_timeline_items": 12,
         "max_reasoning_chars": 1200,
         "max_tool_result_chars": 600,
