@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0
 
 ## Unreleased
 
+## V3.8.18 — 2026-07-10
+
+See also: [docs/release-notes-v3.8.18.md](docs/release-notes-v3.8.18.md)
+
+### Fixed
+- Fixed issue #90, contributed by @colinaaa in PR #91: cron cards created from Feishu topic-group threads now preserve `thread_id` and post back into the originating thread instead of creating a new topic.
+- Cron thread routing now prefers scheduler-resolved Feishu targets, then Feishu origins, then the explicit environment fallback; thread ids from non-Feishu origins are ignored.
+
+### Tests
+- Added unit coverage for cron thread-id source priority, empty values, environment fallback, legacy id formats, and cross-platform isolation.
+- Added integration coverage proving cron cards with a Feishu `thread_id` reach the target thread while ordinary cron cards still target the chat.
+
+## V3.8.17 — 2026-07-09
+
+See also: [docs/release-notes-v3.8.17.md](docs/release-notes-v3.8.17.md)
+
+### Fixed
+- Fixed cron Feishu/Lark card delivery for routing-intent `deliver` values such as `origin`, `all`, and `origin,all`, contributed by @zayn-0101 in PR #77.
+- Cron completions now use scheduler-resolved targets or Feishu origins before falling back to explicit delivery settings, so routing intents no longer short-circuit the platform check into plain-text delivery.
+- `deliver=local` remains local-only/no-delivery, and dict-shaped `deliver` configs continue to support explicit `platform` / `chat_id` values.
+- The installed cron hook pre-resolves delivery targets only when the Hermes scheduler exposes `_resolve_delivery_targets`, keeping the hook fail-open across Hermes versions.
+
+### Tests
+- Added cron coverage for `deliver=origin`, `deliver=all`, `origin,all`, `origin,feishu:...`, dict `deliver`, non-Feishu origins, and `deliver=local`.
+- Updated patcher coverage for optional cron target pre-resolution in the installed hook block.
+
+## V3.8.16 — 2026-07-09
+
+See also: [docs/release-notes-v3.8.16.md](docs/release-notes-v3.8.16.md)
+
+### Fixed
+- Fixed issue #89, contributed by @colinaaa in PR #88: Feishu/Lark topic groups that reuse the same `message_id` across consecutive turns now send a fresh card for the second and later messages.
+- Completed or failed sessions with a reused topic `message_id` now discard stale per-key delivery state before creating the new card, so clarify/approval turns do not hang without an interaction card.
+- Duplicate `message.started` events while the current turn is still active remain ignored, preventing spurious extra cards.
+
+### Tests
+- Added integration coverage for reused completed topic `message_id` values creating a new card.
+- Added a guard proving active duplicate `message.started` events still do not send a second card.
+
+## V3.8.15 — 2026-07-09
+
+See also: [docs/release-notes-v3.8.15.md](docs/release-notes-v3.8.15.md)
+
+### Fixed
+- Fixed issue #82 follow-up recurrence where a completed card with an input `.docx` / `files` context could still be followed by a duplicate native Feishu/Lark final reply.
+- Structured `files` / `file` locals now remain card attachment summaries only; they no longer force `native_delivery=required` unless the final answer itself references an output path.
+- Real output delivery remains fail-open for explicit `MEDIA:/tmp/...`, local file paths in the final answer, and structured output media fields such as `media_files`, `image_files`, `audio_files`, and `video_files`.
+
+### Tests
+- Added regression coverage for card-only input file context while keeping explicit media/file output paths on native delivery.
+
+## V3.8.14 — 2026-07-09
+
+See also: [docs/release-notes-v3.8.14.md](docs/release-notes-v3.8.14.md)
+
+### Added
+- Added WebSocket-native handling for agent clarify/approval `interaction.select` card-action clicks, contributed by @colinaaa in PR #87 and closing issue #86.
+- Feishu/Lark WebSocket deployments can now keep agent interaction choices in card buttons by forwarding native card actions to the sidecar `/card/actions` endpoint without requiring a public callback URL.
+
+### Fixed
+- Rejected or expired WebSocket interaction clicks now return an empty Feishu callback response instead of crashing or falling through to the original adapter handler.
+
+### Tests
+- Added hook runtime regression coverage for successful `interaction.select` forwarding, incomplete action guards, and sidecar rejection behavior.
+
 ## V3.8.13 — 2026-07-08
 
 See also: [docs/release-notes-v3.8.13.md](docs/release-notes-v3.8.13.md)

@@ -32,6 +32,11 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 - **诊断命令不双发**：V3.8.11 起，已接管的 `/hfc status` 不会再同时触发灰色 `Unknown command /hfc` 原生回复。
 - **附件摘要不再重复 reply**：V3.8.12 起，完成卡片里的 `colors.csv` / `styles.csv` 等附件摘要不会再导致整段最终答案以原生 reply 重复发送。
 - **Hermes 升级更稳**：V3.8.13 起，安装器以 `gateway/run.py` 的可验证 anchor 作为最终准入条件；版本字符串支持 `v2026.7.7.2` 和 `Hermes Agent v0.18.2 (...)` 这类新版格式，完全不可解析时也可在 anchors 通过后继续安装。
+- **WebSocket 交互闭环**：V3.8.14 起，agent clarify/approval 按钮在 Feishu/Lark WebSocket 长连接下也能通过原生 `interaction.select` card action 回到 sidecar。
+- **输入附件不再重复 reply**：V3.8.15 起，用户输入 `.docx/files` 上下文只作为卡片附件摘要，不再误触发 Hermes 原生最终文本 reply。
+- **话题群第二轮继续出卡片**：V3.8.16 起，Feishu/Lark 话题群复用同一 `message_id` 时，第二条及后续消息会创建新卡片。
+- **Cron 路由意图继续出卡片**：V3.8.17 起，cron `deliver: origin` / `deliver: all` / `origin,all` 会解析到 Feishu 目标并发送卡片。
+- **Cron 话题线程保持一致**：V3.8.18 起，从飞书话题线程创建的 cron 任务会携带 `thread_id`，卡片回到原线程；非飞书来源的 thread id 不会泄漏到飞书路由。
 - **长内容更稳**：长 Markdown 表格和 fenced code block 按结构边界切分，降低飞书 raw markdown 和半截代码围栏问题。
 - **工具详情更可读**：`tool.updated` 可展示参数摘要、耗时和失败原因，长详情仍保持紧凑折叠。
 - **多 bot / 多 profile**：支持多飞书机器人、多 Hermes profile、群聊绑定、群聊安全诊断、bot/profile 标题和路由诊断。
@@ -49,10 +54,61 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | 群聊里不知道是否已经绑定到正确 bot，或 slash command 和普通会话行为不一致 | `/hfc status` 在群内给出 binding 提示、fallback 路由说明和 slash command 边界 |
 | `/hfc status` 已经出卡片，但下面还出现灰色 `Unknown command /hfc` | 已接管的 `/hfc` 命令会快速 ACK Hermes Gateway，卡片发送转后台，避免原生 unknown fallback |
 | 卡片完成后已经显示附件摘要，但下面又出现一条内容相同的原生 reply | 普通附件摘要保持 card-only；真实媒体/文件路径才保留 Hermes 原生投递 |
+| Cron 配置 `deliver: origin` 或 `deliver: all` 后只收到 plain text，没有卡片 | 路由意图先解析到 Feishu origin / targets，再进入 cron card delivery；`local` 仍保持本地无投递 |
 | Hermes 请求授权、让用户选择选项，或 slash 命令需要确认时，需要手工输入编号 | Agent 任务内选项留在当前卡片，独立 slash 命令使用独立命令卡片；不可用时退回编号文本 |
 | 长表格/长代码块被飞书渲染成 raw markdown | Markdown-aware split，重复表头和完整 code fence |
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、`group_rules` 安全诊断、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
+
+## V3.8.18 Cron 话题线程回传补丁
+
+V3.8.18 合并 PR #91（贡献者 @colinaaa），修复 issue #90：从飞书话题群线程创建的 cron job 在触发时没有携带 `thread_id`，卡片会被发成群里的新 topic，而不是回到原线程。
+
+- **保留原话题线程**：cron event 会优先使用 scheduler 已解析的 Feishu target，其次使用 Feishu origin，再按兼容部署使用显式环境 fallback。
+- **避免跨平台泄漏**：只有 `origin.platform == feishu` 时才读取 origin thread id，Telegram 等非飞书来源不会影响 Feishu 投递。
+- **普通投递不变**：没有 thread id 的 cron 仍按原有 `chat_id` 发送，不会改变普通群聊或私聊行为。
+
+完整发布说明见 [V3.8.18 release notes](release-notes-v3.8.18.md)。
+
+## V3.8.17 Cron 路由意图卡片投递补丁
+
+V3.8.17 合并 PR #77（贡献者 @zayn-0101），修复 cron job 使用 `deliver: origin`、`deliver: all` 或 `origin,all` 时，完成结果没有进入 Feishu/Lark 卡片、而是退回 Hermes 原生 plain text 的问题。
+
+- **routing intent 不再被当成平台名**：`origin` / `all` 会先通过 cron origin 或 scheduler 预解析 targets 找到真实 Feishu 目标，而不是把 platform 误判成 `origin` / `all` 后直接放弃卡片。
+- **`local` 语义保持不变**：`deliver: local` 仍表示本地/无投递，不会因为 fallback 被意外送到飞书。
+- **兼容性更宽**：显式 `deliver: {"platform": "feishu", "chat_id": "oc_xxx"}` 继续可用；非 Feishu origin 的 chat id 不会泄漏到 Feishu 发送路径；安装 hook 找不到 Hermes `_resolve_delivery_targets` 时保持 fail-open。
+
+完整发布说明见 [V3.8.17 release notes](release-notes-v3.8.17.md)。
+
+## V3.8.16 话题群 message_id 复用新卡补丁
+
+V3.8.16 合并 PR #88（贡献者 @colinaaa），修复 issue #89：Feishu/Lark 话题群里连续消息可能复用同一个 `message_id`，第一轮完成后第二轮 `message.started` 会撞到旧的 completed session，导致不发送新卡片；如果第二轮触发 clarify/approval，交互卡片不出现，用户点击也无从完成。
+
+- **第二条及后续消息重新出卡片**：如果同一个 topic `message_id` 对应的旧 session 已经 `completed` / `failed`，sidecar 会清理旧的 card id、bot id、card config 和 flush controller，再创建新 session 并发送新卡。
+- **clarify/approval 不再无卡片挂起**：第二轮 `interaction.requested` 可以继续渲染交互卡片，按钮或文本 fallback 才有可响应的目标。
+- **活跃中的重复 started 仍安全**：如果当前 session 还在 streaming，重复 `message.started` 仍会被忽略，不会误发第二张卡。
+
+完整发布说明见 [V3.8.16 release notes](release-notes-v3.8.16.md)。
+
+## V3.8.15 输入附件重复 reply 抑制补丁
+
+V3.8.15 修复 issue #82 的后续复现：在延续上一天 session、并带有用户输入 `.docx` 文件上下文时，完成卡片成功发送后仍可能出现一条内容相同的原生 Feishu/Lark reply。根因是 completion hook 把 Hermes locals 里的 `files` 当成“必须保留原生文件投递”，但这个场景里的 `files` 是输入上下文，不是模型新生成的输出文件。
+
+- **输入文件只做卡片摘要**：`files` / `file` locals 仍会显示在卡片附件摘要里，但不会自动让最终文本从 Hermes 原生路径再发一遍。
+- **真实输出仍 fail-open**：最终 answer 明确包含 `MEDIA:/tmp/...` 或本地文件路径时，仍保留 Hermes 原生文件/媒体投递。
+- **结构化媒体输出继续保护**：`media_files`、`image_files`、`audio_files`、`video_files` 等输出字段仍会把 `native_delivery` 标记为 required。
+
+完整发布说明见 [V3.8.15 release notes](release-notes-v3.8.15.md)。
+
+## V3.8.14 WebSocket 交互卡片补丁
+
+V3.8.14 合并 PR #87，修复 issue #86：Feishu/Lark WebSocket 长连接部署下，agent 发起的 clarify / approval 交互卡片按钮会通过 Hermes adapter 的原生 card action 通道送达，而不是直接访问 sidecar 的公网 HTTP callback。现在 hook runtime 会接管 `interaction.select`，转发到 sidecar `/card/actions`，并把更新后的卡片返回给 Feishu/Lark。
+
+- **clarify/approval 按钮不再退回编号文本**：本地/private sidecar 可以继续使用卡片按钮完成选择。
+- **安全边界仍在 sidecar**：`/card/actions` 继续校验 `interaction_id`、callback token，以及 callback payload 中存在的 chat id。
+- **拒绝路径保持 fail-open**：过期、无效或 sidecar 拒绝的交互会返回空 Feishu callback response，不崩溃也不落到未知原生 handler。
+
+完整发布说明见 [V3.8.14 release notes](release-notes-v3.8.14.md)。
 
 ## V3.8.13 Hermes 升级兼容补丁
 
@@ -338,7 +394,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.8.13`、`v3.6.6` 或 `main` |
+| `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.8.18`、`v3.6.6` 或 `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `HFC_CONFIG` 同目录 `.env` | 飞书凭据保存位置 |
@@ -362,7 +418,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v3.8.13`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v3.8.18`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -370,7 +426,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.13
+export HFC_VERSION=v3.8.18
 bash install-docker.sh
 ```
 
@@ -412,7 +468,7 @@ V3.6.2 会继续自动读取 `~/.hermes/config.yaml` 同目录的 `~/.hermes/.en
 
 ## 升级
 
-从 V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.12 升级到 V3.8.13 向后兼容，**单 Profile 配置无需任何修改**。如果 Hermes 使用自己的 venv，升级后请重新跑 `setup` 或 `install`，让插件同时进入 Hermes runtime Python 并刷新 hook。V3.8.13 保留 V3.8.10 的群聊诊断、V3.8.11 的 `/hfc` 命令接管修复、V3.8.12 的附件摘要重复 reply 抑制，并修复 Hermes `v2026.7.7.2` / `0.18.2` 升级后的 hook 兼容和 stale install state 问题；建议升级后执行一次 `doctor --explain`，并在普通会话、话题和目标群聊里各发送一次普通问题、`/hfc status`、`/new` 或 `/model` 验证状态。
+从 V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.17 升级到 V3.8.18 向后兼容，**单 Profile 配置无需任何修改**。如果 Hermes 使用自己的 venv，升级后请重新跑 `setup` 或 `install`，让插件同时进入 Hermes runtime Python 并刷新 hook。V3.8.18 保留 V3.8.10 的群聊诊断、V3.8.11 的 `/hfc` 命令接管修复、V3.8.12 的附件摘要重复 reply 抑制、V3.8.13 的 Hermes 升级兼容、V3.8.14 的 WebSocket interaction 按钮闭环、V3.8.15 的输入附件重复 reply 抑制、V3.8.16 的话题群复用 `message_id` 新卡修复、V3.8.17 的 cron 路由意图修复，并修复 cron 卡片无法回到飞书话题原线程的问题；建议升级后执行一次 `doctor --explain`，并在普通会话、话题和目标群聊里各发送一次普通问题、`/hfc status`、`/new`、`/model`，在同一话题里连续发送两条消息，并用一个从话题线程创建的 cron 任务验证卡片回到原线程。
 
 ```bash
 # 1. 停止 sidecar
@@ -420,7 +476,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. 更新代码
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.8.13
+git checkout v3.8.18
 pip install -e ".[test]" --upgrade
 
 # 3. 诊断 Hermes hook strategy 与 anchors
@@ -628,6 +684,11 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91：cron 卡片携带 `thread_id` 回到飞书话题原线程 |
+| [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77：cron `deliver=origin/all` 等路由意图会解析到 Feishu 目标并发送卡片 |
+| [v3.8.16](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.16) | 2026-07 | issue #89 / PR #88：话题群复用 `message_id` 时第二条及后续消息重新发送卡片 |
+| [v3.8.15](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.15) | 2026-07 | issue #82 后续复现：输入 `.docx/files` 上下文不再误触发重复原生最终 reply |
+| [v3.8.14](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.14) | 2026-07 | issue #86 / PR #87，Feishu/Lark WebSocket 长连接下 agent clarify/approval `interaction.select` 按钮可原生回到 sidecar |
 | [v3.8.13](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.13) | 2026-07 | Hermes `v2026.7.7.2` / `0.18.2` 升级兼容，anchor fallback 与 stale install state repair |
 | [v3.8.12](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.12) | 2026-07 | issue #82，带 `colors.csv` / `styles.csv` 等附件摘要的完成卡片不再重复发送原生最终 reply |
 | [v3.8.11](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.11) | 2026-07 | `/hfc status` 卡片接管后不再同时触发灰色 `Unknown command /hfc` 原生回复 |
@@ -693,6 +754,10 @@ python3 -m pytest -q
 - [gischuck](https://github.com/gischuck) — [PR #12](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/12) Accept-Encoding 修复（V3.2.1 brotli 兼容）
 - [gischuck](https://github.com/gischuck) — [PR #76](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/76) 思考与工具 timeline 体验建议与实现探索（V3.8.x）
 - [fengs2021](https://github.com/fengs2021) — [PR #17](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/17) 锁架构优化与更新间隔改进（V3.3.0）
+- [colinaaa](https://github.com/colinaaa) — [PR #87](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/87) WebSocket `interaction.select` clarify/approval 卡片交互支持（V3.8.14）
+- [colinaaa](https://github.com/colinaaa) — [PR #88](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/88) 话题群 `message_id` 复用下第二轮消息新卡片修复（V3.8.16）
+- [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron 结果回到飞书话题群原线程的 `thread_id` 路由修复（V3.8.18）
+- [zayn-0101](https://github.com/zayn-0101) — [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` 路由意图卡片投递修复（V3.8.17）
 
 ## 安全说明
 

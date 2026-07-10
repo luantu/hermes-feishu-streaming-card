@@ -78,6 +78,29 @@ verified `gateway/run.py` anchors can still decide support. `repair` also
 clears stale backup/manifest state left after an upstream Hermes upgrade
 replaces `gateway/run.py` with an unpatched file.
 
+From V3.8.14, agent clarify/approval buttons also work in Feishu/Lark
+WebSocket long-connection deployments. Native `interaction.select` card-action
+clicks are forwarded to the sidecar `/card/actions` endpoint and can update the
+same card without requiring a public callback URL.
+
+From V3.8.15, input file context such as `.docx` values in Hermes `files` locals
+stays as a card attachment summary without forcing Hermes' native final text
+reply. Explicit `MEDIA:/tmp/...` and output media fields still keep native
+file/media delivery available.
+
+From V3.8.16, Feishu/Lark topic groups that reuse the same `message_id` across
+consecutive turns send a fresh card for the second and later messages, while
+duplicate `message.started` events during an active turn still stay ignored.
+
+From V3.8.17, cron jobs using routing-intent delivery values such as `origin`,
+`all`, or `origin,all` resolve to Feishu targets and send cards again. The
+release preserves `deliver=local` as local-only/no delivery and keeps explicit
+dict-shaped `deliver` configs compatible.
+
+From V3.8.18, cron jobs created from Feishu topic-group threads preserve
+`thread_id` and return cards to the originating thread. Thread ids from
+non-Feishu origins are ignored.
+
 Current installers default `PIP_ROOT_USER_ACTION=ignore` so Debian/Ubuntu root
 installs do not print pip's root-user warning. If Python reports
 `externally-managed-environment`, `install.sh` and `install-docker.sh` retry with
@@ -100,7 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.13`, `v3.6.6`, or `main`. |
+| `HFC_VERSION` | `latest` | Git tag or branch to install, such as `v3.8.18`, `v3.6.6`, or `main`. |
 | `HFC_REPO` | `baileyh8/hermes-feishu-streaming-card` | GitHub repository to install from. |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent root directory. |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | Sidecar config path. |
@@ -120,7 +143,7 @@ script selects Hermes venv Python and does not fall back to system Python unless
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.13
+export HFC_VERSION=v3.8.18
 bash install-docker.sh
 ```
 

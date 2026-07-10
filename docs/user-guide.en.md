@@ -32,6 +32,11 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 - **No duplicate diagnostic fallback**: Since V3.8.11, accepted `/hfc status` commands no longer also trigger the gray native `Unknown command /hfc` reply.
 - **No duplicate replies for attachment summaries**: Since V3.8.12, completed cards that show `colors.csv` / `styles.csv` style attachment summaries no longer send the same final answer again as a native reply.
 - **More resilient Hermes upgrades**: Since V3.8.13, the installer treats verifiable `gateway/run.py` anchors as the final compatibility gate. Version metadata supports newer shapes such as `v2026.7.7.2` and `Hermes Agent v0.18.2 (...)`, and fully unparseable version text can still proceed when anchors validate.
+- **WebSocket interaction loop**: Since V3.8.14, agent clarify/approval buttons can resolve through native Feishu/Lark WebSocket `interaction.select` card actions and return to the sidecar.
+- **Input attachments no longer duplicate replies**: Since V3.8.15, input `.docx/files` context stays as card attachment summaries and no longer keeps Hermes' native final text reply.
+- **Second topic turns keep card rendering**: Since V3.8.16, Feishu/Lark topic groups that reuse the same `message_id` create a fresh card for the second and later messages.
+- **Cron routing intents keep card delivery**: Since V3.8.17, cron `deliver: origin`, `deliver: all`, and `origin,all` resolve to Feishu targets and send cards.
+- **Cron topic threads stay consistent**: Since V3.8.18, cron jobs created from Feishu topic threads preserve `thread_id` and return cards to the originating thread; non-Feishu origin thread ids are ignored.
 - **Long content protection**: Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Richer tool details**: `tool.updated` can show argument summaries, duration, and failure reason while keeping long details compact.
 - **Multi-bot / multi-profile**: bot registry, chat bindings, profile-aware session keys, titles, and routing diagnostics.
@@ -49,10 +54,61 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Group chats make it unclear whether a bot binding exists or why slash commands behave differently | `/hfc status` reports binding hints, fallback routing, and group slash-command boundaries |
 | `/hfc status` renders a card but Feishu also shows gray `Unknown command /hfc` | Accepted `/hfc` commands ACK Hermes Gateway quickly and send the card in the background, avoiding native unknown fallback |
 | A completed card already shows attachment summaries, then the same final answer appears again as a native reply | Generic attachment summaries stay card-only; only real media/file paths keep Hermes native delivery |
+| Cron jobs with `deliver: origin` or `deliver: all` produce plain text instead of cards | Routing intents resolve through Feishu origins or targets before cron card delivery; `local` remains local-only/no delivery |
 | Approval, choice prompts, or slash-command confirmations require manual text replies | Agent-turn choices stay in the active card; independent slash commands use standalone command cards, with numbered text fallback when cards are unavailable |
 | Long tables/code blocks render as raw Markdown | Markdown-aware table/code splitting with repeated headers and complete fences |
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
+
+## V3.8.18 Cron Topic-Thread Return Patch
+
+V3.8.18 merges PR #91 from @colinaaa and fixes issue #90: cron jobs created inside Feishu topic-group threads did not carry `thread_id`, so their cards appeared as new topics instead of returning to the originating thread.
+
+- **Preserve the originating thread**: cron events prefer scheduler-resolved Feishu targets, then Feishu origins, with an explicit environment fallback retained for compatible deployments.
+- **Prevent cross-platform leakage**: origin thread ids are read only when `origin.platform == feishu`; Telegram and other non-Feishu origins cannot affect Feishu delivery.
+- **Keep ordinary delivery unchanged**: cron events without a thread id still target the existing `chat_id` for normal group and direct-message delivery.
+
+Full release notes: [docs/release-notes-v3.8.18.md](release-notes-v3.8.18.md).
+
+## V3.8.17 Cron Routing-Intent Card Delivery Patch
+
+V3.8.17 merges PR #77 from @zayn-0101 and fixes cron jobs whose `deliver` value is `origin`, `all`, or `origin,all`: completed cron results now render as Feishu/Lark cards instead of falling back to Hermes native plain text.
+
+- **Routing intents are no longer treated as platform names**: `origin` / `all` first resolve through the cron origin or scheduler-provided targets to find the real Feishu destination.
+- **`local` semantics stay unchanged**: `deliver: local` still means local-only/no delivery and does not unexpectedly send a Feishu card.
+- **Broader compatibility**: explicit dict delivery such as `{"platform": "feishu", "chat_id": "oc_xxx"}` still works; non-Feishu origin chat ids are not reused for Feishu delivery; and the installed hook stays fail-open when Hermes does not expose `_resolve_delivery_targets`.
+
+Full release notes: [docs/release-notes-v3.8.17.md](release-notes-v3.8.17.md).
+
+## V3.8.16 Topic-Group Reused `message_id` Patch
+
+V3.8.16 merges PR #88 from @colinaaa and fixes issue #89: in Feishu/Lark topic groups, consecutive turns can reuse the same `message_id`. After the first turn completed, the second turn's `message.started` collided with the old completed session and no new card was sent. If that second turn triggered clarify/approval, the interaction card never appeared.
+
+- **Fresh cards for second and later topic turns**: when a reused topic `message_id` points at a completed or failed session, the sidecar clears the stale card id, bot id, card config, and flush controller before creating a new session and sending a new card.
+- **Clarify/approval no longer hangs without a card**: second-turn `interaction.requested` flows can render their interaction card again.
+- **Active duplicate starts stay safe**: duplicate `message.started` events while the current turn is still streaming remain ignored, so normal retries do not produce extra cards.
+
+Full release notes: [docs/release-notes-v3.8.16.md](release-notes-v3.8.16.md).
+
+## V3.8.15 Input-Attachment Duplicate Reply Patch
+
+V3.8.15 fixes a follow-up issue #82 recurrence: when a session continued with a user-supplied `.docx` file context, the completed card could be delivered successfully and still be followed by a duplicate native Feishu/Lark reply containing the same final text. The completion hook was treating Hermes `files` locals as "native file delivery is required"; in this case those files are input context, not newly generated output files.
+
+- **Input files stay as card summaries**: `files` / `file` locals still appear in card attachment summaries, but no longer make Hermes resend the final text natively.
+- **Real outputs remain fail-open**: when the final answer explicitly contains `MEDIA:/tmp/...` or a local file path, Hermes native file/media delivery is still preserved.
+- **Structured media outputs stay protected**: `media_files`, `image_files`, `audio_files`, and `video_files` still mark `native_delivery` as required.
+
+Full release notes: [docs/release-notes-v3.8.15.md](release-notes-v3.8.15.md).
+
+## V3.8.14 WebSocket Interaction Card Patch
+
+V3.8.14 merges PR #87 and fixes issue #86: in Feishu/Lark WebSocket long-connection deployments, agent clarify/approval card button clicks arrive through the Hermes adapter's native card-action channel instead of a public sidecar HTTP callback. The hook runtime now claims `interaction.select`, forwards it to the sidecar `/card/actions` endpoint, and returns the updated card to Feishu/Lark.
+
+- **Clarify/approval buttons no longer need numbered-text fallback**: local/private sidecars can keep agent choices inside card buttons.
+- **The sidecar remains the security boundary**: `/card/actions` still validates `interaction_id`, the callback token, and the chat id when the callback payload includes it.
+- **Rejected paths stay fail-open**: expired, invalid, or sidecar-rejected interactions return an empty Feishu callback response instead of crashing or falling through to an unknown native handler.
+
+Full release notes: [docs/release-notes-v3.8.14.md](release-notes-v3.8.14.md).
 
 ## V3.8.13 Hermes Upgrade Compatibility Patch
 
@@ -314,7 +370,7 @@ Common environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.13`, `v3.6.6`, or `main` |
+| `HFC_VERSION` | `latest` | Version to install, such as `v3.8.18`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
@@ -341,7 +397,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.13
+export HFC_VERSION=v3.8.18
 bash install-docker.sh
 ```
 
@@ -377,7 +433,7 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 
 ## Upgrading
 
-Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.12 to V3.8.13 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.13 keeps V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, and the V3.8.12 attachment-summary duplicate reply suppression, then fixes Hermes `v2026.7.7.2` / `0.18.2` hook compatibility and stale install-state repair; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, and the target group with a normal prompt, `/hfc status`, `/new`, or `/model`.
+Upgrading from V3.2.x/V3.3.0/V3.4.x/V3.5.x/V3.6.x/V3.7.x/V3.8.0-V3.8.17 to V3.8.18 is backward-compatible. **Single-profile configs need no changes.** If Hermes uses its own venv, rerun `setup` or `install` after upgrading so the package also lands in the Hermes runtime Python and the hook is refreshed. V3.8.18 keeps V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, V3.8.12 attachment-summary duplicate reply suppression, V3.8.13 Hermes upgrade compatibility, V3.8.14 WebSocket interaction card actions, V3.8.15 input-attachment duplicate reply suppression, the V3.8.16 reused-topic-`message_id` card fix, and the V3.8.17 cron routing-intent fix, then fixes cron cards that could not return to their originating Feishu topic thread; run `doctor --explain` once after upgrading and verify a normal chat, a topic reply, the target group with `/hfc status`, `/new`, `/model`, two consecutive messages in the same topic, and one cron job created from a topic thread.
 
 ```bash
 # 1. Stop sidecar
@@ -385,7 +441,7 @@ python3 -m hermes_feishu_card.cli stop --config ~/.hermes_feishu_card/config.yam
 
 # 2. Update code
 cd /path/to/hermes-feishu-streaming-card
-git checkout v3.8.13 && pip install -e ".[test]" --upgrade
+git checkout v3.8.18 && pip install -e ".[test]" --upgrade
 
 # 3. Diagnose Hermes hook strategy and anchors
 python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml --hermes-dir ~/.hermes/hermes-agent
@@ -557,6 +613,11 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91: cron cards preserve `thread_id` and return to the originating Feishu topic thread |
+| [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77: cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
+| [v3.8.16](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.16) | 2026-07 | issue #89 / PR #88: topic groups that reuse `message_id` send a fresh card for the second and later messages |
+| [v3.8.15](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.15) | 2026-07 | issue #82 follow-up: input `.docx/files` context no longer keeps a duplicate native final reply |
+| [v3.8.14](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.14) | 2026-07 | issue #86 / PR #87: agent clarify/approval `interaction.select` buttons resolve through Feishu/Lark WebSocket-native card actions |
 | [v3.8.13](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.13) | 2026-07 | Hermes `v2026.7.7.2` / `0.18.2` upgrade compatibility, anchor fallback, and stale install-state repair |
 | [v3.8.12](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.12) | 2026-07 | issue #82: completed cards with `colors.csv` / `styles.csv` style attachment summaries no longer duplicate the final native reply |
 | [v3.8.11](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.11) | 2026-07 | `/hfc status` no longer triggers the gray native `Unknown command /hfc` reply after the card is accepted |
@@ -624,6 +685,10 @@ Thanks to these contributors for improving the project:
 - [gischuck](https://github.com/gischuck) — [PR #12](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/12) Accept-Encoding fix (V3.2.1 brotli compatibility)
 - [gischuck](https://github.com/gischuck) — [PR #76](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/76) reasoning/tool timeline UX proposal and implementation exploration (V3.8.x)
 - [fengs2021](https://github.com/fengs2021) — [PR #17](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/17) lock optimization and update interval improvement (V3.3.0)
+- [colinaaa](https://github.com/colinaaa) — [PR #87](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/87) WebSocket `interaction.select` clarify/approval card interaction support (V3.8.14)
+- [colinaaa](https://github.com/colinaaa) — [PR #88](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/88) fresh cards for second turns when Feishu topic groups reuse `message_id` (V3.8.16)
+- [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread (V3.8.18)
+- [zayn-0101](https://github.com/zayn-0101) — [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` routing-intent card delivery fix (V3.8.17)
 
 ## Security
 

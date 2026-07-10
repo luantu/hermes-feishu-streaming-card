@@ -2258,6 +2258,38 @@ def test_completed_event_allows_card_only_for_generic_attachment_summaries():
     )
 
 
+def test_completed_event_allows_card_only_for_input_file_context():
+    payload = hook_runtime.build_event(
+        "message.completed",
+        {
+            "chat_id": "oc_1",
+            "message_id": "m_1",
+            "answer": "我读完了你修改的简历。几个观察：",
+            "files": [
+                {
+                    "file_path": "/tmp/resume_260709.docx",
+                    "filename": "resume_260709.docx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+        },
+    )
+
+    attachments = payload["data"]["attachments"]
+    assert {
+        "kind": "file",
+        "name": "resume_260709.docx",
+        "summary": "resume_260709.docx",
+    } in attachments
+    assert payload["data"]["native_delivery"] == "allowed"
+    assert (
+        hook_runtime.should_suppress_native_response(
+            "feishu", True, attachments, payload["data"]["native_delivery"]
+        )
+        is True
+    )
+
+
 def test_completed_event_extracts_hermes_media_files_for_native_delivery_guard():
     payload = hook_runtime.build_event(
         "message.completed",
@@ -2514,6 +2546,447 @@ def test_build_cron_event_returns_none_for_non_feishu_or_missing_chat(monkeypatc
         )
         is None
     )
+
+
+def test_build_cron_event_deliver_origin_resolves_via_origin():
+    """deliver="origin" should resolve through origin, not short-circuit."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-origin",
+                "deliver": "origin",
+                "origin": {"platform": "feishu", "chat_id": "oc_from_origin"},
+            },
+            "content": "定时结果",
+        }
+    )
+
+    assert payload is not None
+    assert payload["platform"] == "feishu"
+    assert payload["chat_id"] == "oc_from_origin"
+    assert payload["data"]["answer"] == "定时结果"
+
+
+def test_build_cron_event_deliver_all_resolves_via_origin():
+    """deliver="all" should resolve through origin when no resolved targets."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-all",
+                "deliver": "all",
+                "origin": {"platform": "feishu", "chat_id": "oc_from_all"},
+            },
+            "content": "all deliver result",
+        }
+    )
+
+    assert payload is not None
+    assert payload["platform"] == "feishu"
+    assert payload["chat_id"] == "oc_from_all"
+
+
+def test_build_cron_event_deliver_origin_all_comma_resolves_via_origin():
+    """deliver="origin,all" should resolve through origin."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-combo",
+                "deliver": "origin,all",
+                "origin": {"platform": "feishu", "chat_id": "oc_combo"},
+            },
+            "content": "combo result",
+        }
+    )
+
+    assert payload is not None
+    assert payload["platform"] == "feishu"
+    assert payload["chat_id"] == "oc_combo"
+
+
+def test_build_cron_event_deliver_origin_with_resolved_targets():
+    """deliver="origin" with explicit resolved targets should prefer targets."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-resolved",
+                "deliver": "origin",
+                "origin": {"platform": "feishu", "chat_id": "oc_origin"},
+                "_hfc_resolved_targets": [
+                    {"platform": "feishu", "chat_id": "oc_resolved"}
+                ],
+            },
+            "content": "resolved result",
+        }
+    )
+
+    assert payload is not None
+    assert payload["platform"] == "feishu"
+    assert payload["chat_id"] == "oc_resolved"
+
+
+def test_build_cron_event_accepts_deliver_dict():
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-deliver-dict",
+                "deliver": {"platform": "feishu", "chat_id": "oc_from_dict"},
+                "origin": {"platform": "discord", "chat_id": "dc_should_not_leak"},
+            },
+            "content": "dict deliver result",
+        }
+    )
+
+    assert payload is not None
+    assert payload["platform"] == "feishu"
+    assert payload["chat_id"] == "oc_from_dict"
+
+
+def test_build_cron_event_ignores_non_feishu_origin_chat_for_feishu_platform(monkeypatch):
+    monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-non-feishu-origin",
+                "deliver": "feishu",
+                "origin": {"platform": "discord", "chat_id": "dc_should_not_leak"},
+            },
+            "content": "non-feishu origin result",
+        }
+    )
+
+    assert payload is None
+
+
+def test_build_cron_event_deliver_local_returns_none():
+    """deliver="local" should return None (no delivery)."""
+    assert (
+        hook_runtime.build_cron_event(
+            {
+                "job": {
+                    "id": "job-local",
+                    "deliver": "local",
+                    "origin": {"platform": "feishu", "chat_id": "oc_local"},
+                },
+                "content": "local result",
+            }
+        )
+        is None
+    )
+
+
+def test_build_cron_event_mixed_intent_and_platform():
+    """deliver="origin,feishu:oc_explicit" keeps the real platform."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-mixed",
+                "deliver": "origin,feishu:oc_explicit",
+                "origin": {"platform": "discord", "chat_id": "dc_123"},
+            },
+            "content": "mixed result",
+        }
+    )
+
+    assert payload is not None
+    assert payload["platform"] == "feishu"
+    assert payload["chat_id"] == "oc_explicit"
+
+
+# --- build_cron_event thread_id tests (issue #90) ---
+
+
+def test_build_cron_event_carries_thread_id_from_origin():
+    """thread_id from job origin should propagate to the cron event payload."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-thread",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_topic_group",
+                    "thread_id": "omt_abc123",
+                },
+            },
+            "content": "cron output in thread",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == "omt_abc123"
+    assert payload["chat_id"] == "oc_topic_group"
+    # conversation_id should use thread_id when available
+    assert payload["conversation_id"] == "omt_abc123"
+
+
+def test_build_cron_event_carries_thread_id_from_resolved_targets():
+    """thread_id from resolved delivery targets should propagate."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-resolved-thread",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                },
+                "_hfc_resolved_targets": [
+                    {
+                        "platform": "feishu",
+                        "chat_id": "oc_group",
+                        "thread_id": "omt_from_target",
+                    }
+                ],
+            },
+            "content": "resolved target thread",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == "omt_from_target"
+    assert payload["chat_id"] == "oc_group"
+    assert payload["conversation_id"] == "omt_from_target"
+
+
+def test_build_cron_event_resolved_target_thread_takes_priority_over_origin():
+    """Resolved target thread_id should take priority over origin thread_id."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-priority",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                    "thread_id": "omt_origin_thread",
+                },
+                "_hfc_resolved_targets": [
+                    {
+                        "platform": "feishu",
+                        "chat_id": "oc_group",
+                        "thread_id": "omt_resolved_thread",
+                    }
+                ],
+            },
+            "content": "priority test",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == "omt_resolved_thread"
+
+
+def test_build_cron_event_no_thread_id_without_origin_thread():
+    """When origin has no thread_id, event should have empty thread_id."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-no-thread",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_dm_group",
+                },
+            },
+            "content": "no thread",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == ""
+    assert payload["chat_id"] == "oc_dm_group"
+    # conversation_id falls back to job id when no thread_id
+    assert payload["conversation_id"] == "job-no-thread"
+
+
+def test_build_cron_event_thread_id_from_env_var(monkeypatch):
+    """HERMES_CRON_AUTO_DELIVER_THREAD_ID env var should be used as fallback."""
+    monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "omt_env_thread")
+
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-env-thread",
+                "deliver": "feishu:oc_group",
+                "origin": {},
+            },
+            "content": "env thread test",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == "omt_env_thread"
+    assert payload["conversation_id"] == "omt_env_thread"
+
+
+def test_build_cron_event_origin_thread_takes_priority_over_env(monkeypatch):
+    """Origin thread_id should take priority over env var."""
+    monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "omt_env")
+
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-origin-vs-env",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                    "thread_id": "omt_origin",
+                },
+            },
+            "content": "origin beats env",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == "omt_origin"
+
+
+def test_build_cron_event_non_feishu_thread_in_resolved_targets():
+    """Non-feishu platform targets should not contribute thread_id to feishu event."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-non-feishu-thread",
+                "deliver": "feishu:oc_group",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                },
+                "_hfc_resolved_targets": [
+                    {
+                        "platform": "telegram",
+                        "chat_id": "-1001234",
+                        "thread_id": "12345",
+                    },
+                    {
+                        "platform": "feishu",
+                        "chat_id": "oc_group",
+                    },
+                ],
+            },
+            "content": "multi-platform",
+        }
+    )
+
+    assert payload is not None
+    # Telegram thread_id should NOT leak into feishu event
+    assert payload["thread_id"] == ""
+
+
+def test_build_cron_event_non_feishu_origin_thread_does_not_leak():
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-telegram-origin-thread",
+                "deliver": "feishu:oc_group",
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1001234",
+                    "thread_id": "12345",
+                },
+            },
+            "content": "deliver to feishu",
+        }
+    )
+
+    assert payload is not None
+    assert payload["chat_id"] == "oc_group"
+    assert payload["thread_id"] == ""
+    assert payload["conversation_id"] == "job-telegram-origin-thread"
+
+
+def test_build_cron_event_om_prefix_thread_id():
+    """thread_id with om_ prefix (older format) should also work."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-om-thread",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                    "thread_id": "om_older_format_123",
+                },
+            },
+            "content": "om prefix test",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == "om_older_format_123"
+    assert payload["conversation_id"] == "om_older_format_123"
+
+
+def test_build_cron_event_empty_thread_id_in_origin():
+    """Empty string thread_id in origin should result in empty thread_id."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-empty-thread",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                    "thread_id": "",
+                },
+            },
+            "content": "empty thread",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == ""
+    assert payload["conversation_id"] == "job-empty-thread"
+
+
+def test_build_cron_event_none_thread_id_in_origin():
+    """None thread_id in origin should result in empty thread_id."""
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-none-thread",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_group",
+                    "thread_id": None,
+                },
+            },
+            "content": "none thread",
+        }
+    )
+
+    assert payload is not None
+    assert payload["thread_id"] == ""
+    assert payload["conversation_id"] == "job-none-thread"
+
+
+def test_is_routing_intent():
+    assert hook_runtime._is_routing_intent("origin") is True
+    assert hook_runtime._is_routing_intent("all") is True
+    # "local" is NOT a routing intent — it's a delivery target
+    assert hook_runtime._is_routing_intent("local") is False
+    assert hook_runtime._is_routing_intent("origin,all") is True
+    assert hook_runtime._is_routing_intent("all,origin") is True
+    assert hook_runtime._is_routing_intent("feishu") is False
+    assert hook_runtime._is_routing_intent("feishu:oc_123") is False
+    assert hook_runtime._is_routing_intent("") is False
+    # Mixed combo with a real platform should NOT be a routing intent
+    assert hook_runtime._is_routing_intent("origin,feishu:oc_123") is False
+
+
+def test_extract_real_platform():
+    assert hook_runtime._extract_real_platform("origin") == ""
+    assert hook_runtime._extract_real_platform("all") == ""
+    assert hook_runtime._extract_real_platform("local") == "local"
+    assert hook_runtime._extract_real_platform("feishu") == "feishu"
+    assert hook_runtime._extract_real_platform("feishu:oc_123") == "feishu"
+    assert hook_runtime._extract_real_platform({"platform": "feishu"}) == "feishu"
+    assert hook_runtime._extract_real_platform("origin,feishu:oc_123") == "feishu"
+    assert hook_runtime._extract_real_platform("origin,all") == ""
+    assert hook_runtime._extract_real_platform("") == ""
+    assert hook_runtime._extract_real_platform(None) == ""
 
 
 def test_build_completed_event_uses_agent_result_token_fallbacks():
@@ -3748,3 +4221,178 @@ def test_build_event_profile_id_ignores_hermes_home_with_extra_segments(monkeypa
 
     assert payload["data"]["profile_id"] == "default"
     assert payload["data"]["profile_source"] == "fallback_default"
+
+
+def test_interaction_select_forwards_to_sidecar_and_returns_card(monkeypatch):
+    """A WS-native interaction.select click is forwarded to the sidecar
+    /card/actions endpoint and the returned card is surfaced in place."""
+
+    class FakeCallBackCard:
+        def __init__(self):
+            self.type = None
+            self.data = None
+
+    class FakeP2Response:
+        def __init__(self):
+            self.card = None
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._loop = object()
+
+        def _on_card_action_trigger(self, data):
+            return "original"
+
+    DummyFeishuAdapter.__module__ = hook_runtime.__name__
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", FakeP2Response, raising=False
+    )
+    monkeypatch.setattr(hook_runtime, "CallBackCard", FakeCallBackCard, raising=False)
+
+    posted = {}
+
+    def fake_post(url, payload, timeout):
+        posted["url"] = url
+        posted["payload"] = payload
+        posted["timeout"] = timeout
+        return {"ok": True, "card": {"header": {"template": "green"}, "elements": []}}
+
+    monkeypatch.setattr(hook_runtime, "_post_json_sync_response", fake_post)
+    monkeypatch.setattr(
+        hook_runtime,
+        "load_runtime_config",
+        lambda: SimpleNamespace(event_url="http://127.0.0.1:8765/events"),
+    )
+
+    adapter = DummyFeishuAdapter()
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "hfc_action": "interaction.select",
+                    "interaction_id": "int-1",
+                    "choice": "opt_b",
+                    "choice_label": "Option B",
+                    "token": "tok-1",
+                }
+            ),
+            context=SimpleNamespace(open_chat_id="oc_abc"),
+            operator=SimpleNamespace(open_id="ou_user", user_name="Bailey"),
+        )
+    )
+
+    response = hook_runtime._hfc_on_feishu_card_action_trigger(adapter, data)
+
+    assert posted["url"] == "http://127.0.0.1:8765/card/actions"
+    assert posted["timeout"] == 5.0
+    sent = posted["payload"]["event"]
+    assert sent["action"]["value"] == {
+        "hfc_action": "interaction.select",
+        "interaction_id": "int-1",
+        "choice": "opt_b",
+        "choice_label": "Option B",
+        "token": "tok-1",
+    }
+    assert sent["context"]["open_chat_id"] == "oc_abc"
+    assert sent["operator"] == {"name": "Bailey", "open_id": "ou_user"}
+    assert response.card.type == "raw"
+    assert response.card.data["header"]["template"] == "green"
+
+
+def test_interaction_select_ignores_incomplete_action(monkeypatch):
+    """Missing interaction_id/token/choice must not POST to the sidecar."""
+
+    class FakeP2Response:
+        def __init__(self):
+            self.card = None
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def _on_card_action_trigger(self, data):
+            return "original"
+
+    DummyFeishuAdapter.__module__ = hook_runtime.__name__
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", FakeP2Response, raising=False
+    )
+
+    called = {"posted": False}
+
+    def fake_post(url, payload, timeout):
+        called["posted"] = True
+        return {"ok": True, "card": {}}
+
+    monkeypatch.setattr(hook_runtime, "_post_json_sync_response", fake_post)
+
+    adapter = DummyFeishuAdapter()
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "hfc_action": "interaction.select",
+                    "interaction_id": "int-1",
+                    # missing token + choice
+                }
+            ),
+            context=SimpleNamespace(open_chat_id="oc_abc"),
+            operator=SimpleNamespace(open_id="ou_user"),
+        )
+    )
+
+    response = hook_runtime._hfc_on_feishu_card_action_trigger(adapter, data)
+
+    assert called["posted"] is False
+    assert response.card is None
+
+
+def test_interaction_select_returns_empty_response_when_sidecar_rejects(monkeypatch):
+    """Expired/rejected interactions should not crash or fall through."""
+
+    class FakeP2Response:
+        def __init__(self):
+            self.card = None
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def _on_card_action_trigger(self, data):
+            raise AssertionError("interaction.select should be handled by HFC")
+
+    DummyFeishuAdapter.__module__ = hook_runtime.__name__
+    monkeypatch.setattr(
+        hook_runtime, "P2CardActionTriggerResponse", FakeP2Response, raising=False
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "load_runtime_config",
+        lambda: SimpleNamespace(event_url="http://127.0.0.1:8765/events"),
+    )
+
+    def fake_post(url, payload, timeout):
+        raise error.HTTPError(url, 404, "not found", {}, None)
+
+    monkeypatch.setattr(hook_runtime, "_post_json_sync_response", fake_post)
+
+    adapter = DummyFeishuAdapter()
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            action=SimpleNamespace(
+                value={
+                    "hfc_action": "interaction.select",
+                    "interaction_id": "int-1",
+                    "choice": "opt_b",
+                    "choice_label": "Option B",
+                    "token": "tok-1",
+                }
+            ),
+            context=SimpleNamespace(open_chat_id="oc_abc"),
+            operator=SimpleNamespace(open_id="ou_user"),
+        )
+    )
+
+    response = hook_runtime._hfc_on_feishu_card_action_trigger(adapter, data)
+
+    assert response.card is None

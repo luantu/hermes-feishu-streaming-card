@@ -2,7 +2,7 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13
+## V3.8 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
@@ -118,6 +118,46 @@
 - [x] Hermes 升级后 `run.py` 已变成未打补丁上游文件但旧 backup/manifest 残留时，`repair` 会清理 stale install state，随后可重新 `install`。
 - [x] 补齐四段 tag、描述型版本、不可解析版本 anchor fallback、升级后 stale state reinstall/repair 回归测试。
 
+### V3.8.14：WebSocket interaction.select 交互卡片补丁（已完成）
+
+- [x] issue #86 / PR #87：Feishu/Lark WebSocket 长连接下，agent clarify/approval 按钮点击经 Hermes adapter 原生 card action 通道进入 hook runtime。
+- [x] hook runtime 接管 `interaction.select`，转发 sidecar `/card/actions`，并将更新后的 card 作为 Feishu callback response 返回。
+- [x] 保持 sidecar 作为安全边界：`interaction_id`、callback token 和可用的 chat id 继续在 `/card/actions` 校验。
+- [x] sidecar 拒绝、过期或无 card 返回时保持空 callback response，不崩溃也不落入未知原生 handler。
+- [x] 合并时保留贡献者 @colinaaa 的原始 commits，并补齐 rejected interaction 回归测试。
+
+### V3.8.15：输入附件重复 reply 抑制补丁（已完成）
+
+- [x] issue #82 后续复现：延续 session 且带输入 `.docx/files` 上下文时，完成卡片下方不再重复出现原生最终 reply。
+- [x] `files` / `file` locals 继续作为卡片附件摘要，但不再自动触发 `native_delivery=required`。
+- [x] 最终 answer 明确包含 `MEDIA:/tmp/...` 或本地文件路径时，仍保留 Hermes 原生文件/媒体投递。
+- [x] `media_files`、`image_files`、`audio_files`、`video_files` 等结构化输出媒体字段继续保护原生投递路径。
+- [x] 补齐输入文件 card-only 和显式媒体输出 fail-open 回归测试。
+
+### V3.8.16：话题群 message_id 复用新卡补丁（已完成）
+
+- [x] issue #89 / PR #88：Feishu/Lark 话题群连续消息复用同一 `message_id` 时，第二条及后续消息会重新发送新卡片。
+- [x] 已完成或失败的旧 session 会清理 per-key card delivery 状态，再创建新 session，避免 clarify/approval 第二轮无卡片而挂起。
+- [x] 当前轮仍在 streaming 时，重复 `message.started` 继续 ignored，不会误发第二张卡。
+- [x] 合并时保留贡献者 @colinaaa 的原始 commit，并在 README / release notes 中体现 PR #88 贡献。
+- [x] 补齐 topic reused `message_id` 新卡和 active duplicate started guard 回归测试。
+
+### V3.8.17：cron 路由意图卡片投递补丁（已完成）
+
+- [x] PR #77（贡献者 @zayn-0101）：cron `deliver=origin` / `deliver=all` / `origin,all` 不再被误判为真实 platform，完成结果会解析到 Feishu 目标并发送卡片。
+- [x] `deliver=local` 保持本地/无投递语义，不被 fallback 意外送到 Feishu。
+- [x] 保留 dict-shaped `deliver` 兼容，避免非 Feishu origin chat id 泄漏到 Feishu delivery。
+- [x] 安装 hook 对 Hermes `_resolve_delivery_targets` 做 optional guard，缺失 helper 时保持 fail-open。
+- [x] 合并时保留贡献者 @zayn-0101 的原始 commits，并在 README / release notes 中体现 PR #77 贡献。
+- [x] 补齐 cron routing-intent、dict deliver、non-Feishu origin、`local` 和 patcher optional pre-resolve 回归测试。
+
+### V3.8.18：cron 话题线程回传补丁（已完成）
+
+- [x] Issue #90 / PR #91（贡献者 @colinaaa）：cron 卡片携带 Feishu topic `thread_id`，回到原话题线程而不是创建新 topic。
+- [x] 保留 scheduler-resolved Feishu target、Feishu origin 和显式环境 fallback 的优先级。
+- [x] 非 Feishu origin 的 thread id 不进入 Feishu 事件，补齐跨平台隔离回归测试。
+- [x] 合并时保留 @colinaaa 的原始 commit，并在 README、双语用户指南和 release notes 中体现贡献。
+
 ### V3.8.x 后续维护与扩展面（待办）
 
 - [ ] 卡片内提供“继续”“重试”“取消”等写操作入口，需要单独做权限、幂等和误触发设计。
@@ -126,6 +166,7 @@
 - [ ] 评估卡片 timeline/metrics 的长期兼容边界，并补发布回归清单。
 - [ ] 完全兜住极端 Markdown table 边界：当结构化拆分失败时输出安全折叠提示，避免回退 plain split。
 - [ ] 清理 terminal 后的 closed `FlushController`，并评估更有诊断价值的 queue depth / coalesced backlog 指标。
+- [ ] 下次版本候选：整理 PR #84（贡献者 @Zanetach）的 Feishu card progress status routing 方向，和更多同类状态/安装路由需求一起评估；当前不单独发版。候选范围包括“完成态但内容仍是中间进度时显示 `进行中`”以及 `.env` 白名单读取 `HERMES_FEISHU_CARD_EVENT_URL` / `HERMES_FEISHU_CARD_PROFILE_ID`。
 - [ ] V3.8.x 候选：按真实使用反馈补充更多 Hermes 原生 notice 分类、去重策略和中英文文案微调。
 - [ ] V3.9 候选：Docker 完整运维体验（镜像内安装、外部 Hermes 目录挂载、doctor 一键诊断、升级流程）。
 - [ ] V3.9 候选：群聊体验后续（可视化配置向导、更多真实 E2E fixture、跨群会话迁移策略）。

@@ -741,6 +741,117 @@ async def test_topic_system_notice_with_reply_anchor_updates_existing_card(clien
     assert len(feishu_client.sent) == 1
 
 
+async def test_topic_second_message_reusing_message_id_sends_new_card(client):
+    """Feishu topic groups reuse the same message_id across turns. A second
+    message.started on the same (already-completed) key must send a NEW card,
+    not be ignored, so the second turn is not left card-less."""
+    test_client, feishu_client = client
+
+    # First turn: started -> answer -> completed on message_id om_topic_user.
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "answer.delta",
+            1,
+            {"reply_to_message_id": "om_topic_user", "text": "first answer"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    completed = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.completed",
+            2,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    assert completed.status == 200
+    assert len(feishu_client.sent) == 1
+
+    # Second turn in the SAME thread reuses the SAME message_id.
+    started2 = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    assert started2.status == 200
+    assert await started2.json() == {"ok": True, "applied": True}
+    # A brand-new card must be sent for the second turn.
+    assert len(feishu_client.sent) == 2
+
+    # And the second turn's content must render on the new card.
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "answer.delta",
+            1,
+            {"reply_to_message_id": "om_topic_user", "text": "second answer"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    _mid, card = await wait_for_card_update(feishu_client, "second answer")
+    assert "second answer" in str(card)
+
+
+async def test_topic_second_message_started_while_active_is_ignored(client):
+    """A duplicate message.started while the session is still streaming must
+    still be ignored (no spurious second card)."""
+    test_client, feishu_client = client
+
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    assert len(feishu_client.sent) == 1
+
+    # Session still active (no completed) -> a second started is a duplicate.
+    dup = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.started",
+            0,
+            {"reply_to_message_id": "om_topic_user"},
+            conversation_id="omt_topic",
+            message_id="om_topic_user",
+            thread_id="omt_topic",
+        ),
+    )
+    assert dup.status == 200
+    assert await dup.json() == {"ok": True, "applied": False}
+    assert len(feishu_client.sent) == 1
+
+
 async def test_interaction_request_renders_buttons_and_callback_resolves(client):
     test_client, feishu_client = client
 
@@ -1104,6 +1215,58 @@ async def test_cron_completed_event_sends_completed_card_without_started(client)
     assert metrics["events_applied"] == 1
     assert metrics["events_ignored"] == 0
     assert metrics["cron_cards_sent"] == 1
+
+
+async def test_cron_completed_event_with_thread_id_sends_card_to_thread(client):
+    """Cron event with thread_id should pass thread_id to send_card."""
+    test_client, feishu_client = client
+
+    response = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.completed",
+            0,
+            {"answer": "Cron in thread", "delivery_kind": "cron"},
+            message_id="cron_thread_1",
+            chat_id="oc_topic_group",
+            thread_id="omt_target_thread",
+            conversation_id="omt_target_thread",
+        ),
+    )
+
+    assert response.status == 200
+    assert await response.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    # FakeFeishuClient.send_card stores (chat_id, card, thread_id, reply_to_message_id)
+    chat_id, card, thread_id, reply_to = feishu_client.sent[0]
+    assert chat_id == "oc_topic_group"
+    assert thread_id == "omt_target_thread"
+    assert "Cron in thread" in str(card)
+
+
+async def test_cron_completed_event_without_thread_id_sends_card_to_chat(client):
+    """Cron event without thread_id should send card to chat_id directly."""
+    test_client, feishu_client = client
+
+    response = await test_client.post(
+        "/events",
+        json=event_payload(
+            "message.completed",
+            0,
+            {"answer": "Cron no thread", "delivery_kind": "cron"},
+            message_id="cron_no_thread_1",
+            chat_id="oc_dm_chat",
+            thread_id="",
+            conversation_id="cron_no_thread_1",
+        ),
+    )
+
+    assert response.status == 200
+    assert await response.json() == {"ok": True, "applied": True}
+    assert len(feishu_client.sent) == 1
+    chat_id, card, thread_id, reply_to = feishu_client.sent[0]
+    assert chat_id == "oc_dm_chat"
+    assert thread_id is None  # _thread_id_for_event returns None for non-omt_ ids
 
 
 async def test_duplicate_started_does_not_send_again(client):

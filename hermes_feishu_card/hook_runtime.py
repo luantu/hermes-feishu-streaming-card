@@ -40,6 +40,13 @@ NATIVE_DELIVERY_ATTACHMENT_FIELDS = (
     "audio_files",
     "video_files",
 )
+NATIVE_DELIVERY_OUTPUT_ATTACHMENT_FIELDS = (
+    "media_files",
+    "media",
+    "image_files",
+    "audio_files",
+    "video_files",
+)
 
 SUPPORTED_RUNTIME_EVENTS = {
     "message.started",
@@ -2175,11 +2182,95 @@ def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
         return _hfc_handle_native_slash_action(self, data, action_value)
     if action == "model_picker":
         return _hfc_handle_native_model_action(self, data, action_value)
+    if action == "interaction.select":
+        return _hfc_handle_interaction_select_action(self, data, action_value)
 
     original = getattr(type(self), "_hfc_original_on_card_action_trigger", None)
     if callable(original):
         return original(self, data)
     return _hfc_empty_feishu_callback_response(self)
+
+
+def _hfc_handle_interaction_select_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> Any:
+    """Forward an agent clarify/approval interaction card click to the sidecar.
+
+    Agent-initiated interaction option cards (``interaction.requested``) render
+    Feishu ``callback`` buttons whose value carries
+    ``hfc_action=interaction.select`` plus ``interaction_id`` / ``choice`` /
+    ``choice_label`` / ``token``. Under a Feishu/Lark WebSocket long-connection
+    deployment the click is delivered here (the adapter's card action channel),
+    NOT to the sidecar's ``/card/actions`` HTTP endpoint — the sidecar is on
+    localhost and Feishu cannot POST to it. Prior to this, such clicks fell
+    through to the original adapter handler and were dropped, so the card looked
+    unresponsive (and ``card.interaction_mode: auto`` had to fall back to text).
+
+    This mirrors the existing ``slash_confirm`` / ``model_picker`` WS-native
+    paths: rebuild the native Feishu card-action payload, POST it to the
+    sidecar's ``/card/actions`` endpoint (which marks the interaction completed
+    so the Hermes hook polling ``/interactions/{id}`` unblocks), and return the
+    sidecar's updated card so Feishu updates the card in place.
+    """
+    _hfc_info("inline card action received: interaction.select")
+    interaction_id = str(action_value.get("interaction_id") or "").strip()
+    token = str(action_value.get("token") or "").strip()
+    choice = str(action_value.get("choice") or action_value.get("hfc_choice") or "").strip()
+    choice_label = str(action_value.get("choice_label") or choice).strip()
+    if not interaction_id or not token or not choice:
+        _hfc_info("interaction.select ignored: missing interaction_id/token/choice")
+        return _hfc_empty_feishu_callback_response(adapter)
+
+    chat_id = _hfc_action_chat_id(data)
+    open_id = _hfc_action_open_id(data)
+    operator_name = ""
+    event_obj = getattr(data, "event", None)
+    operator_obj = getattr(event_obj, "operator", None)
+    if operator_obj is not None:
+        operator_name = str(
+            getattr(operator_obj, "user_name", "")
+            or getattr(operator_obj, "name", "")
+            or ""
+        ).strip()
+
+    operator_payload: dict[str, Any] = {}
+    if operator_name:
+        operator_payload["name"] = operator_name
+    if open_id:
+        operator_payload["open_id"] = open_id
+
+    sidecar_payload = {
+        "event": {
+            "action": {
+                "value": {
+                    "hfc_action": "interaction.select",
+                    "interaction_id": interaction_id,
+                    "choice": choice,
+                    "choice_label": choice_label,
+                    "token": token,
+                }
+            },
+            "context": {"open_chat_id": chat_id},
+            "operator": operator_payload,
+        }
+    }
+
+    try:
+        config = load_runtime_config()
+        base_url = _summary_base_url(config.event_url)
+        url = f"{base_url}/card/actions"
+        result = _post_json_sync_response(url, sidecar_payload, 5.0)
+    except Exception as exc:
+        _hfc_warn(f"interaction.select forward failed: {exc.__class__.__name__}: {exc}")
+        return _hfc_empty_feishu_callback_response(adapter)
+
+    if isinstance(result, dict) and isinstance(result.get("card"), dict):
+        _hfc_info(f"interaction.select resolved: interaction_id={interaction_id!r}")
+        return _hfc_raw_feishu_callback_response(adapter, result["card"])
+    _hfc_info("interaction.select forwarded but no card returned")
+    return _hfc_empty_feishu_callback_response(adapter)
 
 
 def _hfc_resolve_native_slash_action(
@@ -3175,11 +3266,23 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
         origin = {}
     resolved_targets = _resolved_cron_targets(local_vars, job)
     resolved_chat_id = _resolved_target_chat_id(resolved_targets, "feishu")
+<<<<<<< HEAD
     deliver_platform = _deliver_platform(job.get("deliver"))
     # deliver values like "origin" and "none" are routing directives, not
     # concrete platform names — prefer resolved targets and origin over them.
     if deliver_platform in ("origin", "none", ""):
         deliver_platform = ""
+=======
+    # Routing-intent tokens ("origin", "all") and comma-separated
+    # combinations are not real platform names.  When _deliver_platform()
+    # returns one of these, the platform chain short-circuits and never
+    # reaches origin.get("platform") — causing every deliver=origin or
+    # deliver=all cron job to silently fall back to plain-text delivery.
+    # Extract the first real platform name, skipping routing intents.
+    # "local" is NOT a routing intent — it means "no delivery" and will
+    # cause the platform check below to fail naturally.
+    deliver_platform = _extract_real_platform(job.get("deliver"))
+>>>>>>> upstream/main
     platform = str(
         _first_target_platform(resolved_targets)
         or origin.get("platform")
@@ -3187,15 +3290,26 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
         or os.environ.get("HERMES_CRON_AUTO_DELIVER_PLATFORM")
         or "feishu"
     ).strip().lower()
+    origin_platform = str(origin.get("platform") or "").strip().lower()
+    origin_chat_id = origin.get("chat_id") if origin_platform == "feishu" else ""
+    origin_thread_id = origin.get("thread_id") if origin_platform == "feishu" else ""
     chat_id = str(
         resolved_chat_id
         or _deliver_chat_id(job.get("deliver"))
-        or origin.get("chat_id")
+        or origin_chat_id
         or os.environ.get("HERMES_CRON_AUTO_DELIVER_CHAT_ID")
         or ""
     ).strip()
     if platform != "feishu" or not chat_id:
         return None
+
+    # Resolve thread_id for topic-group delivery (cron jobs targeting a thread
+    # inside a topic group).  Priority: resolved targets > origin > env var.
+    thread_id = str(
+        _resolved_target_thread_id(resolved_targets, "feishu")
+        or origin_thread_id
+        or os.environ.get("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "")
+    ).strip() or ""
 
     profile_id, profile_source = _profile_identity(local_vars, None, None)
     created_at = time.time()
@@ -3206,9 +3320,10 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "schema_version": "1",
         "event": "message.completed",
-        "conversation_id": str(job.get("id") or chat_id),
+        "conversation_id": thread_id or str(job.get("id") or chat_id),
         "message_id": message_id,
         "chat_id": chat_id,
+        "thread_id": thread_id,
         "platform": "feishu",
         "sequence": 0,
         "created_at": created_at,
@@ -3269,6 +3384,75 @@ def _resolved_cron_targets(
     return [item for item in value if isinstance(item, dict)]
 
 
+_ROUTING_INTENT_TOKENS = frozenset({"origin", "all"})
+
+
+def _is_routing_intent(platform: str) -> bool:
+    """Return True if *platform* is a routing-intent token, not a real platform.
+
+    Routing intents (``origin``, ``all``) and comma-separated combinations
+    like ``origin,all`` must be resolved by the scheduler before they map to
+    a concrete platform name.  The hook runs before that resolution, so it
+    should skip them and let the platform chain fall through to
+    ``resolved_targets`` or ``origin``.
+
+    ``local`` is intentionally excluded — it is a delivery target (meaning
+    "no delivery"), not a routing intent that needs resolution.
+    """
+    if not platform:
+        return False
+    # Single token: "origin", "all"
+    if platform in _ROUTING_INTENT_TOKENS:
+        return True
+    # Comma-separated: "origin,all", "all,telegram:123", etc.
+    # If every part (after stripping) is a routing-intent token, treat the
+    # whole thing as a routing intent.  Mixed combos like "origin,feishu:123"
+    # contain a real platform and should NOT be skipped — the caller should
+    # extract the real platform part.
+    if "," in platform:
+        parts = [p.strip() for p in platform.split(",") if p.strip()]
+        if parts and all(p in _ROUTING_INTENT_TOKENS for p in parts):
+            return True
+    return False
+
+
+def _extract_real_platform(deliver: Any) -> str:
+    """Extract the first real platform name from a deliver value.
+
+    Handles comma-separated deliver strings (``"origin,feishu:chat_id"``)
+    by splitting on ``,`` and returning the first part whose platform is not
+    a routing intent.  Returns ``""`` when all parts are routing intents or
+    the value is empty.  ``"local"`` passes through as-is (it is not a
+    routing intent and will cause the platform check in ``build_cron_event``
+    to fail naturally).
+    """
+    if not deliver:
+        return ""
+    if isinstance(deliver, dict):
+        platform = _deliver_platform(deliver)
+        if platform in _ROUTING_INTENT_TOKENS:
+            return ""
+        return platform
+    text = str(deliver).strip().lower()
+    if not text:
+        return ""
+    # Fast path: no comma — just use _deliver_platform directly.
+    if "," not in text:
+        platform = _deliver_platform(text)
+        if platform in _ROUTING_INTENT_TOKENS:
+            return ""
+        return platform
+    # Split by comma and find the first real platform part.
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        platform = _deliver_platform(part)
+        if platform and platform not in _ROUTING_INTENT_TOKENS:
+            return platform
+    return ""
+
+
 def _deliver_platform(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("platform") or value.get("type") or "").strip().lower()
@@ -3316,6 +3500,17 @@ def _resolved_target_chat_id(targets: list[dict[str, Any]], platform: str) -> st
         ).strip()
         if chat_id:
             return chat_id
+    return ""
+
+
+def _resolved_target_thread_id(targets: list[dict[str, Any]], platform: str) -> str:
+    for target in targets:
+        target_platform = str(target.get("platform") or target.get("type") or "").strip().lower()
+        if target_platform != platform:
+            continue
+        thread_id = str(target.get("thread_id") or "").strip()
+        if thread_id:
+            return thread_id
     return ""
 
 
@@ -3678,7 +3873,7 @@ def _structured_attachment_candidates(local_vars: dict[str, Any]) -> list[Any]:
 
 
 def _structured_native_delivery_candidates(local_vars: dict[str, Any]) -> list[Any]:
-    return _structured_candidates(local_vars, NATIVE_DELIVERY_ATTACHMENT_FIELDS)
+    return _structured_candidates(local_vars, NATIVE_DELIVERY_OUTPUT_ATTACHMENT_FIELDS)
 
 
 def _structured_candidates(
