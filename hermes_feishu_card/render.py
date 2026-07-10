@@ -82,6 +82,27 @@ def render_card(
             primary_text = "生成中..."
         else:
             primary_text = normalize_stream_text(session.visible_main_text)
+    if session.delivery_kind == "notice":
+        return {
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "summary": {"content": ""},
+            },
+            "header": {
+                "template": _notice_template(session.notice_level),
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "element_id": "notice_content",
+                        "content": primary_text,
+                        "text_size": "x-small",
+                    }
+                ]
+            },
+        }
     attachment_summary = _render_attachment_summary(session)
     effective_fields = list(DEFAULT_FOOTER_FIELDS) if footer_fields is None else list(footer_fields)
     show_tool_summary = "tool_summary" in effective_fields
