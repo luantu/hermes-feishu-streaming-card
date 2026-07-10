@@ -3266,13 +3266,6 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
         origin = {}
     resolved_targets = _resolved_cron_targets(local_vars, job)
     resolved_chat_id = _resolved_target_chat_id(resolved_targets, "feishu")
-<<<<<<< HEAD
-    deliver_platform = _deliver_platform(job.get("deliver"))
-    # deliver values like "origin" and "none" are routing directives, not
-    # concrete platform names — prefer resolved targets and origin over them.
-    if deliver_platform in ("origin", "none", ""):
-        deliver_platform = ""
-=======
     # Routing-intent tokens ("origin", "all") and comma-separated
     # combinations are not real platform names.  When _deliver_platform()
     # returns one of these, the platform chain short-circuits and never
@@ -3282,7 +3275,6 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     # "local" is NOT a routing intent — it means "no delivery" and will
     # cause the platform check below to fail naturally.
     deliver_platform = _extract_real_platform(job.get("deliver"))
->>>>>>> upstream/main
     platform = str(
         _first_target_platform(resolved_targets)
         or origin.get("platform")
