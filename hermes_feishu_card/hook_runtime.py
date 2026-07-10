@@ -1445,6 +1445,13 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, str] | None:
             "notice_kind": "compression",
             "notice_id": _hfc_content_notice_id("compression", text),
         }
+    if "gateway shutting down" in lowered or "gateway restart" in lowered:
+        return {
+            "title": "网关状态",
+            "level": "warning",
+            "notice_kind": "gateway-shutdown",
+            "notice_id": _hfc_content_notice_id("gateway-shutdown", text),
+        }
     return None
 
 
