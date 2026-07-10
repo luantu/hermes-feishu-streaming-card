@@ -1414,12 +1414,7 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, str] | None:
         return None
     lowered = text.lower()
     if text.startswith("⏳") or lowered.startswith("working ") or "working —" in lowered:
-        return {
-            "title": "运行中",
-            "level": "info",
-            "notice_kind": "heartbeat",
-            "notice_id": "heartbeat",
-        }
+        return None
     if "caps context" in lowered and "auto-compaction" in lowered:
         return {
             "title": "上下文窗口提示",
@@ -1442,12 +1437,7 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, str] | None:
             "notice_id": _hfc_content_notice_id("skill-loading", text),
         }
     if "self-improvement review" in lowered:
-        return {
-            "title": "自我改进",
-            "level": "info",
-            "notice_kind": "self-improvement",
-            "notice_id": _hfc_content_notice_id("self-improvement", text),
-        }
+        return None
     if "context compression" in lowered or "compression model" in lowered:
         return {
             "title": "上下文压缩提示",
