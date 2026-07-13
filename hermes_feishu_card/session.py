@@ -201,8 +201,6 @@ class CardSession:
             reply_to_message_id = event.data.get("reply_to_message_id")
             if isinstance(reply_to_message_id, str):
                 self.reply_to_message_id = reply_to_message_id
-            elif event.message_id.startswith("om_"):
-                self.reply_to_message_id = event.message_id
         elif event.event == "interaction.requested":
             self.active_interaction = _interaction_from_event_data(event.data)
         elif event.event == "interaction.completed":

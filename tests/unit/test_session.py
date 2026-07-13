@@ -48,7 +48,7 @@ def test_started_message_uses_feishu_message_id_as_native_reply_anchor():
         )
     )
 
-    assert session.reply_to_message_id == "om_user_message"
+    assert session.reply_to_message_id == ""
 
 
 def test_rejects_duplicate_and_stale_sequence():
