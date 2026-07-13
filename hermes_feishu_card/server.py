@@ -1990,6 +1990,10 @@ def _thread_id_for_event(event: SidecarEvent) -> str | None:
 
 
 def _reply_to_message_id_for_event(event: SidecarEvent) -> str | None:
+    data = event.data if isinstance(event.data, dict) else {}
+    reply_to = data.get("reply_to_message_id")
+    if isinstance(reply_to, str) and reply_to.startswith("om_"):
+        return reply_to
     return None
     if event.message_id.startswith("om_"):
         return event.message_id
