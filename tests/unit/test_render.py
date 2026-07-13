@@ -197,8 +197,8 @@ def test_render_completed_card_replaces_thinking():
     session.status = "completed"
     card = render_card(session)
     content = str(card)
-    assert card["header"]["subtitle"]["content"] == "已完成"
     assert "最终答案" in content
+    assert card["header"]["subtitle"]["content"] == "最终答案"
     assert "不会展示" not in content
 
 
@@ -318,7 +318,7 @@ def test_progress_handoff_changes_only_header_status_from_completed_card():
     inferred_card = render_card(inferred)
 
     assert completed_card["header"]["template"] == "green"
-    assert completed_card["header"]["subtitle"]["content"] == "已完成"
+    assert "数据收集中" in completed_card["header"]["subtitle"]["content"]
     assert inferred_card["header"]["template"] == "blue"
     assert "subtitle" not in inferred_card["header"]
     assert inferred_card["config"]["summary"]["content"] == "生成中"

@@ -215,6 +215,9 @@ def _render_status(
         }
     display_status = resolve_display_status(session, status_config or StatusConfig.defaults()).value
     if display_status == "completed":
+        answer = normalize_stream_text(session.answer_text).strip()
+        if answer:
+            return {"subtitle": answer, "template": "green"}
         return {"subtitle": "已完成", "template": "green"}
     if display_status == "failed":
         return {"subtitle": "", "summary": "处理失败", "template": "red"}
@@ -223,6 +226,25 @@ def _render_status(
     if display_status == "in_progress":
         return {"subtitle": "", "summary": "生成中", "template": "blue"}
     return {"subtitle": "", "summary": "思考中", "template": "indigo"}
+
+
+def _generate_summary_subtitle(text: str, max_length: int = 30) -> str:
+    if not text or not text.strip():
+        return "已完成"
+    cleaned = normalize_stream_text(text)
+    cleaned = re.sub(r'```[\s\S]*?```', '', cleaned)
+    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
+    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
+    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
+    cleaned = re.sub(r'#+\s*', '', cleaned)
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
+    cleaned = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', cleaned)
+    cleaned = re.sub(r'[\*\#`\[\]()>|-]', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    first_sentence = re.split(r'[。！？\n]', cleaned)[0].strip()
+    if len(first_sentence) > max_length:
+        return first_sentence[:max_length - 1] + "…"
+    return first_sentence if first_sentence else "已完成"
 
 
 def _runtime_header_title(session: CardSession, configured_title: str) -> str:

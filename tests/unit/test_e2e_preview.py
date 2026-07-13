@@ -31,6 +31,7 @@ def test_generate_e2e_preview_writes_visual_and_card_json(tmp_path):
     assert "</think>" not in svg
     assert set(cards) == {"thinking", "completed"}
     assert cards["thinking"]["schema"] == "2.0"
-    assert cards["completed"]["header"]["subtitle"]["content"] == "已完成"
+    assert "已完成" not in cards["completed"]["header"]["subtitle"]["content"]
+    assert "流式卡片" in cards["completed"]["header"]["subtitle"]["content"]
     assert "思考与工具 · 2 次工具调用" in json.dumps(cards, ensure_ascii=False)
     assert "tool_summary" not in json.dumps(cards, ensure_ascii=False)
