@@ -21,28 +21,40 @@ card:
   # Global fallback title. profiles.<id>.card.title and bots.items.<id>.card.title
   # can override it; bot title wins over profile title.
   title: Hermes Agent
-  # auto: localhost/private sidecar shows numbered text choices; public sidecar uses buttons.
-  # callback: always render Feishu CardKit callback buttons.
-  # text: always render numbered text choices and let Hermes handle the reply.
+  # auto: use Feishu CardKit buttons through the native WebSocket card-action path.
+  # callback: explicitly keep native CardKit callback buttons.
+  # text: explicitly render numbered text choices and let Hermes handle the reply.
   interaction_mode: auto
   max_wait_ms: 800
   max_chars: 240
+  # Optional conservative handoff inference. Both an active marker and a future
+  # marker must appear; explicit event data.display_status always wins.
+  status:
+    active_markers:
+      - 正在收集
+      - 数据收集中
+      - 资料收集中
+      - 处理中
+      - working on
+      - gathering
+      - collecting
+    future_markers:
+      - 到位后
+      - 完成后我会继续
+      - 我会继续
+      - will continue
+      - once available
+      - when it arrives
+      - when ready
   # Footer fields and order. Supported values:
-  # duration, model, input_tokens, output_tokens, context, tool_summary
-  # Include "tool_summary" to show the tool-call summary block.
+  # duration, model, input_tokens, output_tokens, context, subscription_usage
+  # subscription_usage is opt-in and uses Hermes native Codex account usage.
   footer_fields:
     - duration
     - model
     - input_tokens
     - output_tokens
     - context
-    - tool_summary
-  # If a task runs longer than this many seconds, the terminal event
-  # (completed/failed) will delete the original card and send a new one
-  # instead of updating in place.  Useful in busy group chats where the
-  # streaming card scrolls away.  Set to 0 to always resend; omit to
-  # use the default (60s).
-  resend_after_seconds: 60
 
 # ── Multi-Bot (optional) ─────────────────────────────────────────────────────
 # Define multiple Feishu bots under bots.items. Each bot gets its own

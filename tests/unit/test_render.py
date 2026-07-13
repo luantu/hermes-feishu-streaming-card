@@ -1,5 +1,7 @@
-from hermes_feishu_card.render import _SPINNER_FRAMES, render_card
-from hermes_feishu_card.session import CardSession, ToolState
+from hermes_feishu_card.render import _SPINNER_FRAMES, _colored_model_label, render_card
+from hermes_feishu_card.session import CardSession, InteractionState, ToolState
+from hermes_feishu_card.status import StatusConfig
+import pytest
 import time
 
 
@@ -20,11 +22,11 @@ def test_render_thinking_card_keeps_runtime_status_only_in_footer():
     assert "subtitle" not in card["header"]
     content = str(card)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
-    assert main["content"] == "生成中..."
+    assert main["content"] == "正在分析。"
     assert "正在思考" not in content
     assert "思考中" not in str(card["header"])
     assert "生成中" in content
-    assert "正在分析。" not in content
+    assert "正在分析。" in content
     assert "思考与工具 · 1 次工具调用" in content
 
 
@@ -34,6 +36,158 @@ def test_render_card_accepts_custom_header_title():
     card = render_card(session, title="研发助手")
 
     assert card["header"]["title"]["content"] == "研发助手"
+
+
+def test_v4_running_card_uses_preview_title_and_public_interim_body():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.thinking_text = "我先检查天气客户端。"
+    session.latest_tool_preview = "正在读取：weather_client.py"
+
+    card = render_card(session, title="Hermes Agent")
+    main = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "main_content"
+    )
+    footer = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "footer"
+    )
+
+    assert card["header"]["title"]["content"] == "Hermes Agent"
+    assert card["header"]["subtitle"]["content"] == "正在读取：weather_client.py"
+    assert not any(
+        element.get("element_id") == "runtime_summary"
+        for element in card["body"]["elements"]
+    )
+    assert main["content"] == "我先检查天气客户端。"
+    assert "gpt-" not in footer["content"]
+    assert "ctx " not in footer["content"]
+
+
+def test_v4_answer_delta_remains_primary_over_public_interim_text():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.thinking_text = "公开阶段说明"
+    session.answer_text = "主回答已经开始"
+
+    card = render_card(session)
+    main = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "main_content"
+    )
+
+    assert main["content"] == "主回答已经开始"
+    assert "公开阶段说明" not in str(card)
+
+
+def test_v4_waiting_prompt_moves_to_header_without_body_duplication():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.active_interaction = InteractionState(
+        interaction_id="approval-1",
+        kind="approval",
+        prompt="允许覆盖文件吗？",
+        description="目标文件：report.html",
+        options=[],
+    )
+
+    card = render_card(session)
+    footer = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "footer"
+    )
+
+    assert card["header"]["title"]["content"] == "允许覆盖文件吗？"
+    assert "subtitle" not in card["header"]
+    assert str(card).count("允许覆盖文件吗？") == 1
+    assert "目标文件：report.html" in str(card)
+    assert "等待" in footer["content"]
+    assert "ctx " not in footer["content"]
+
+
+def test_v4_completed_restores_configured_title_and_metrics():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.latest_tool_preview = "正在执行终端：pytest"
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.duration = 2.0
+    session.model = "gpt-5.5"
+
+    card = render_card(session, title="研发助手")
+
+    assert card["header"]["title"]["content"] == "研发助手"
+    assert "正在执行终端：pytest" not in str(card["header"])
+    assert "2s" in str(card)
+    assert "gpt-5.5" in str(card)
+
+
+def test_v4_completed_reply_card_uses_only_native_feishu_quote_header():
+    session = CardSession(conversation_id="c", message_id="om_user", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.reply_to_message_id = "om_user"
+
+    card = render_card(session, title="Hermes Agent")
+
+    assert "header" not in card
+    assert "最终答案" in str(card)
+    assert card["config"]["summary"]["content"] == "已完成"
+    footer = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "footer"
+    )
+    assert footer["content"].startswith("已完成 · ")
+
+
+def test_v4_failed_retains_preview_and_status_only_footer():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.latest_tool_preview = "正在读取：演示天气数据"
+    session.status = "failed"
+    session.answer_text = "数据源暂时不可用。"
+
+    card = render_card(session, title="Hermes Agent")
+    footer = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "footer"
+    )
+
+    assert card["header"]["title"]["content"] == "Hermes Agent"
+    assert card["header"]["subtitle"]["content"] == "正在读取：演示天气数据"
+    assert footer["content"] == "已停止"
+    assert "ctx " not in footer["content"]
+
+
+def test_v4_missing_preview_keeps_configured_title():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.thinking_text = "正在处理。"
+
+    card = render_card(session, title="研发助手")
+
+    assert card["header"]["title"]["content"] == "研发助手"
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        "```bash\nexport APP_SECRET=unsafe\n```",
+        "curl https://example.test?a=1&token=unsafe",
+        "deploy --password unsafe --api-key=unsafe",
+    ],
+)
+def test_v4_runtime_header_is_single_line_bounded_and_redacted(preview):
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.latest_tool_preview = preview + ("x" * 300)
+
+    title = render_card(session)["header"]["subtitle"]["content"]
+
+    assert "\n" not in title
+    assert "unsafe" not in title
+    assert "[REDACTED]" in title
+    assert len(title) <= 120
 
 
 def test_render_completed_card_replaces_thinking():
@@ -46,6 +200,141 @@ def test_render_completed_card_replaces_thinking():
     assert card["header"]["subtitle"]["content"] == "已完成"
     assert "最终答案" in content
     assert "不会展示" not in content
+
+
+def test_v3818_normal_completed_card_keeps_element_order_and_configured_footer():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.duration = 3.0
+    session.model = "MiniMax M2.7"
+    session.tokens = {"output_tokens": 34}
+
+    card = render_card(session, footer_fields=["model", "duration", "output_tokens"])
+
+    assert [element["element_id"] for element in card["body"]["elements"]] == [
+        "main_content",
+        "main_divider",
+        "tool_summary",
+        "footer",
+    ]
+    assert card["body"]["elements"][-1] == {
+        "tag": "markdown",
+        "element_id": "footer",
+        "content": "MiniMax M2.7 · 3s · ↓34",
+        "text_size": "x-small",
+    }
+
+
+def test_v3818_normal_failed_card_keeps_element_order_and_footer():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.status = "failed"
+    session.answer_text = "处理失败"
+
+    card = render_card(session, footer_fields=["model", "duration"])
+
+    assert [element["element_id"] for element in card["body"]["elements"]] == [
+        "main_content",
+        "main_divider",
+        "tool_summary",
+        "footer",
+    ]
+    assert card["body"]["elements"][-1]["content"] == "已停止"
+
+
+@pytest.mark.parametrize(
+    ("model", "color"),
+    [
+        ("GPT-5.5", "blue"),
+        ("claude-opus-4", "orange"),
+        ("DeepSeek-V4", "indigo"),
+        ("KIMI-K2", "purple"),
+        ("GLM-5", "green"),
+        ("Tencent/hunyuan", "teal"),
+    ],
+)
+def test_model_footer_uses_sanitized_semantic_color(model, color):
+    assert _colored_model_label(model) == f'<font color="{color}">{model}</font>'
+
+
+def test_model_footer_escapes_unknown_and_malicious_model_names():
+    assert _colored_model_label("MiniMax M2.7") == "MiniMax M2.7"
+    escaped = _colored_model_label('<script>alert("x")</script>')
+    assert escaped == "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"
+    assert "<script>" not in escaped
+
+
+def test_model_footer_color_preserves_layout_order_and_configured_fields():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.duration = 3.0
+    session.model = "gpt-5.5"
+    session.tokens = {"output_tokens": 34}
+
+    card = render_card(session, footer_fields=["model", "duration", "output_tokens"])
+
+    assert [element["element_id"] for element in card["body"]["elements"]] == [
+        "main_content",
+        "main_divider",
+        "tool_summary",
+        "footer",
+    ]
+    assert card["body"]["elements"][-1] == {
+        "tag": "markdown",
+        "element_id": "footer",
+        "content": '<font color="blue">gpt-5.5</font> · 3s · ↓34',
+        "text_size": "x-small",
+    }
+
+
+def test_model_footer_color_does_not_change_non_completed_or_empty_fields():
+    thinking = CardSession(conversation_id="c", message_id="m1", chat_id="oc")
+    thinking.model = "gpt-5.5"
+    assert render_card(thinking)["body"]["elements"][-1]["content"].endswith("生成中")
+
+    failed = CardSession(conversation_id="c", message_id="m2", chat_id="oc")
+    failed.status = "failed"
+    failed.model = "gpt-5.5"
+    assert render_card(failed)["body"]["elements"][-1]["content"] == "已停止"
+
+    completed = CardSession(conversation_id="c", message_id="m3", chat_id="oc")
+    completed.status = "completed"
+    completed.model = "gpt-5.5"
+    assert render_card(completed, footer_fields=[])["body"]["elements"][-1]["content"] == "0s"
+
+
+def test_progress_handoff_changes_only_header_status_from_completed_card():
+    answer = "数据收集中，数据到位后我会继续生成报告。"
+    completed = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    completed.status = "completed"
+    completed.display_status = "completed"
+    completed.answer_text = answer
+    inferred = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    inferred.status = "completed"
+    inferred.answer_text = answer
+
+    completed_card = render_card(completed)
+    inferred_card = render_card(inferred)
+
+    assert completed_card["header"]["template"] == "green"
+    assert completed_card["header"]["subtitle"]["content"] == "已完成"
+    assert inferred_card["header"]["template"] == "blue"
+    assert "subtitle" not in inferred_card["header"]
+    assert inferred_card["config"]["summary"]["content"] == "生成中"
+    assert inferred_card["body"] == completed_card["body"]
+
+
+def test_render_status_uses_custom_conservative_marker_pairs():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.status = "completed"
+    session.answer_text = "queued now; resume later"
+    config = StatusConfig(active_markers=("queued",), future_markers=("resume later",))
+
+    card = render_card(session, status_config=config)
+
+    assert card["header"]["template"] == "blue"
+    assert card["config"]["summary"]["content"] == "生成中"
 
 
 def test_render_pending_interaction_as_buttons():
@@ -367,7 +656,8 @@ def test_render_failed_card_shows_error_without_thinking():
     content = str(card)
     assert card["config"]["summary"]["content"] == "处理失败"
     assert card["header"]["template"] == "red"
-    assert card["header"]["subtitle"]["content"] == "处理失败"
+    assert "subtitle" not in card["header"]
+    assert card["config"]["summary"]["content"] == "处理失败"
     assert "处理出错" in content
     assert "不会展示" not in content
     assert "已停止" in content
@@ -439,6 +729,24 @@ def test_render_completed_card_footer_respects_configured_fields_and_order():
     assert "↓2.2k" not in content
 
 
+def test_render_completed_card_footer_adds_configured_subscription_usage_only():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.answer_text = "最终答案"
+    session.status = "completed"
+    session.duration = 3
+    session.subscription_usage = "5h 26% · weekly 89%"
+
+    configured = render_card(
+        session, footer_fields=["duration", "subscription_usage"]
+    )
+    default = render_card(session, footer_fields=["duration"])
+
+    assert configured["body"]["elements"][-1]["content"] == (
+        "3s · 5h 26% · weekly 89%"
+    )
+    assert default["body"]["elements"][-1]["content"] == "3s"
+
+
 def test_spinner_text_changes_over_time():
     from hermes_feishu_card.render import _spinner_text
     frames = set()
@@ -484,10 +792,10 @@ def test_render_card_truncates_tables_over_limit():
         el.get("content", "") for el in card["body"]["elements"]
         if el.get("tag") == "markdown"
     )
-    assert "超出部分已省略" not in body_text
+    assert "超出部分已省略" in body_text
 
 
-def test_render_answer_stays_primary_and_raw_thinking_stays_hidden():
+def test_render_answer_stays_primary_over_public_interim_text():
     from hermes_feishu_card.events import SidecarEvent
 
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
@@ -551,16 +859,16 @@ def test_render_in_progress_answer_status_is_generating():
     assert "生成中" in str(card)
 
 
-def test_render_never_leaks_thinking_text_to_main_content_without_timeline_reasoning():
+def test_render_public_interim_text_in_main_content_before_answer():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
-    session.thinking_text = "这是 thinking.delta 的内容，不应该出现在正文区。"
+    session.thinking_text = "这是公开的阶段性说明。"
 
     card = render_card(session)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
 
-    assert main["content"] == "生成中..."
+    assert main["content"] == "这是公开的阶段性说明。"
     assert "正在思考" not in str(card)
-    assert "这是 thinking.delta 的内容" not in str(card)
+    assert "这是公开的阶段性说明。" in str(card)
 
 
 def test_render_keeps_pre_tool_answer_in_main_while_tool_runs():
@@ -1109,7 +1417,7 @@ def test_render_timeline_redacts_sensitive_tool_detail_in_json_and_repr():
     assert "[REDACTED]" in content
 
 
-def test_render_thinking_without_answer_uses_placeholder_in_main_content():
+def test_render_thinking_without_answer_uses_public_interim_main_content():
     from hermes_feishu_card.events import SidecarEvent
 
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
@@ -1123,17 +1431,16 @@ def test_render_thinking_without_answer_uses_placeholder_in_main_content():
             platform="feishu",
             sequence=1,
             created_at=0.0,
-            data={"text": "这是推理文本，只该在 timeline。"},
+            data={"text": "这是公开的阶段性输出。"},
         )
     )
 
     card = render_card(session)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
 
-    assert main["content"] == "生成中..."
+    assert main["content"] == "这是公开的阶段性输出。"
     assert "正在思考" not in str(card)
-    assert "这是推理文本，只该在 timeline。" not in main["content"]
-    assert "这是推理文本，只该在 timeline。" not in str(card)
+    assert "这是公开的阶段性输出。" in str(card)
     assert "auxiliary_timeline" not in str(card)
 
 

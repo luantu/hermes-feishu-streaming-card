@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import copy
 from contextvars import ContextVar
 from dataclasses import dataclass
 from hashlib import sha256
@@ -10,26 +12,42 @@ import logging
 import math
 import os
 from pathlib import Path
+import queue
 import re
+import secrets
 import sys
 from types import SimpleNamespace
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib import parse
 from urllib import request
+
+from .operations import sign_transport_proof
+from .operations_transport import (
+    derive_operation_transport_secret,
+    read_transport_root_secret,
+    sign_command_transport_proof,
+)
+from .status import normalize_display_status
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
 DEFAULT_TIMEOUT_SECONDS = 0.8
 TERMINAL_TIMEOUT_SECONDS = 10.0
+OPERATIONS_ACTION_TIMEOUT_SECONDS = 10.0
+OPERATIONS_ACTION_FORWARD_ATTEMPTS = 2
+OPERATIONS_ACTION_RETRY_DELAY_SECONDS = 0.1
+OPERATIONS_ACTION_WORKERS = 4
+OPERATIONS_ACTION_QUEUE_LIMIT = 64
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 MEDIA_RE = re.compile(r"MEDIA:([^\s\]]+)")
 LOCAL_FILE_RE = re.compile(
     r"(?<![:\w/])(/[^\s`]+\.(?:png|jpg|jpeg|webp|gif|pdf|txt|md|csv|xlsx|docx|mp3|wav|ogg|mp4|mov|webm))"
 )
 ATTACHMENT_TRAILING_PUNCTUATION = ",.;:)]}，。；：）】}"
+NATIVE_DELIVERY_MARKERS = ("[[as_document]]", "[[audio_as_voice]]")
 NATIVE_DELIVERY_ATTACHMENT_FIELDS = (
     "files",
     "file",
@@ -84,6 +102,12 @@ class _PendingDelta:
     scheduled: bool = False
 
 
+@dataclass(frozen=True)
+class _NativeMediaTextSuppression:
+    chat_id: str
+    content: str
+
+
 _SEQUENCES: dict[str, int] = {}
 _SEQUENCE_LOCK = threading.Lock()
 _ACTIVE_FALLBACK_MESSAGE_IDS: dict[tuple[str, str, str | None], str] = {}
@@ -103,7 +127,71 @@ _HFC_FEISHU_NOTICE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
     "hfc_feishu_notice_context",
     default=None,
 )
+_HFC_NATIVE_MEDIA_TEXT_SUPPRESSION: ContextVar[
+    _NativeMediaTextSuppression | None
+] = ContextVar(
+    "hfc_native_media_text_suppression",
+    default=None,
+)
 _HFC_COMMAND_RESULT_CARD_COMMANDS = {"new", "reset", "clear", "undo", "stop", "model"}
+_OPERATION_TRANSPORT_SECRETS: dict[str, tuple[bytes, str, float]] = {}
+_OPERATION_TRANSPORT_SECRETS_LOCK = threading.Lock()
+_OPERATION_TRANSPORT_SECRET_TTL_SECONDS = 600.0
+_OPERATION_TRANSPORT_SECRET_LIMIT = 256
+
+
+class _OperationsActionDispatcher:
+    def __init__(self, *, workers: int, max_pending: int):
+        self._workers = workers
+        self._queue: queue.Queue[Callable[[], None]] = queue.Queue(
+            maxsize=max_pending
+        )
+        self._start_lock = threading.Lock()
+        self._started = False
+
+    def submit(self, task: Callable[[], None]) -> bool:
+        self._ensure_started()
+        try:
+            self._queue.put_nowait(task)
+        except queue.Full:
+            return False
+        return True
+
+    def wait(self) -> None:
+        self._queue.join()
+
+    def _ensure_started(self) -> None:
+        if self._started:
+            return
+        with self._start_lock:
+            if self._started:
+                return
+            for index in range(self._workers):
+                threading.Thread(
+                    target=self._run,
+                    name=f"hfc-operations-action-{index + 1}",
+                    daemon=True,
+                ).start()
+            self._started = True
+
+    def _run(self) -> None:
+        while True:
+            task = self._queue.get()
+            try:
+                task()
+            except Exception as exc:
+                _hfc_warn(
+                    "operations.select background worker failed: "
+                    f"{exc.__class__.__name__}"
+                )
+            finally:
+                self._queue.task_done()
+
+
+_OPERATIONS_ACTION_DISPATCHER = _OperationsActionDispatcher(
+    workers=OPERATIONS_ACTION_WORKERS,
+    max_pending=OPERATIONS_ACTION_QUEUE_LIMIT,
+)
 
 
 def reset_runtime_state() -> None:
@@ -116,6 +204,8 @@ def reset_runtime_state() -> None:
         _SEND_LOCKS.clear()
     with _PENDING_DELTAS_LOCK:
         _PENDING_DELTAS.clear()
+    with _OPERATION_TRANSPORT_SECRETS_LOCK:
+        _OPERATION_TRANSPORT_SECRETS.clear()
     _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
     _HFC_FEISHU_NOTICE_CONTEXT.set(None)
 
@@ -394,11 +484,9 @@ def emit_from_hermes_locals(
     try:
         config = load_runtime_config()
         if not config.enabled:
-            print(f"[hermes-feishu-card] emit_from_hermes_locals: disabled for {event_name}", file=sys.stderr)
             return False
         payload = build_event(event_name, local_vars)
         if payload is None:
-            print(f"[hermes-feishu-card] emit_from_hermes_locals: build_event returned None for {event_name}", file=sys.stderr)
             return False
         asyncio.get_running_loop()
         asyncio.create_task(
@@ -409,8 +497,7 @@ def emit_from_hermes_locals(
             )
         )
         return True
-    except Exception as exc:
-        print(f"[hermes-feishu-card] emit_from_hermes_locals: exception for {event_name}: {exc}", file=sys.stderr)
+    except Exception:
         return False
 
 
@@ -421,7 +508,6 @@ def emit_from_hermes_locals_threadsafe(
     try:
         config = load_runtime_config()
         if not config.enabled:
-            print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: disabled for {event_name}", file=sys.stderr)
             return False
         if _queue_coalesced_delta(config, local_vars, event_name):
             return True
@@ -441,7 +527,6 @@ def emit_from_hermes_locals_threadsafe(
             return True
         payload = build_event(event_name, local_vars)
         if payload is None:
-            print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: build_event returned None for {event_name}", file=sys.stderr)
             return False
         if "_hfc_loop" in local_vars:
             coroutine = _send_fail_open_ordered(
@@ -451,10 +536,9 @@ def emit_from_hermes_locals_threadsafe(
             )
             try:
                 asyncio.run_coroutine_threadsafe(coroutine, local_vars["_hfc_loop"])
-            except Exception as exc:
+            except Exception:
                 coroutine.close()
-                print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: run_coroutine_threadsafe failed for {event_name}: {exc}", file=sys.stderr)
-                return False
+                raise
         else:
             asyncio.get_running_loop()
             asyncio.create_task(
@@ -465,8 +549,7 @@ def emit_from_hermes_locals_threadsafe(
                 )
             )
         return True
-    except Exception as exc:
-        print(f"[hermes-feishu-card] emit_from_hermes_locals_threadsafe: exception for {event_name}: {exc}", file=sys.stderr)
+    except Exception:
         return False
 
 
@@ -477,22 +560,22 @@ async def emit_from_hermes_locals_async(
     try:
         config = load_runtime_config()
         if not config.enabled:
-            print(f"[hermes-feishu-card] emit_from_hermes_locals_async: disabled for {event_name}", file=sys.stderr)
             return False
         if event_name not in {"thinking.delta", "answer.delta"}:
             await _flush_pending_deltas_for_local_vars(local_vars)
         payload = build_event(event_name, local_vars)
         if payload is None:
-            print(f"[hermes-feishu-card] emit_from_hermes_locals_async: build_event returned None for {event_name}", file=sys.stderr)
             return False
         result = await _post_json_ordered_response(
             config.event_url,
             payload,
             _timeout_for_event(config, event_name),
         )
-        return _event_was_delivered(result, event_name)
-    except Exception as exc:
-        print(f"[hermes-feishu-card] emit_from_hermes_locals_async: exception for {event_name}: {exc}", file=sys.stderr)
+        applied = _event_was_delivered(result, event_name)
+        if event_name == "message.completed":
+            _register_native_media_text_suppression(payload, applied=applied)
+        return applied
+    except Exception:
         return False
 
 
@@ -525,22 +608,49 @@ def _event_was_delivered(result: Any, event_name: str) -> bool:
     return True
 
 
+def _register_native_media_text_suppression(
+    payload: dict[str, Any], *, applied: bool
+) -> None:
+    _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.set(None)
+    if not applied:
+        return
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return
+    if str(data.get("native_delivery") or "").strip().lower() != "required":
+        return
+    chat_id = str(payload.get("chat_id") or "").strip()
+    content = str(data.get("answer") or "").strip()
+    if not chat_id or not content:
+        return
+    _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.set(
+        _NativeMediaTextSuppression(chat_id=chat_id, content=content)
+    )
+
+
+def _should_suppress_matching_native_media_text(chat_id: Any, content: Any) -> bool:
+    pending = _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.get()
+    if pending is None:
+        return False
+    if str(chat_id or "").strip() != pending.chat_id:
+        return False
+    visible_content = _card_visible_answer(str(content or ""))
+    if visible_content != pending.content:
+        return False
+    _HFC_NATIVE_MEDIA_TEXT_SUPPRESSION.set(None)
+    return True
+
+
 def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
     try:
         config = load_runtime_config()
         if not config.enabled:
-            print("[hermes-feishu-card] emit_cron_delivery: disabled, skipping", file=sys.stderr)
             return False
         payload = build_cron_event(local_vars)
         if payload is None:
-            print("[hermes-feishu-card] emit_cron_delivery: build_cron_event returned None", file=sys.stderr)
             return False
-        result = _post_json_sync(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS)
-        if not result:
-            print("[hermes-feishu-card] emit_cron_delivery: _post_json_sync returned False (POST failed)", file=sys.stderr)
-        return result
-    except Exception as exc:
-        print(f"[hermes-feishu-card] emit_cron_delivery: exception: {exc}", file=sys.stderr)
+        return _post_json_sync(config.event_url, payload, TERMINAL_TIMEOUT_SECONDS)
+    except Exception:
         return False
 
 
@@ -590,13 +700,120 @@ def handle_hfc_command_from_hermes_locals(local_vars: dict[str, Any]) -> bool:
             ),
             "profile_id": profile_id,
             "profile_source": profile_source,
+            "chat_type": _command_chat_type(
+                local_vars, source_obj, gateway_event_obj
+            ),
+            "operator": _command_operator(
+                local_vars, source_obj, gateway_event_obj
+            ),
             "created_at": _created_at(local_vars.get("created_at")),
             "platform": "feishu",
         }
+        if command == "doctor":
+            root_secret = read_transport_root_secret()
+            if root_secret is None:
+                return False
+            payload["adapter_command_proof"] = sign_command_transport_proof(
+                root_secret,
+                payload,
+                timestamp=int(time.time()),
+                nonce=secrets.token_urlsafe(18),
+            )
         url = f"{_summary_base_url(config.event_url)}/commands"
-        return _post_json_sync(url, payload, config.timeout_seconds)
+        if command != "doctor":
+            return _post_json_sync(url, payload, config.timeout_seconds)
+        result = _post_json_sync_response(url, payload, config.timeout_seconds)
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return False
+        operation_id = str(result.get("operation_id") or "").strip()
+        if not operation_id:
+            return False
+        _remember_operation_transport(
+            operation_id,
+            derive_operation_transport_secret(root_secret, operation_id),
+            profile_id,
+        )
+        return True
     except Exception:
         return False
+
+
+def _remember_operation_transport(
+    operation_id: str,
+    secret: str | bytes,
+    profile_id: str | None = None,
+    transport_lineage_id: str = "",
+) -> None:
+    operation_id = str(operation_id or "").strip()
+    secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else secret
+    if not operation_id or not isinstance(secret_bytes, bytes) or len(secret_bytes) < 16:
+        return
+    now = time.time()
+    with _OPERATION_TRANSPORT_SECRETS_LOCK:
+        _prune_operation_transport_secrets_locked(now)
+        existing = _OPERATION_TRANSPORT_SECRETS.get(operation_id)
+        trusted_profile_id = (
+            str(profile_id).strip()
+            if isinstance(profile_id, str) and profile_id.strip()
+            else existing[1] if existing is not None else "default"
+        )
+        context = (
+            secret_bytes,
+            trusted_profile_id,
+            now + _OPERATION_TRANSPORT_SECRET_TTL_SECONDS,
+        )
+        _OPERATION_TRANSPORT_SECRETS[operation_id] = context
+        lineage_id = str(transport_lineage_id or "").strip()
+        if lineage_id:
+            _OPERATION_TRANSPORT_SECRETS[lineage_id] = context
+        while len(_OPERATION_TRANSPORT_SECRETS) > _OPERATION_TRANSPORT_SECRET_LIMIT:
+            _OPERATION_TRANSPORT_SECRETS.pop(
+                next(iter(_OPERATION_TRANSPORT_SECRETS))
+            )
+
+
+def _operation_transport_context(operation_id: str) -> tuple[bytes, str] | None:
+    now = time.time()
+    with _OPERATION_TRANSPORT_SECRETS_LOCK:
+        _prune_operation_transport_secrets_locked(now)
+        item = _OPERATION_TRANSPORT_SECRETS.get(operation_id)
+        return (item[0], item[1]) if item is not None else None
+
+
+def _transport_secret_for_token(token: str) -> bytes | None:
+    operation_id = _operation_id_from_token(token)
+    context = _operation_transport_context(operation_id) if operation_id else None
+    return context[0] if context is not None else None
+
+
+def _operation_id_from_token(token: str) -> str:
+    try:
+        if not isinstance(token, str) or not token or len(token) > 2048:
+            return ""
+        encoded, _signature = token.rsplit(".", 1)
+        padding = "=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(
+            encoded + padding,
+            altchars=b"-_",
+            validate=True,
+        )
+        if len(decoded) > 1024:
+            return ""
+        payload = json.loads(decoded.decode("utf-8"))
+        if not isinstance(payload, dict):
+            return ""
+        operation_id = payload.get("operation_id")
+        return str(operation_id).strip() if isinstance(operation_id, str) else ""
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+
+
+def _prune_operation_transport_secrets_locked(now: float) -> None:
+    for operation_id, (_secret, _profile_id, expires_at) in list(
+        _OPERATION_TRANSPORT_SECRETS.items()
+    ):
+        if expires_at <= now:
+            _OPERATION_TRANSPORT_SECRETS.pop(operation_id, None)
 
 
 def _command_text(local_vars: dict[str, Any]) -> str:
@@ -610,6 +827,43 @@ def _command_text(local_vars: dict[str, Any]) -> str:
     gateway_event_obj = local_vars.get("event")
     text = _first_attr_raw_string(gateway_event_obj, ("text", "content"))
     return text or ""
+
+
+def _command_chat_type(
+    local_vars: dict[str, Any], source_obj: Any, gateway_event_obj: Any
+) -> str:
+    message_obj = local_vars.get("message")
+    return (
+        _first_string(local_vars, ("chat_type",))
+        or _first_attr_string(message_obj, ("chat_type",))
+        or _first_attr_string(source_obj, ("chat_type",))
+        or _first_attr_string(gateway_event_obj, ("chat_type",))
+        or ""
+    )
+
+
+def _command_operator(
+    local_vars: dict[str, Any], source_obj: Any, gateway_event_obj: Any
+) -> str:
+    aliases = ("operator_open_id", "sender_open_id", "open_id")
+    direct = _first_string(local_vars, aliases)
+    if direct:
+        return direct
+    message_obj = local_vars.get("message")
+    for candidate in (
+        local_vars.get("operator"),
+        local_vars.get("sender_id"),
+        getattr(message_obj, "operator", None),
+        getattr(message_obj, "sender_id", None),
+        getattr(source_obj, "operator", None),
+        getattr(source_obj, "sender_id", None),
+        getattr(gateway_event_obj, "operator", None),
+        getattr(gateway_event_obj, "sender_id", None),
+    ):
+        value = _first_attr_string(candidate, ("open_id",))
+        if value:
+            return value
+    return ""
 
 
 def _parse_hfc_command(text: str) -> str | None:
@@ -1092,6 +1346,465 @@ def _model_picker_options(
     return options
 
 
+def _model_picker_provider_tree(providers: Any) -> list[dict[str, Any]]:
+    """Return the public provider/model tree already selected by Hermes."""
+    if not isinstance(providers, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen_providers: set[str] = set()
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        provider_slug = str(
+            provider.get("slug") or provider.get("provider") or ""
+        ).strip()
+        provider_key = provider_slug.casefold()
+        models = provider.get("models")
+        if not provider_slug or provider_key in seen_providers or not isinstance(models, list):
+            continue
+        model_ids: list[str] = []
+        seen_models: set[str] = set()
+        for model in models:
+            model_id = str(model or "").strip()
+            if not model_id or model_id in seen_models:
+                continue
+            seen_models.add(model_id)
+            model_ids.append(model_id)
+        if not model_ids:
+            continue
+        try:
+            total_models = int(provider.get("total_models", len(model_ids)))
+        except (TypeError, ValueError):
+            total_models = len(model_ids)
+        total_models = max(len(model_ids), total_models)
+        seen_providers.add(provider_key)
+        normalized.append(
+            {
+                "slug": provider_slug,
+                "name": str(provider.get("name") or provider_slug).strip()
+                or provider_slug,
+                "models": model_ids,
+                "total_models": total_models,
+                "is_current": bool(provider.get("is_current")),
+            }
+        )
+    return normalized
+
+
+def _model_picker_provider_options(
+    providers: list[dict[str, Any]],
+    *,
+    current_provider: str,
+    max_options: int = 100,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    current = str(current_provider or "").strip().casefold()
+    for provider in providers:
+        provider_slug = str(provider.get("slug") or "").strip()
+        provider_name = str(provider.get("name") or provider_slug).strip()
+        models = provider.get("models")
+        if not provider_slug or not isinstance(models, list) or not models:
+            continue
+        try:
+            total_models = max(len(models), int(provider.get("total_models", len(models))))
+        except (TypeError, ValueError):
+            total_models = len(models)
+        label = f"{provider_name} ({total_models} 个模型)"
+        if bool(provider.get("is_current")) or provider_slug.casefold() == current:
+            label = f"当前 · {label}"
+        options.append({"label": label[:80], "value": provider_slug})
+        if len(options) >= max_options:
+            break
+    return options
+
+
+def _model_picker_model_options(
+    provider: dict[str, Any],
+    *,
+    current_model: str,
+    max_options: int = 100,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    provider_slug = str(provider.get("slug") or "").strip()
+    models = provider.get("models")
+    if not provider_slug or not isinstance(models, list):
+        return options
+    current = str(current_model or "").strip()
+    for model in models:
+        model_id = str(model or "").strip()
+        if not model_id:
+            continue
+        label = f"当前 · {model_id}" if model_id == current else model_id
+        options.append(
+            {
+                "label": label[:80],
+                "value": json.dumps(
+                    {"provider": provider_slug, "model": model_id},
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        if len(options) >= max_options:
+            break
+    return options
+
+
+def _model_picker_provider(
+    providers: list[dict[str, Any]], provider_slug: str
+) -> dict[str, Any] | None:
+    selected = str(provider_slug or "").strip().casefold()
+    for provider in providers:
+        if str(provider.get("slug") or "").strip().casefold() == selected:
+            return provider
+    return None
+
+
+def _model_picker_current_provider_slug(
+    providers: list[dict[str, Any]], current_provider: str
+) -> str:
+    for provider in providers:
+        if bool(provider.get("is_current")):
+            return str(provider.get("slug") or "").strip()
+    current = str(current_provider or "").strip().casefold()
+    for provider in providers:
+        provider_slug = str(provider.get("slug") or "").strip()
+        if provider_slug.casefold() == current:
+            return provider_slug
+    return ""
+
+
+def _hfc_native_model_picker_card(
+    *,
+    picker_id: str,
+    providers: list[dict[str, Any]],
+    current_provider: str,
+    current_model: str,
+    selected_provider: str = "",
+) -> dict[str, Any]:
+    provider = _model_picker_provider(providers, selected_provider)
+    if provider is None:
+        current_provider_slug = _model_picker_current_provider_slug(
+            providers, current_provider
+        )
+        options = _model_picker_provider_options(
+            providers,
+            current_provider=current_provider,
+        )
+        description_parts = []
+        if current_model:
+            description_parts.append(f"当前模型：`{current_model}`")
+        if current_provider:
+            description_parts.append(f"当前 Provider：`{current_provider}`")
+        description_parts.append("先选择 Provider，再选择模型。")
+        elements: list[dict[str, Any]] = [
+            {"tag": "markdown", "content": "\n".join(description_parts)},
+            {
+                "tag": "action",
+                "actions": [
+                    _hfc_select_static(
+                        placeholder="选择 Provider",
+                        value={
+                            "hfc_action": "model_picker",
+                            "hfc_model_picker_id": picker_id,
+                            "hfc_model_picker_view": "providers",
+                        },
+                        options=options,
+                        initial_option=next(
+                            (
+                                option["value"]
+                                for option in options
+                                if option["value"].casefold()
+                                == current_provider_slug.casefold()
+                            ),
+                            "",
+                        ),
+                    )
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    _hfc_button(
+                        "取消",
+                        {
+                            "hfc_action": "model_picker",
+                            "hfc_model_picker_id": picker_id,
+                            "hfc_model_picker_nav": "cancel",
+                        },
+                    )
+                ],
+            },
+        ]
+        title = "选择模型"
+    else:
+        provider_slug = str(provider.get("slug") or "").strip()
+        provider_name = str(provider.get("name") or provider_slug).strip()
+        options = _model_picker_model_options(
+            provider,
+            current_model=current_model,
+        )
+        initial_option = ""
+        if provider_slug.casefold() == str(current_provider or "").strip().casefold():
+            initial_option = next(
+                (
+                    option["value"]
+                    for option in options
+                    if json.loads(option["value"]).get("model") == current_model
+                ),
+                "",
+            )
+        elements = [
+            {
+                "tag": "markdown",
+                "content": f"Provider：`{provider_name}`\n\n请选择模型。",
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    _hfc_select_static(
+                        placeholder="选择模型",
+                        value={
+                            "hfc_action": "model_picker",
+                            "hfc_model_picker_id": picker_id,
+                            "hfc_model_picker_view": "models",
+                        },
+                        options=options,
+                        initial_option=initial_option,
+                    )
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    _hfc_button(
+                        "返回",
+                        {
+                            "hfc_action": "model_picker",
+                            "hfc_model_picker_id": picker_id,
+                            "hfc_model_picker_nav": "back",
+                        },
+                    ),
+                    _hfc_button(
+                        "取消",
+                        {
+                            "hfc_action": "model_picker",
+                            "hfc_model_picker_id": picker_id,
+                            "hfc_model_picker_nav": "cancel",
+                        },
+                    ),
+                ],
+            },
+        ]
+        title = f"选择模型 · {provider_name}"
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": "blue",
+        },
+        "elements": elements,
+    }
+
+
+def _resume_picker_options(
+    sessions: Any,
+    *,
+    current_session_id: str = "",
+    max_options: int = 10,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    if not isinstance(sessions, list):
+        return options
+    current = str(current_session_id or "").strip()
+    for row in sessions:
+        if not isinstance(row, dict):
+            continue
+        session_id = str(row.get("id") or "").strip()
+        title = str(row.get("title") or "").strip()
+        if not session_id or not title:
+            continue
+        preview = str(row.get("preview") or "").strip()[:40]
+        prefix = "当前 · " if session_id == current else ""
+        suffix = f" — {preview}" if preview else ""
+        label = f"{prefix}{title}{suffix}"[:80]
+        options.append({"label": label, "value": session_id})
+        if len(options) >= max_options:
+            break
+    return options
+
+
+def _hfc_resume_source_name(source: Any) -> str | None:
+    platform = getattr(source, "platform", None)
+    value = str(getattr(platform, "value", platform) or "").strip().lower()
+    return value or None
+
+
+def _hfc_resume_row_matches_session_key(runner: Any, source: Any, row: dict[str, Any]) -> bool:
+    """Accept Hermes rows that prove the exact current routing scope."""
+    row_key = str(row.get("session_key") or "").strip()
+    get_key = getattr(runner, "_session_key_for_source", None)
+    if not row_key or not callable(get_key):
+        return False
+    try:
+        source_key = str(get_key(source) or "").strip()
+    except Exception:
+        return False
+    return bool(source_key) and row_key == source_key
+
+
+def _hfc_resume_metadata(runner: Any, event: Any, source: Any) -> dict[str, Any]:
+    reply_anchor = _hfc_command_event_message_id(event)
+    get_reply_anchor = getattr(runner, "_reply_anchor_for_event", None)
+    if callable(get_reply_anchor):
+        try:
+            reply_anchor = str(get_reply_anchor(event) or reply_anchor).strip()
+        except Exception:
+            pass
+    get_metadata = getattr(runner, "_thread_metadata_for_source", None)
+    if callable(get_metadata):
+        try:
+            metadata = get_metadata(source, reply_anchor)
+            if isinstance(metadata, dict):
+                metadata = dict(metadata)
+                if reply_anchor:
+                    metadata.setdefault("reply_to_message_id", reply_anchor)
+                return metadata
+        except Exception:
+            pass
+    metadata: dict[str, Any] = {}
+    if reply_anchor:
+        metadata["reply_to_message_id"] = reply_anchor
+    thread_id = str(getattr(source, "thread_id", "") or "").strip()
+    if thread_id:
+        metadata["thread_id"] = thread_id
+    return metadata
+
+
+def _hfc_resume_operator_open_id(event: Any) -> str:
+    source = getattr(event, "source", None)
+    raw = getattr(event, "raw_message", None)
+    raw_event = getattr(raw, "event", None)
+    candidates = [
+        getattr(event, "sender_id", None),
+        getattr(source, "sender_id", None),
+        getattr(raw, "sender_id", None),
+        getattr(getattr(raw, "sender", None), "sender_id", None),
+        getattr(getattr(raw_event, "sender", None), "sender_id", None),
+    ]
+    for candidate in candidates:
+        open_id = str(getattr(candidate, "open_id", "") or "").strip()
+        if open_id:
+            return open_id
+    source_user_id = str(getattr(source, "user_id", "") or "").strip()
+    return source_user_id if source_user_id.startswith("ou_") else ""
+
+
+async def _hfc_try_resume_picker(
+    runner: Any,
+    event: Any,
+    original_handler: Any,
+) -> bool:
+    try:
+        source = getattr(event, "source", None)
+        if source is None or _platform_name({}, source) != "feishu":
+            return False
+        chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+        if chat_type not in {"", "dm", "p2p", "private"}:
+            if not _hfc_resume_operator_open_id(event):
+                return False
+        session_db = getattr(runner, "_session_db", None)
+        list_sessions = getattr(session_db, "list_sessions_rich", None)
+        if not callable(list_sessions):
+            return False
+        rows = await list_sessions(source=_hfc_resume_source_name(source), limit=10)
+        if not isinstance(rows, list):
+            return False
+        visible: list[dict[str, Any]] = []
+        row_visible = getattr(runner, "_resume_row_visible", None)
+        if not callable(row_visible):
+            return False
+        for row in rows:
+            if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+                continue
+            if await row_visible(source, row, False) or _hfc_resume_row_matches_session_key(
+                runner, source, row
+            ):
+                visible.append(row)
+            if len(visible) >= 10:
+                break
+        if not visible:
+            return False
+
+        adapter = None
+        adapters = getattr(runner, "adapters", None)
+        if isinstance(adapters, dict):
+            for key, candidate in adapters.items():
+                if _is_feishu_adapter_key(key, candidate):
+                    adapter = candidate
+                    break
+        if adapter is None or not getattr(adapter, "_client", None):
+            return False
+        send_picker = getattr(adapter, "send_resume_picker", None)
+        if not callable(send_picker):
+            return False
+
+        current_session_id = ""
+        session_store = getattr(runner, "session_store", None)
+        get_current = getattr(session_store, "get_or_create_session", None)
+        if callable(get_current):
+            try:
+                current = get_current(source)
+                current_session_id = str(getattr(current, "session_id", "") or "")
+            except Exception:
+                pass
+        result = await send_picker(
+            chat_id=str(getattr(source, "chat_id", "") or ""),
+            sessions=visible,
+            current_session_id=current_session_id,
+            runner=runner,
+            event=event,
+            original_handler=original_handler,
+            metadata=_hfc_resume_metadata(runner, event, source),
+        )
+        return bool(getattr(result, "success", False))
+    except Exception as exc:
+        _hfc_warn(f"resume picker failed open: {exc.__class__.__name__}: {exc}")
+        return False
+
+
+async def _hfc_handle_resume_command_with_picker(runner: Any, event: Any) -> Any:
+    original = getattr(type(runner), "_hfc_original_handle_resume_command", None)
+    if not callable(original):
+        return None
+    try:
+        get_args = getattr(event, "get_command_args", None)
+        raw_args = str(get_args() or "").strip() if callable(get_args) else ""
+    except Exception:
+        raw_args = ""
+    if raw_args:
+        return await original(runner, event)
+    if await _hfc_try_resume_picker(runner, event, original):
+        return None
+    return await original(runner, event)
+
+
+def _hfc_install_resume_picker_handler(runner_type: type[Any]) -> bool:
+    current = runner_type.__dict__.get("_handle_resume_command")
+    if current is _hfc_handle_resume_command_with_picker:
+        setattr(runner_type, "_hfc_resume_picker_wrapped", True)
+        return True
+    if getattr(runner_type, "_hfc_resume_picker_wrapped", False):
+        return callable(getattr(runner_type, "_handle_resume_command", None))
+    original = current or getattr(runner_type, "_handle_resume_command", None)
+    if not callable(original):
+        return False
+    setattr(runner_type, "_hfc_original_handle_resume_command", original)
+    setattr(runner_type, "_handle_resume_command", _hfc_handle_resume_command_with_picker)
+    setattr(runner_type, "_hfc_resume_picker_wrapped", True)
+    return True
+
+
 def _parse_model_picker_choice(choice: str) -> tuple[str, str] | None:
     try:
         data = json.loads(choice)
@@ -1134,6 +1847,28 @@ def _hfc_feishu_response_types(adapter: Any) -> tuple[Any, Any]:
 def _hfc_empty_feishu_callback_response(adapter: Any) -> Any:
     response_type, _ = _hfc_feishu_response_types(adapter)
     return response_type() if response_type is not None else None
+
+
+def _hfc_toast_feishu_callback_response(
+    adapter: Any, content: str, *, toast_type: str = "warning"
+) -> Any:
+    response_type, _ = _hfc_feishu_response_types(adapter)
+    if response_type is None:
+        return None
+    response = response_type()
+    module = sys.modules.get(type(adapter).__module__)
+    callback_toast_type = getattr(module, "CallBackToast", None) if module else None
+    if callback_toast_type is None:
+        response_types = getattr(response_type, "_types", {})
+        if isinstance(response_types, dict):
+            callback_toast_type = response_types.get("toast")
+    if callback_toast_type is None:
+        return response
+    toast = callback_toast_type()
+    toast.type = toast_type
+    toast.content = content
+    response.toast = toast
+    return response
 
 
 def _hfc_raw_feishu_callback_response(adapter: Any, card_data: dict[str, Any]) -> Any:
@@ -1645,6 +2380,8 @@ async def _hfc_send_with_native_command_result_card(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     original = getattr(type(self), "_hfc_original_send", None)
+    if _should_suppress_matching_native_media_text(chat_id, content):
+        return _send_result(True, message_id="media_text_suppressed")
     context = _hfc_take_feishu_command_result_context(chat_id=chat_id, content=content)
     if context is not None:
         result = await _hfc_send_native_command_result_card(
@@ -1948,50 +2685,18 @@ async def _hfc_send_native_model_picker(
             metadata=metadata,
         )
 
-    options = _model_picker_options(providers, current_model=current_model, max_options=100)
-    if not options:
+    provider_tree = _model_picker_provider_tree(providers)
+    if not provider_tree:
         return _send_result(False, error="no model options")
-    all_options_count = len(_model_picker_options(providers, current_model=current_model, max_options=1000))
     picker_id = "model_" + sha256(
         f"{chat_id}:{session_key}:{time.time()}".encode("utf-8")
     ).hexdigest()[:16]
-    description_parts = []
-    if current_model:
-        description_parts.append(f"当前模型：`{current_model}`")
-    if current_provider:
-        description_parts.append(f"当前 provider：`{current_provider}`")
-    if all_options_count > len(options):
-        description_parts.append(f"展示前 {len(options)} 个可选模型，可继续用 `/model <模型名>` 精确切换。")
-    initial_option = ""
-    for option in options:
-        if option.get("style") == "primary":
-            initial_option = str(option.get("value") or "")
-            break
-
-    card = {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"content": "选择模型", "tag": "plain_text"},
-            "template": "blue",
-        },
-        "elements": [
-            {"tag": "markdown", "content": "\n".join(description_parts) or "请选择模型。"},
-            {
-                "tag": "action",
-                "actions": [
-                    _hfc_select_static(
-                        placeholder="选择模型",
-                        value={
-                            "hfc_action": "model_picker",
-                            "hfc_model_picker_id": picker_id,
-                        },
-                        options=options,
-                        initial_option=initial_option,
-                    )
-                ],
-            },
-        ],
-    }
+    card = _hfc_native_model_picker_card(
+        picker_id=picker_id,
+        providers=provider_tree,
+        current_provider=current_provider,
+        current_model=current_model,
+    )
     try:
         response = await self._feishu_send_with_retry(
             chat_id=chat_id,
@@ -2016,7 +2721,114 @@ async def _hfc_send_native_model_picker(
         "session_key": str(session_key or ""),
         "message_id": message_id,
         "on_model_selected": on_model_selected,
+        "providers": provider_tree,
+        "current_provider": str(current_provider or ""),
+        "current_model": str(current_model or ""),
+        "selected_provider": "",
     }
+    return _send_result(True, message_id=message_id)
+
+
+async def _hfc_send_native_resume_picker(
+    self: Any,
+    *,
+    chat_id: str,
+    sessions: Any,
+    current_session_id: str = "",
+    runner: Any,
+    event: Any,
+    original_handler: Any,
+    metadata: dict[str, Any] | None = None,
+):
+    if not getattr(self, "_client", None) or not hasattr(
+        self, "_feishu_send_with_retry"
+    ):
+        return _send_result(False, error="native resume picker unavailable")
+    options = _resume_picker_options(
+        sessions,
+        current_session_id=current_session_id,
+        max_options=10,
+    )
+    if not options:
+        return _send_result(False, error="no resume options")
+    picker_id = "resume_" + sha256(
+        f"{chat_id}:{time.time()}:{secrets.token_hex(8)}".encode("utf-8")
+    ).hexdigest()[:16]
+    initial_option = next(
+        (
+            option["value"]
+            for option in options
+            if option["value"] == str(current_session_id or "")
+        ),
+        "",
+    )
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"content": "恢复会话", "tag": "plain_text"},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": "选择一个最近的命名会话。",
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    _hfc_select_static(
+                        placeholder="选择会话",
+                        value={
+                            "hfc_action": "resume_picker",
+                            "hfc_resume_picker_id": picker_id,
+                        },
+                        options=options,
+                        initial_option=initial_option,
+                    )
+                ],
+            },
+        ],
+    }
+    try:
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=json.dumps(card, ensure_ascii=False),
+            reply_to=_metadata_reply_to(metadata) or None,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        return _send_result(False, error=str(exc))
+    success, message_id = _hfc_feishu_send_success(response)
+    if not success:
+        return _send_result(
+            False,
+            error=(
+                "send_resume_picker failed: "
+                f"code={getattr(response, 'code', 'unknown')} "
+                f"msg={str(getattr(response, 'msg', '') or '')}"
+            ),
+        )
+
+    source = getattr(event, "source", None)
+    state = getattr(self, "_hfc_resume_picker_state", None)
+    if not isinstance(state, dict):
+        state = {}
+        setattr(self, "_hfc_resume_picker_state", state)
+    state[picker_id] = {
+        "allowed_session_ids": {option["value"] for option in options},
+        "chat_id": str(chat_id or ""),
+        "chat_type": str(getattr(source, "chat_type", "") or "").lower(),
+        "operator_open_id": _hfc_resume_operator_open_id(event),
+        "message_id": message_id,
+        "runner": runner,
+        "event": event,
+        "original_handler": original_handler,
+        "expires_at": time.time() + 300,
+    }
+    _hfc_info(
+        f"send_resume_picker stored picker_id={picker_id!r} message_id={message_id!r}"
+    )
     return _send_result(True, message_id=message_id)
 
 
@@ -2042,6 +2854,9 @@ def _hfc_action_value_from_data(data: Any) -> dict[str, Any]:
             "hfc_confirm_id",
             "hfc_choice",
             "hfc_model_picker_id",
+            "hfc_model_picker_view",
+            "hfc_model_picker_nav",
+            "hfc_resume_picker_id",
         ):
             if key not in value and form_value.get(key):
                 value[key] = form_value.get(key)
@@ -2050,6 +2865,24 @@ def _hfc_action_value_from_data(data: Any) -> dict[str, Any]:
     if option and "hfc_choice" not in value:
         value["hfc_choice"] = option
     return value
+
+
+def _hfc_action_metadata(data: Any) -> dict[str, Any] | None:
+    """Best-effort extraction of message metadata from a card-action event.
+
+    Used when sending a follow-up card so Feishu threading/metadata stays
+    consistent. Returns None if not available (callers must accept None).
+    """
+    event = getattr(data, "event", None)
+    if event is None:
+        return None
+    meta = getattr(event, "message", None)
+    if isinstance(meta, dict):
+        return meta.get("metadata")
+    meta = getattr(event, "metadata", None)
+    if isinstance(meta, dict):
+        return meta
+    return None
 
 
 def _hfc_action_chat_id(data: Any) -> str:
@@ -2169,23 +3002,211 @@ def _hfc_prepare_native_model_action(
         "chat_id": chat_id,
         "expected_chat_id": expected_chat_id,
         "choice": str(action_value.get("hfc_choice") or ""),
+        "view": str(action_value.get("hfc_model_picker_view") or "").strip(),
+        "navigation": str(action_value.get("hfc_model_picker_nav") or "").strip(),
+    }
+
+
+def _hfc_prepare_native_resume_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> dict[str, Any] | None:
+    loop = getattr(adapter, "_loop", None)
+    loop_accepts = getattr(adapter, "_loop_accepts_callbacks", None)
+    if callable(loop_accepts) and not loop_accepts(loop):
+        return None
+    if loop is None:
+        return None
+    picker_id = str(action_value.get("hfc_resume_picker_id") or "")
+    state = getattr(adapter, "_hfc_resume_picker_state", {})
+    if not picker_id or not isinstance(state, dict):
+        return None
+    item = state.get(picker_id)
+    if not isinstance(item, dict):
+        return None
+    if float(item.get("expires_at") or 0) <= time.time():
+        state.pop(picker_id, None)
+        return None
+    chat_id = _hfc_action_chat_id(data)
+    expected_chat_id = str(item.get("chat_id") or "")
+    if expected_chat_id and chat_id and expected_chat_id != chat_id:
+        return None
+    if not _hfc_card_operator_allowed(adapter, data, expected_chat_id or chat_id):
+        return None
+    chat_type = str(item.get("chat_type") or "").strip().lower()
+    initiating_operator = str(item.get("operator_open_id") or "").strip()
+    action_operator = _hfc_action_open_id(data)
+    if chat_type not in {"", "dm", "p2p", "private"}:
+        if not initiating_operator or action_operator != initiating_operator:
+            return None
+    choice = str(action_value.get("hfc_choice") or "").strip()
+    allowed = item.get("allowed_session_ids")
+    if not choice or not isinstance(allowed, (set, frozenset, list, tuple)):
+        return None
+    if choice not in {str(value) for value in allowed}:
+        return None
+    state.pop(picker_id, None)
+    return {
+        "loop": loop,
+        "picker_id": picker_id,
+        "item": item,
+        "choice": choice,
+        "chat_id": chat_id,
+        "expected_chat_id": expected_chat_id,
     }
 
 
 def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
     action_value = _hfc_action_value_from_data(data)
     action = str(action_value.get("hfc_action") or "").strip()
+
+    # FIX-1: dedupe duplicate card-action deliveries (Feishu retries on
+    # callback timeout). A repeated delivery after the first resolve finds the
+    # picker/confirm state already popped and would otherwise return an empty
+    # ack -> Feishu shows "callback error". Reply success immediately so a
+    # retried click never triggers a false callback error.
+    if action in (
+        "slash_confirm",
+        "model_picker",
+        "resume_picker",
+        "interaction.select",
+    ):
+        if _hfc_is_duplicate_card_action(self, data):
+            return _hfc_empty_feishu_callback_response(self)
+
     if action == "slash_confirm":
         return _hfc_handle_native_slash_action(self, data, action_value)
     if action == "model_picker":
         return _hfc_handle_native_model_action(self, data, action_value)
+    if action == "resume_picker":
+        return _hfc_handle_native_resume_action(self, data, action_value)
     if action == "interaction.select":
         return _hfc_handle_interaction_select_action(self, data, action_value)
+    if action == "operations.select":
+        return _hfc_handle_operations_select_action(self, data, action_value)
 
     original = getattr(type(self), "_hfc_original_on_card_action_trigger", None)
     if callable(original):
         return original(self, data)
     return _hfc_empty_feishu_callback_response(self)
+
+
+def _hfc_handle_operations_select_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> Any:
+    _hfc_info("inline card action received: operations.select")
+    operation_action = str(action_value.get("operation_action") or "").strip()
+    token = str(action_value.get("token") or "").strip()
+    transport_lineage_id = str(action_value.get("transport_lineage_id") or "").strip()
+    profile_scope = str(action_value.get("profile_scope") or "").strip()
+    chat_id = _hfc_action_chat_id(data)
+    if not operation_action or not token or not chat_id:
+        _hfc_info("operations.select ignored: missing action/token/chat")
+        return _hfc_empty_feishu_callback_response(adapter)
+    if not _hfc_card_operator_allowed(adapter, data, chat_id):
+        _hfc_info("operations.select rejected by Hermes admission")
+        return _hfc_empty_feishu_callback_response(adapter)
+
+    open_id = _hfc_action_open_id(data)
+    operation_id = _operation_id_from_token(token)
+    transport_context = _operation_transport_context(transport_lineage_id or operation_id)
+    if transport_context is None:
+        _hfc_info("operations.select rejected: authentication session expired")
+        return _hfc_empty_feishu_callback_response(adapter)
+    transport_secret, profile_id = transport_context
+    timestamp = int(time.time())
+    forwarded_value = {
+        "hfc_action": "operations.select",
+        "operation_action": operation_action,
+        "token": token,
+    }
+    if profile_scope:
+        forwarded_value["profile_scope"] = profile_scope
+    if transport_lineage_id:
+        forwarded_value["transport_lineage_id"] = transport_lineage_id
+    sidecar_payload = {
+        "adapter_transport_proof": {
+            "timestamp": timestamp,
+            "signature": sign_transport_proof(
+                transport_secret,
+                token=token,
+                action=operation_action,
+                callback_chat_id=chat_id,
+                callback_profile_id=profile_id,
+                callback_profile_scope=profile_scope,
+                operator_open_id=open_id,
+                timestamp=timestamp,
+            ),
+        },
+        "event": {
+            "action": {"value": forwarded_value},
+            "context": {
+                "open_chat_id": chat_id,
+                "profile_id": profile_id,
+            },
+            "operator": {"open_id": open_id},
+        }
+    }
+    try:
+        config = load_runtime_config()
+        url = f"{_summary_base_url(config.event_url)}/card/actions"
+    except Exception as exc:
+        _hfc_warn(
+            "operations.select background forward setup failed: "
+            f"{exc.__class__.__name__}"
+        )
+        return _hfc_toast_feishu_callback_response(
+            adapter, "操作暂不可用，请稍后重试"
+        )
+
+    def forward() -> None:
+        last_error: Exception | None = None
+        for attempt in range(OPERATIONS_ACTION_FORWARD_ATTEMPTS):
+            try:
+                result = _post_json_sync_response(
+                    url,
+                    sidecar_payload,
+                    OPERATIONS_ACTION_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < OPERATIONS_ACTION_FORWARD_ATTEMPTS:
+                    time.sleep(OPERATIONS_ACTION_RETRY_DELAY_SECONDS)
+                    continue
+                break
+            if isinstance(result, dict):
+                successor_id = str(result.get("operation_id") or "").strip()
+                if successor_id:
+                    _remember_operation_transport(
+                        successor_id,
+                        transport_secret,
+                        profile_id,
+                        transport_lineage_id or operation_id,
+                    )
+            return
+        if last_error is not None:
+            _hfc_warn(
+                "operations.select background forward failed: "
+                f"{last_error.__class__.__name__}"
+            )
+
+    try:
+        accepted = _OPERATIONS_ACTION_DISPATCHER.submit(forward)
+    except Exception as exc:
+        _hfc_warn(
+            "operations.select background dispatch failed: "
+            f"{exc.__class__.__name__}"
+        )
+        accepted = False
+    if not accepted:
+        _hfc_warn("operations.select background dispatch unavailable: capacity")
+        return _hfc_toast_feishu_callback_response(
+            adapter, "操作繁忙，请稍后重试"
+        )
+    return _hfc_empty_feishu_callback_response(adapter)
 
 
 def _hfc_handle_interaction_select_action(
@@ -2381,6 +3402,51 @@ def _hfc_handle_native_slash_action(
     return _hfc_raw_feishu_callback_response(adapter, card)
 
 
+def _hfc_model_picker_choice_allowed(
+    item: dict[str, Any], provider_slug: str, model_id: str
+) -> bool:
+    providers = item.get("providers")
+    if not isinstance(providers, list):
+        # Picker state created by older plugin code did not retain the tree.
+        return True
+    provider = _model_picker_provider(providers, provider_slug)
+    if provider is None:
+        return False
+    selected_provider = str(item.get("selected_provider") or "").strip()
+    if not selected_provider or selected_provider.casefold() != provider_slug.casefold():
+        return False
+    models = provider.get("models")
+    return isinstance(models, list) and model_id in {
+        str(model or "").strip() for model in models
+    }
+
+
+def _hfc_model_picker_card_from_state(
+    picker_id: str,
+    item: dict[str, Any],
+    *,
+    selected_provider: str = "",
+) -> dict[str, Any] | None:
+    providers = item.get("providers")
+    if not isinstance(providers, list) or not providers:
+        return None
+    return _hfc_native_model_picker_card(
+        picker_id=picker_id,
+        providers=providers,
+        current_provider=str(item.get("current_provider") or ""),
+        current_model=str(item.get("current_model") or ""),
+        selected_provider=selected_provider,
+    )
+
+
+def _hfc_invalid_model_picker_card() -> dict[str, Any]:
+    return _hfc_command_result_card(
+        title="模型选择无效",
+        content="请重新选择，或重新发送 `/model`。",
+        template="red",
+    )
+
+
 def _hfc_resolve_native_model_action(
     adapter: Any,
     data: Any,
@@ -2394,14 +3460,15 @@ def _hfc_resolve_native_model_action(
     selected = _parse_model_picker_choice(prepared["choice"])
     if selected is None:
         return (
-            _hfc_command_result_card(
-                title="模型选择无效",
-                content="请重新发送 `/model`。",
-                template="red",
-            ),
+            _hfc_invalid_model_picker_card(),
             str(item.get("message_id") or ""),
         )
     provider_slug, model_id = selected
+    if not _hfc_model_picker_choice_allowed(item, provider_slug, model_id):
+        return (
+            _hfc_invalid_model_picker_card(),
+            str(item.get("message_id") or ""),
+        )
     callback = item.get("on_model_selected")
     try:
         if callback is None:
@@ -2442,14 +3509,15 @@ async def _hfc_resolve_native_model_action_async(
     selected = _parse_model_picker_choice(prepared["choice"])
     if selected is None:
         return (
-            _hfc_command_result_card(
-                title="模型选择无效",
-                content="请重新发送 `/model`。",
-                template="red",
-            ),
+            _hfc_invalid_model_picker_card(),
             str(item.get("message_id") or ""),
         )
     provider_slug, model_id = selected
+    if not _hfc_model_picker_choice_allowed(item, provider_slug, model_id):
+        return (
+            _hfc_invalid_model_picker_card(),
+            str(item.get("message_id") or ""),
+        )
     callback = item.get("on_model_selected")
     try:
         if callback is None:
@@ -2473,22 +3541,287 @@ async def _hfc_resolve_native_model_action_async(
     )
 
 
+def _hfc_switch_model_background_task(adapter: Any, data: Any, action_value: dict[str, Any], message_id: str) -> None:
+    """Run the real model switch off the callback path.
+
+    The synchronous card-action callback must return within Feishu's callback
+    timeout (a few seconds). The actual switch_model call can be much slower
+    (provider slow / network jitter), so we resolve the click instantly with a
+    "switching" card and perform the switch in the background.
+
+    After the switch finishes, update the original card when Feishu permits it.
+    A single result card is sent only when the original message cannot be
+    updated.
+    """
+    async def _run() -> None:
+        resolved = await _hfc_resolve_native_model_action_async(adapter, data, action_value)
+        if resolved is None:
+            _hfc_info("background model_picker ignored: unresolved")
+            return
+        card, resolved_message_id = resolved
+        target_message_id = resolved_message_id or message_id
+        if target_message_id and await _hfc_update_native_command_card(
+            adapter, target_message_id, card
+        ):
+            _hfc_info("background model switch: original card updated")
+            return
+        chat_id = _hfc_action_chat_id(data)
+        if not chat_id:
+            _hfc_warn("background model switch: cannot determine chat_id for result card")
+            return
+        if not hasattr(adapter, "_feishu_send_with_retry"):
+            _hfc_warn("background model switch: adapter has no _feishu_send_with_retry")
+            return
+        metadata = _hfc_action_metadata(data)
+        try:
+            await adapter._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=message_id or None,
+                metadata=metadata,
+            )
+            _hfc_info("background model switch: result card sent")
+        except Exception as exc:
+            _hfc_warn(f"background model switch: direct send failed: {exc.__class__.__name__}: {exc}")
+            # Fallback: reuse the well-tested native command result card sender
+            # (it passes metadata correctly and handles reply threading).
+            try:
+                await _hfc_send_native_command_result_card(
+                    adapter,
+                    chat_id=chat_id,
+                    content=str(card.get("elements", [{}])[0].get("content", "") or ""),
+                    reply_to=message_id or None,
+                    metadata=metadata,
+                    context={"command": "model"},
+                )
+                _hfc_info("background model switch: result card sent (fallback)")
+            except Exception as exc2:
+                _hfc_warn(f"background model switch: fallback send failed: {exc2.__class__.__name__}: {exc2}")
+
+    loop = getattr(adapter, "_loop", None)
+    submit = getattr(adapter, "_submit_on_loop", None)
+    if loop is not None and callable(submit):
+        coroutine = _run()
+        submitted = False
+        try:
+            submitted = bool(submit(loop, coroutine))
+            if not submitted:
+                _hfc_warn("background model switch schedule failed")
+            return
+        except Exception as exc:
+            _hfc_warn(f"background model switch schedule failed: {exc.__class__.__name__}: {exc}")
+        finally:
+            if not submitted:
+                coroutine.close()
+
+
 def _hfc_handle_native_model_action(
     adapter: Any,
     data: Any,
     action_value: dict[str, Any],
 ) -> Any:
     _hfc_info("inline card action received: model_picker")
-    resolved = _hfc_resolve_native_model_action(adapter, data, action_value)
-    if resolved is None:
+    prepared = _hfc_prepare_native_model_action(adapter, data, action_value)
+    if prepared is None:
         _hfc_info("inline model_picker ignored: unresolved")
         return _hfc_empty_feishu_callback_response(adapter)
-    card, message_id = resolved
-    _hfc_info(f"inline model_picker resolved: message_id={message_id!r}")
-    return _hfc_raw_feishu_callback_response(
-        adapter,
-        card,
+
+    item = prepared["item"]
+    picker_id = prepared["picker_id"]
+    navigation = prepared["navigation"]
+    if navigation == "cancel":
+        prepared["state"].pop(picker_id, None)
+        card = _hfc_command_result_card(
+            title="模型选择已取消",
+            content="当前模型未更改。",
+            template="grey",
+        )
+        return _hfc_raw_feishu_callback_response(adapter, card)
+    if navigation == "back":
+        item["selected_provider"] = ""
+        card = _hfc_model_picker_card_from_state(picker_id, item)
+        if card is None:
+            card = _hfc_invalid_model_picker_card()
+        return _hfc_raw_feishu_callback_response(adapter, card)
+    if navigation:
+        return _hfc_raw_feishu_callback_response(
+            adapter, _hfc_invalid_model_picker_card()
+        )
+
+    if prepared["view"] == "providers":
+        providers = item.get("providers")
+        provider = (
+            _model_picker_provider(providers, prepared["choice"])
+            if isinstance(providers, list)
+            else None
+        )
+        if provider is None:
+            return _hfc_raw_feishu_callback_response(
+                adapter, _hfc_invalid_model_picker_card()
+            )
+        provider_slug = str(provider.get("slug") or "").strip()
+        item["selected_provider"] = provider_slug
+        card = _hfc_model_picker_card_from_state(
+            picker_id,
+            item,
+            selected_provider=provider_slug,
+        )
+        if card is None:
+            card = _hfc_invalid_model_picker_card()
+        return _hfc_raw_feishu_callback_response(adapter, card)
+
+    message_id = str(item.get("message_id") or "")
+    # Parse the model choice properly — prepared["choice"] is a raw JSON string
+    # like '{"provider":"zai","model":"glm-5.2"}', not a "provider/model" path.
+    parsed = _parse_model_picker_choice(prepared["choice"])
+    if parsed is None:
+        return _hfc_raw_feishu_callback_response(
+            adapter, _hfc_invalid_model_picker_card()
+        )
+    provider_slug, model_id = parsed
+    if not _hfc_model_picker_choice_allowed(item, provider_slug, model_id):
+        return _hfc_raw_feishu_callback_response(
+            adapter, _hfc_invalid_model_picker_card()
+        )
+
+    # FIX-3: acknowledge the click immediately with a "switching" card and run
+    # the real (potentially slow) switch off the callback path.
+    switching_card = _hfc_command_result_card(
+        title="模型切换中",
+        content=f"正在切换到 `{provider_slug}/{model_id}` …",
+        template="blue",
     )
+    _hfc_switch_model_background_task(adapter, data, action_value, message_id)
+    return _hfc_raw_feishu_callback_response(adapter, switching_card)
+
+
+def _hfc_resume_result_card(result: Any) -> dict[str, Any]:
+    content = str(result or "会话已恢复。").strip()
+    template = _hfc_command_result_template(content)
+    title = "会话已恢复" if template == "green" else "会话恢复失败"
+    return _hfc_command_result_card(
+        title=title,
+        content=content,
+        template=template,
+    )
+
+
+def _hfc_resume_picker_background_task(
+    adapter: Any,
+    data: Any,
+    prepared: dict[str, Any],
+) -> None:
+    async def _run() -> None:
+        item = prepared["item"]
+        runner = item.get("runner")
+        original_handler = item.get("original_handler")
+        original_event = item.get("event")
+        if runner is None or not callable(original_handler) or original_event is None:
+            card = _hfc_command_result_card(
+                title="会话选择已失效",
+                content="请重新发送 `/resume`。",
+                template="red",
+            )
+        else:
+            try:
+                resume_event = copy.copy(original_event)
+                resume_event.text = f"/resume {prepared['choice']}"
+                result = await original_handler(runner, resume_event)
+                card = _hfc_resume_result_card(result)
+            except Exception as exc:
+                card = _hfc_command_result_card(
+                    title="会话恢复失败",
+                    content=f"请重新发送 `/resume`。\n\n{exc.__class__.__name__}: {exc}",
+                    template="red",
+                )
+
+        message_id = str(item.get("message_id") or "")
+        if message_id and await _hfc_update_native_command_card(
+            adapter, message_id, card
+        ):
+            _hfc_info("background resume: original card updated")
+            return
+        chat_id = prepared["expected_chat_id"] or prepared["chat_id"]
+        if not chat_id or not hasattr(adapter, "_feishu_send_with_retry"):
+            _hfc_warn("background resume: result card cannot be delivered")
+            return
+        try:
+            await adapter._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=message_id or None,
+                metadata=_hfc_action_metadata(data),
+            )
+            _hfc_info("background resume: fallback result card sent")
+        except Exception as exc:
+            _hfc_warn(
+                "background resume: fallback send failed: "
+                f"{exc.__class__.__name__}: {exc}"
+            )
+
+    loop = prepared["loop"]
+    submit = getattr(adapter, "_submit_on_loop", None)
+    if not callable(submit):
+        _hfc_warn("background resume schedule failed: submit helper unavailable")
+        return
+    coroutine = _run()
+    submitted = False
+    try:
+        submitted = bool(submit(loop, coroutine))
+        if not submitted:
+            _hfc_warn("background resume schedule failed")
+    except Exception as exc:
+        _hfc_warn(
+            f"background resume schedule failed: {exc.__class__.__name__}: {exc}"
+        )
+    finally:
+        if not submitted:
+            coroutine.close()
+
+
+def _hfc_handle_native_resume_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> Any:
+    _hfc_info("inline card action received: resume_picker")
+    prepared = _hfc_prepare_native_resume_action(adapter, data, action_value)
+    if prepared is None:
+        return _hfc_raw_feishu_callback_response(
+            adapter,
+            _hfc_command_result_card(
+                title="会话选择已失效",
+                content="请由原发起者重新发送 `/resume`。",
+                template="red",
+            ),
+        )
+    switching_card = _hfc_command_result_card(
+        title="会话恢复中",
+        content="正在恢复所选会话…",
+        template="blue",
+    )
+    _hfc_resume_picker_background_task(adapter, data, prepared)
+    return _hfc_raw_feishu_callback_response(adapter, switching_card)
+
+
+def _hfc_build_patch_message_request(message_id: str, content: str) -> Any:
+    try:
+        from lark_oapi.api.im.v1 import (
+            PatchMessageRequest,
+            PatchMessageRequestBody,
+        )
+
+        request_body = PatchMessageRequestBody.builder().content(content).build()
+        return (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(request_body)
+            .build()
+        )
+    except Exception:
+        return None
 
 
 async def _hfc_update_native_command_card(adapter: Any, message_id: str, card: dict[str, Any]) -> bool:
@@ -2501,18 +3834,27 @@ async def _hfc_update_native_command_card(adapter: Any, message_id: str, card: d
         _hfc_warn("native command card update skipped: Feishu client unavailable")
         return False
     try:
-        body_builder = getattr(adapter, "_build_update_message_body", None)
-        request_builder = getattr(adapter, "_build_update_message_request", None)
         run_blocking = getattr(adapter, "_run_blocking", None)
-        if not (callable(body_builder) and callable(request_builder) and callable(run_blocking)):
-            _hfc_warn("native command card update skipped: Feishu update helpers unavailable")
+        if not callable(run_blocking):
+            _hfc_warn("native command card update skipped: Feishu run helper unavailable")
             return False
-        request_body = body_builder(
-            msg_type="interactive",
-            content=json.dumps(card, ensure_ascii=False),
-        )
-        request = request_builder(message_id, request_body)
-        update_call = client.im.v1.message.update
+        content = json.dumps(card, ensure_ascii=False)
+        message_api = client.im.v1.message
+        patch_call = getattr(message_api, "patch", None)
+        request = _hfc_build_patch_message_request(message_id, content)
+        if callable(patch_call) and request is not None:
+            update_call = patch_call
+        else:
+            body_builder = getattr(adapter, "_build_update_message_body", None)
+            request_builder = getattr(adapter, "_build_update_message_request", None)
+            if not (callable(body_builder) and callable(request_builder)):
+                _hfc_warn(
+                    "native command card update skipped: Feishu patch/update helpers unavailable"
+                )
+                return False
+            request_body = body_builder(msg_type="interactive", content=content)
+            request = request_builder(message_id, request_body)
+            update_call = message_api.update
         _hfc_info(f"native command card update attempting: message_id={message_id!r}")
         response = await run_blocking(update_call, request)
         success = _hfc_update_response_success(response)
@@ -2568,6 +3910,28 @@ async def _hfc_handle_feishu_card_action_event(self: Any, data: Any) -> None:
             )
         else:
             _hfc_info("background model_picker ignored: unresolved")
+        return
+    if action == "resume_picker":
+        if _hfc_is_duplicate_card_action(self, data):
+            return
+        prepared = _hfc_prepare_native_resume_action(self, data, action_value)
+        if prepared is not None:
+            _hfc_resume_picker_background_task(self, data, prepared)
+        else:
+            _hfc_info("background resume_picker ignored: unresolved")
+        return
+    if action == "interaction.select":
+        if _hfc_is_duplicate_card_action(self, data):
+            return
+        await asyncio.to_thread(
+            _hfc_handle_interaction_select_action,
+            self,
+            data,
+            action_value,
+        )
+        return
+    if action == "operations.select":
+        _hfc_info("background operations.select claimed by HFC")
         return
 
     original = getattr(type(self), "_hfc_original_handle_card_action_event", None)
@@ -2682,6 +4046,7 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             _HFC_FEISHU_NOTICE_CONTEXT.set(None)
             return False
         runner_type = type(runner)
+        _hfc_install_resume_picker_handler(runner_type)
         current_notice_delivery = runner_type.__dict__.get("_deliver_platform_notice")
         if current_notice_delivery is _hfc_deliver_platform_notice_with_card:
             setattr(runner_type, "_hfc_platform_notice_wrapped", True)
@@ -2733,6 +4098,20 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
                 setattr(adapter_type, "send_model_picker", _hfc_send_native_model_picker)
                 adapter_ready = True
             elif callable(existing_model_picker):
+                adapter_ready = True
+
+            existing_resume_picker = adapter_type.__dict__.get("send_resume_picker")
+            if (
+                existing_resume_picker is None
+                or getattr(existing_resume_picker, "__module__", "") == __name__
+            ):
+                setattr(
+                    adapter_type,
+                    "send_resume_picker",
+                    _hfc_send_native_resume_picker,
+                )
+                adapter_ready = True
+            elif callable(existing_resume_picker):
                 adapter_ready = True
 
             current_action_handler = adapter_type.__dict__.get("_on_card_action_trigger")
@@ -2875,30 +4254,14 @@ def should_suppress_native_response(
     native_delivery: Any = None,
 ) -> bool:
     if not delivered:
-        print(f"[hermes-feishu-card] should_suppress_native_response: NOT suppressing — delivered={delivered}", file=sys.stderr)
         return False
     if str(platform or "").lower() != "feishu":
-        print(f"[hermes-feishu-card] should_suppress_native_response: NOT suppressing — platform={platform}", file=sys.stderr)
         return False
     if str(native_delivery or "").strip().lower() == "required":
         return False
     if native_delivery is None and attachments:
-        if _has_media_attachments(attachments):
-            print(f"[hermes-feishu-card] should_suppress_native_response: NOT suppressing — has_media_attachments={attachments}", file=sys.stderr)
-            return False
-    print(f"[hermes-feishu-card] should_suppress_native_response: suppressing native response (delivered={delivered}, platform={platform})", file=sys.stderr)
-    return True
-
-
-def _has_media_attachments(attachments: Any) -> bool:
-    if not isinstance(attachments, list) or not attachments:
         return False
-    for attachment in attachments:
-        if not isinstance(attachment, dict):
-            continue
-        if attachment.get("is_media") is True:
-            return True
-    return False
+    return True
 
 
 def _post_json_sync(url: str, payload: dict[str, Any], timeout: float) -> bool:
@@ -3142,12 +4505,10 @@ def _build_event(
     event_name: str, local_vars: dict[str, Any], *, preview: bool
 ) -> dict[str, Any] | None:
     if event_name not in SUPPORTED_RUNTIME_EVENTS:
-        print(f"[hermes-feishu-card] _build_event: unsupported event={event_name}", file=sys.stderr)
         return None
     source_obj = local_vars.get("source")
     platform = _platform_name(local_vars, source_obj)
     if platform != "feishu":
-        print(f"[hermes-feishu-card] _build_event: platform={platform} != feishu for {event_name}", file=sys.stderr)
         return None
     gateway_event_obj = local_vars.get("event")
     chat_id = _first_string(local_vars, ("chat_id", "open_chat_id", "receive_id"))
@@ -3157,7 +4518,6 @@ def _build_event(
     if chat_id is None:
         chat_id = _first_attr_string(source_obj, ("chat_id", "open_chat_id", "receive_id"))
     if chat_id is None:
-        print(f"[hermes-feishu-card] _build_event: no chat_id for {event_name}", file=sys.stderr)
         return None
     thread_id = _thread_id_for_runtime_event(local_vars, message_obj, source_obj)
 
@@ -3195,7 +4555,6 @@ def _build_event(
                 fallback_key, created_at_lifecycle_token
             )
     if active_fallback_cache_key is _AMBIGUOUS_TERMINAL:
-        print(f"[hermes-feishu-card] _build_event: ambiguous terminal for {event_name} conv={conversation_id} chat={chat_id}", file=sys.stderr)
         return None
     active_fallback_message_id = (
         _ACTIVE_FALLBACK_MESSAGE_IDS.get(active_fallback_cache_key)
@@ -3205,7 +4564,6 @@ def _build_event(
     if active_fallback_message_id is not None:
         message_id = active_fallback_message_id
     elif is_terminal_event and message_id is None:
-        print(f"[hermes-feishu-card] _build_event: terminal {event_name} with no message_id", file=sys.stderr)
         return None
     elif message_id is None:
         message_id = _fallback_message_id(
@@ -3216,7 +4574,6 @@ def _build_event(
             preview=preview,
         )
         if message_id is None:
-            print(f"[hermes-feishu-card] _build_event: fallback_message_id returned None for {event_name}", file=sys.stderr)
             return None
     sequence = _peek_next_sequence(message_id) if preview else _next_sequence(message_id)
     event_data = _event_data(event_name, local_vars, source_obj, message_obj)
@@ -3273,9 +4630,9 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     # cause the platform check below to fail naturally.
     deliver_platform = _extract_real_platform(job.get("deliver"))
     platform = str(
-        _first_target_platform(resolved_targets)
+        deliver_platform
+        or _first_target_platform(resolved_targets)
         or origin.get("platform")
-        or deliver_platform
         or os.environ.get("HERMES_CRON_AUTO_DELIVER_PLATFORM")
         or "feishu"
     ).strip().lower()
@@ -3511,6 +4868,9 @@ def _event_data(
         "profile_id": profile_id,
         "profile_source": profile_source,
     }
+    display_status = normalize_display_status(local_vars.get("display_status"))
+    if display_status:
+        data["display_status"] = display_status
     reply_to_message_id = _reply_to_message_id_from_runtime(
         local_vars,
         message_obj,
@@ -3625,7 +4985,7 @@ def _event_data(
         answer = _completion_answer(local_vars)
         attachments = _extract_attachments(answer, local_vars)
         data.update({
-            "answer": answer,
+            "answer": _card_visible_answer(answer),
             "attachments": attachments,
             "native_delivery": _native_delivery_policy(answer, local_vars),
             "duration": _completion_duration(local_vars),
@@ -3817,20 +5177,10 @@ def _extract_attachments(
             continue
         seen.add(name)
         attachments.append(attachment)
-    media_matches = MEDIA_RE.findall(text or "")
-    for raw in media_matches:
-        name = _attachment_name(raw)
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        attachments.append({
-            "kind": _attachment_kind(name),
-            "name": name,
-            "summary": name,
-            "is_media": True,
-        })
-    local_matches = LOCAL_FILE_RE.findall(text or "")
-    for raw in local_matches:
+    visible_text = _mask_markdown_code(text)
+    for raw in list(MEDIA_RE.findall(visible_text)) + list(
+        LOCAL_FILE_RE.findall(visible_text)
+    ):
         name = _attachment_name(raw)
         if not name or name in seen:
             continue
@@ -3839,10 +5189,103 @@ def _extract_attachments(
     return attachments
 
 
+def _mask_markdown_code(text: Any) -> str:
+    source = str(text or "")
+    masked = list(source)
+    index = 0
+    while index < len(source):
+        marker = source[index]
+        if marker not in {"`", "~"}:
+            index += 1
+            continue
+        run_end = index + 1
+        while run_end < len(source) and source[run_end] == marker:
+            run_end += 1
+        width = run_end - index
+        if marker == "~" and width < 3:
+            index = run_end
+            continue
+        delimiter = marker * width
+        closing = source.find(delimiter, run_end)
+        if closing < 0:
+            index = run_end
+            continue
+        span_end = closing + width
+        for position in range(index, span_end):
+            if masked[position] not in {"\n", "\r"}:
+                masked[position] = " "
+        index = span_end
+    return "".join(masked)
+
+
+def _remove_media_paths_outside_markdown_code(text: str) -> str:
+    masked = _mask_markdown_code(text)
+    spans = [
+        match.span()
+        for pattern in (MEDIA_RE, LOCAL_FILE_RE)
+        for match in pattern.finditer(masked)
+    ]
+    if not spans:
+        return text
+    cleaned = text
+    for start, end in sorted(spans, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+    return cleaned
+
+
+def _card_visible_answer(text: str) -> str:
+    cleaned = str(text or "")
+    for marker in NATIVE_DELIVERY_MARKERS:
+        cleaned = cleaned.replace(marker, "")
+    cleaned = _remove_media_paths_outside_markdown_code(cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def native_media_only_response(response: Any) -> Any:
+    if not isinstance(response, str) or not response:
+        return response
+
+    delivery_parts: list[tuple[int, str]] = []
+    for marker in NATIVE_DELIVERY_MARKERS:
+        offset = response.find(marker)
+        if offset >= 0:
+            delivery_parts.append((offset, marker))
+
+    has_delivery_path = False
+    visible_response = _mask_markdown_code(response)
+    for match in MEDIA_RE.finditer(visible_response):
+        path = match.group(1).rstrip(ATTACHMENT_TRAILING_PUNCTUATION)
+        if not path:
+            continue
+        has_delivery_path = True
+        delivery_parts.append((match.start(), f"MEDIA:{path}"))
+    for match in LOCAL_FILE_RE.finditer(visible_response):
+        path = match.group(1).rstrip(ATTACHMENT_TRAILING_PUNCTUATION)
+        if not path:
+            continue
+        has_delivery_path = True
+        delivery_parts.append((match.start(), path))
+
+    if not has_delivery_path:
+        return response
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _, part in sorted(delivery_parts, key=lambda item: item[0]):
+        if part in seen:
+            continue
+        seen.add(part)
+        ordered.append(part)
+    return "\n".join(ordered)
+
+
 def _native_delivery_policy(
     text: str, local_vars: dict[str, Any] | None = None
 ) -> str:
-    if MEDIA_RE.search(text or "") or LOCAL_FILE_RE.search(text or ""):
+    visible_text = _mask_markdown_code(text)
+    if MEDIA_RE.search(visible_text) or LOCAL_FILE_RE.search(visible_text):
         return "required"
     for candidate in _structured_native_delivery_candidates(local_vars or {}):
         if _coerce_attachment(candidate) is not None:
@@ -3885,7 +5328,7 @@ def _coerce_attachment(value: Any) -> dict[str, str] | None:
         name = _attachment_name(value)
         if not name:
             return None
-        return {"kind": _attachment_kind(name), "name": name, "summary": name, "is_media": True}
+        return {"kind": _attachment_kind(name), "name": name, "summary": name}
     if isinstance(value, dict):
         raw_name = _first_attachment_mapping_value(
             value,
@@ -3920,7 +5363,6 @@ def _coerce_attachment(value: Any) -> dict[str, str] | None:
         "kind": _attachment_kind_from_hint(name, kind_hint),
         "name": name,
         "summary": clean_summary,
-        "is_media": True,
     }
 
 

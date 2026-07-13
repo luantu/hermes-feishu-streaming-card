@@ -3,12 +3,30 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 import json
+import re
 import secrets
-from typing import Any, Dict
+import time
+from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 from .card_timeline import CardTimeline
 from .events import SidecarEvent
+from .status import StatusConfig, resolve_display_status
 from .text import StreamingTextNormalizer, normalize_stream_text
+
+
+MIN_COMPLETED_SUFFIX_CHARS = 20
+MIN_COMPLETED_SUFFIX_RATIO_DENOMINATOR = 5
+
+_RUNTIME_ACTION_PREFIX_RE = re.compile(
+    r"^(?:正在)?(?:读取|执行(?:终端)?|编辑|写入|搜索|查询|浏览|访问|打开)\s*[:：]?\s*",
+    re.IGNORECASE,
+)
+_SEARCH_SITE_OPERATOR_RE = re.compile(r"(?:^|\s)site:\S+", re.IGNORECASE)
+
+
+def _now() -> float:
+    return time.time()
 
 
 @dataclass
@@ -46,15 +64,22 @@ class CardSession:
     conversation_id: str
     message_id: str
     chat_id: str
+    created_at: float = field(default_factory=_now)
+    updated_at: float = field(default_factory=_now)
     status: str = "thinking"
+    display_status: str = ""
+    display_status_source: str = "session"
     last_sequence: int = -1
     thinking_text: str = ""
     answer_text: str = ""
+    latest_tool_preview: str = ""
     tools: Dict[str, ToolState] = field(default_factory=dict)
     tokens: Dict[str, Any] = field(default_factory=dict)
     model: str = ""
     context: Dict[str, Any] = field(default_factory=dict)
     duration: float = 0.0
+    subscription_usage: str = ""
+    subscription_usage_checked: bool = False
     attachments: list[dict[str, str]] = field(default_factory=list)
     active_interaction: InteractionState | None = None
     delivery_kind: str = "chat"
@@ -78,12 +103,27 @@ class CardSession:
         return self._tool_call_count
 
     @property
+    def runtime_header_text(self) -> str:
+        interaction = self.active_interaction
+        if interaction is not None and interaction.status == "pending":
+            return normalize_stream_text(interaction.prompt).strip()
+        if self.status == "completed":
+            return ""
+        return self.latest_tool_preview
+
+    @property
     def visible_main_text(self) -> str:
         if self.status in {"completed", "failed"}:
             return self.answer_text
         if self.answer_text:
             return self.answer_text
         return self.thinking_text
+
+    def refresh_display_status_source(
+        self, config: Optional[StatusConfig] = None
+    ) -> None:
+        resolved = resolve_display_status(self, config or StatusConfig.defaults())
+        self.display_status_source = resolved.source
 
     def apply(self, event: SidecarEvent) -> bool:
         if (
@@ -98,6 +138,9 @@ class CardSession:
         if self.status in {"completed", "failed"}:
             return False
         self.last_sequence = max(self.last_sequence, event.sequence)
+
+        self.display_status = event.display_status
+        self.display_status_source = "explicit" if event.display_status else "session"
 
         if event.event == "thinking.delta":
             mode = str(event.data.get("mode") or "delta").strip().lower()
@@ -123,8 +166,17 @@ class CardSession:
                     self._archive_current_answer_to_reasoning()
                 self.answer_text += delta
         elif event.event == "tool.updated":
+            raw_preview = event.data.get("detail")
+            if isinstance(raw_preview, str):
+                normalized_preview = normalize_stream_text(raw_preview).strip()
+                if normalized_preview:
+                    self.latest_tool_preview = _runtime_tool_summary(
+                        event.data.get("name"), normalized_preview
+                    )
             tool_id = event.data.get("tool_id")
             if not isinstance(tool_id, str) or not tool_id:
+                self.updated_at = time.time()
+                self.refresh_display_status_source()
                 return True
             if self.answer_text and self._answer_archive_index is None:
                 self._answer_archive_index = self.timeline.entry_count
@@ -149,6 +201,8 @@ class CardSession:
             reply_to_message_id = event.data.get("reply_to_message_id")
             if isinstance(reply_to_message_id, str):
                 self.reply_to_message_id = reply_to_message_id
+            elif event.message_id.startswith("om_"):
+                self.reply_to_message_id = event.message_id
         elif event.event == "interaction.requested":
             self.active_interaction = _interaction_from_event_data(event.data)
         elif event.event == "interaction.completed":
@@ -175,6 +229,8 @@ class CardSession:
                 self.notice_level = level
                 self.answer_text = content or title
                 self.status = "completed"
+                self.updated_at = time.time()
+                self.refresh_display_status_source()
                 return True
             self.timeline.record_notice(notice_id, title, level, content)
         elif event.event == "message.completed":
@@ -183,6 +239,7 @@ class CardSession:
                 completed_answer = self._prepare_completed_answer(completed_answer)
             self.timeline.complete()
             self.status = "completed"
+            self.latest_tool_preview = ""
             if completed_answer.strip():
                 self.answer_text = completed_answer
             delivery_kind = event.data.get("delivery_kind")
@@ -214,6 +271,8 @@ class CardSession:
             self.status = "failed"
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"
+        self.updated_at = time.time()
+        self.refresh_display_status_source()
         return True
 
     def _archive_current_answer_to_reasoning(self, final_answer: str = "") -> None:
@@ -235,14 +294,31 @@ class CardSession:
             return final
 
         if self._answer_archive_index is not None:
+            stripped = _strip_preface_prefix(final, preface)
+            # Guard: if final merely extends preface by a tiny suffix (e.g.
+            # trailing punctuation), the preface IS the answer — don't
+            # archive it into reasoning.  (#96)
+            if final.startswith(preface) and (
+                stripped == final
+                or not _has_substantial_completed_suffix(final, stripped)
+            ):
+                self._answer_archive_index = None
+                return final
             self._archive_current_answer_to_reasoning()
-            return _strip_preface_prefix(final, preface)
+            return stripped
 
         if self._has_seen_tool_event and final.startswith(preface):
             stripped = _strip_preface_prefix(final, preface)
-            if stripped != final:
+            # Only archive the preface when the remaining stripped content is
+            # substantial — i.e. the preface was a short intro and the real
+            # answer follows.  If stripped is tiny relative to final, the
+            # "preface" IS the answer and should not be archived.  (#96)
+            if stripped != final and _has_substantial_completed_suffix(
+                final, stripped
+            ):
                 self._archive_current_answer_to_reasoning()
                 return stripped
+            return final
 
         if self._has_seen_tool_event:
             self._archive_current_answer_to_reasoning()
@@ -300,6 +376,58 @@ def _interaction_options(value: Any) -> list[InteractionOption]:
         style = str(item.get("style") or item.get("type") or "default").strip() or "default"
         options.append(InteractionOption(label=label, value=option_value, style=style))
     return options
+
+
+def _runtime_tool_summary(name: Any, preview: str) -> str:
+    text = normalize_stream_text(preview).strip()
+    if not text:
+        return ""
+    if text.startswith("正在"):
+        return text
+
+    tool_name = str(name or "").strip().lower()
+    is_url = text.startswith(("http://", "https://"))
+    is_search = bool(_SEARCH_SITE_OPERATOR_RE.search(text))
+
+    if is_search or "search" in tool_name or "query" in tool_name:
+        action = "正在搜索"
+    elif is_url or any(
+        marker in tool_name for marker in ("browser", "fetch", "web", "http")
+    ):
+        action = "正在浏览"
+    elif any(
+        marker in tool_name for marker in ("terminal", "shell", "exec", "command", "code")
+    ):
+        action = "正在执行终端"
+    elif any(marker in tool_name for marker in ("write", "edit", "patch", "replace")):
+        action = "正在编辑"
+    elif any(marker in tool_name for marker in ("read", "open", "list", "glob")):
+        action = "正在读取"
+    else:
+        readable_name = tool_name.replace("_", " ").strip() or "工具"
+        return f"正在使用 {readable_name}"
+
+    target = _runtime_preview_target(text, action=action, is_url=is_url)
+    return f"{action}：{target}" if target else action
+
+
+def _runtime_preview_target(text: str, *, action: str, is_url: bool) -> str:
+    if is_url:
+        parsed = urlsplit(text)
+        host = parsed.netloc.removeprefix("www.")
+        path = parsed.path.rstrip("/")
+        return f"{host}{path}" if host else ""
+
+    target = _RUNTIME_ACTION_PREFIX_RE.sub("", text).strip()
+    if action == "正在搜索":
+        target = _SEARCH_SITE_OPERATOR_RE.sub("", target).strip()
+        target = " ".join(target.split())
+    if action in {"正在读取", "正在编辑"} and target.startswith(("/", "~/")):
+        path = target.split(maxsplit=1)[0]
+        target = path.rstrip("/").rsplit("/", 1)[-1]
+    if target.lower().startswith(("参数:", "参数：", "args:", "arguments:")):
+        return ""
+    return target
 
 
 def _tool_detail_from_event_data(data: dict[str, Any]) -> str:
@@ -388,6 +516,14 @@ def _notice_level(value: Any) -> str:
     if level in {"ok", "done", "green"}:
         return "success"
     return "info"
+
+
+def _has_substantial_completed_suffix(final: str, stripped: str) -> bool:
+    threshold = max(
+        MIN_COMPLETED_SUFFIX_CHARS,
+        len(final) // MIN_COMPLETED_SUFFIX_RATIO_DENOMINATOR,
+    )
+    return len(stripped) > threshold
 
 
 def _strip_preface_prefix(final: str, preface: str) -> str:

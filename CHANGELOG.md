@@ -5,7 +5,147 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
-## Unreleased
+## V4.0.4 — 2026-07-13
+
+See also: [docs/release-notes-v4.0.4.md](docs/release-notes-v4.0.4.md)
+
+### Fixed
+- Fixed issue #110 by excluding fenced and inline Markdown code from `MEDIA:` and local-path extraction, card cleanup, native-delivery policy, and native-media-only response rewriting.
+- Fixed issue #112's stale bound-callback path: when lark SDK retained the original `_on_card_action_trigger`, background `interaction.select` handling now forwards to the sidecar instead of falling through to a synthetic `/card button` command.
+- Adapted issue #107's footer to an upstream Codex usage response with only one ambiguous primary window: it now uses a neutral `limit` label instead of incorrectly claiming the value is a five-hour window.
+
+### Safety
+- Real media directives outside Markdown code and structured Hermes media fields retain native image/file delivery.
+- Background callback forwarding runs off the adapter event loop and retains duplicate-action protection.
+
+### Credits
+- Thanks to @tianqiii for promptly reporting the temporary upstream Codex usage-window change in issue #107.
+- Thanks to @sthnow for issue #110's precise reproduction and parser diagnosis.
+- Thanks to @zkyken for issue #112's logs and bound-method analysis, which exposed the missing background compatibility path.
+- Issue #111 is the duplicate follow-up to #106; @ShakuOvO and @blakejia remain credited for the original report, retesting, and screenshots.
+
+## V4.0.3 — 2026-07-13
+
+See also: [docs/release-notes-v4.0.3.md](docs/release-notes-v4.0.3.md)
+
+### Fixed
+- Fixed the remaining issue #106 path where upgrading the runtime package and restarting services left a V4.0.0 completion hook that still sent the card answer as native gray text.
+- After a media completion is accepted by the sidecar, the Feishu runtime suppresses exactly one matching native text send for the same chat while native image/file delivery continues.
+
+### Safety
+- Unrelated text, other chats, repeated later messages, sidecar failure, non-media completions, and non-Feishu platforms remain on the original fail-open path.
+
+### Credits
+- Thanks to @blakejia for retesting V4.0.2 and providing the screenshot that exposed the stale-hook upgrade path; the original #106 report and confirmation remain credited to @ShakuOvO and @blakejia.
+
+## V4.0.2 — 2026-07-12
+
+See also: [docs/release-notes-v4.0.2.md](docs/release-notes-v4.0.2.md)
+
+### Fixed
+- Allowed the installer recovery planner to upgrade a verified older owned hook when the current file and backup both match the install manifest and removing owned markers exactly restores the backup.
+- Kept user edits, hash mismatches, invalid backups, corrupt markers, and unsupported reapplication fail-closed.
+
+### Added
+- Added opt-in `subscription_usage` footer support from issue #107, using Hermes native Codex account usage in the compact `5h 26% · weekly 89%` format and silently omitting unavailable data.
+
+### Included
+- Includes the V4.0.1 fix for duplicate native answer text after `MEDIA:` image/file cards, with credit to @ShakuOvO and @blakejia for reporting and confirming issue #106.
+- Issue #107's requirements, native-interface direction, and display format were contributed by @tianqiii.
+
+## V4.0.1 — 2026-07-12
+
+See also: [docs/release-notes-v4.0.1.md](docs/release-notes-v4.0.1.md)
+
+### Fixed
+- Fixed issue #106: successful Feishu cards with explicit `MEDIA:` or local output paths now leave only media directives for Hermes native delivery, preventing a second native copy of the answer text.
+- Removed internal media directives and local delivery paths from the completed card body while retaining attachment summaries and native image/file delivery.
+
+### Compatibility
+- Card delivery failure, non-Feishu platforms, and structured-media responses without explicit delivery paths retain the original fail-open response.
+- Existing V4.0.0 completion hook blocks are recognized and upgraded instead of being reported as corrupt markers.
+
+### Credits
+- Issue #106 was reported by @ShakuOvO and independently confirmed on Hermes 0.18.2 by @blakejia.
+
+## V4.0.0 — 2026-07-12
+
+See also: [docs/release-notes-v4.0.0.md](docs/release-notes-v4.0.0.md)
+
+### Added
+- Added a live runtime Header that keeps the configured title and turns Hermes tool names plus `tool.updated.detail` into a deterministic subtitle action summary while public `thinking.delta` continues in the body.
+- Pending interactions temporarily use the Hermes prompt as the Header and restore the cached tool preview after the choice completes.
+- Failed cards retain the last tool preview; completed normal-chat cards use the native Feishu reply quote as their only header and remove the duplicate Card JSON Header.
+- Feishu `/model` now mirrors Hermes CLI's provider tree with Provider → Model navigation, Back, Cancel, upstream counts/current markers, and the original Hermes switch callback.
+
+### Changed
+- Public interim-assistant text is visible in the body until `answer.delta` begins; the answer remains primary afterward.
+- Running, waiting, and failed Footers contain status only. Completed native-reply cards show `已完成` followed by final model, token, duration, and context metrics.
+- Normal-chat card delivery now replies directly to the triggering Feishu message; legacy paths without a valid reply anchor retain the configured-title fallback.
+
+### Security and compatibility
+- Runtime summaries use deterministic action labels, reduce URLs/search operators/private paths, and remain single-line, bounded, Markdown-cleaned, and redacted before Card JSON serialization.
+- The Hermes hook protocol is unchanged, and versions without preview data retain the previous header/layout fallback.
+
+## V3.10.0 — 2026-07-11
+
+See also: [docs/release-notes-v3.10.0.md](docs/release-notes-v3.10.0.md)
+
+### Added
+- Bare Feishu/Lark `/resume` now opens a native `select_static` picker for up to ten visible named sessions. Topic reply metadata is preserved, and unavailable/empty/unsupported paths fail open to Hermes' existing text list.
+- Topic pickers retain an explicit reply anchor when Hermes represents the topic with an `om_...` root id, preventing Feishu field-validation fallback to the native numbered list.
+- Selecting a session ACKs immediately, then invokes the original Hermes resume handler in the runner loop. This preserves ownership checks, continuation resolution, agent release, boundary cleanup, and model/reasoning override reset.
+- Completed-card model labels use escaped semantic color for recognized provider prefixes while preserving footer element order, fields, separators, and text size.
+
+### Security
+- Group/topic resume cards can only be confirmed by the initiating Feishu `open_id`; private-chat callbacks do not add a second identity comparison. If the initiating `open_id` cannot be verified for a group, the picker is not sent and Hermes text fallback remains available.
+- Picker callbacks validate expiry, chat, visible session ids, and adapter authorization before executing exactly once.
+
+### Credits
+- Issue #94 by @colinaaa defined the native resume-picker workflow and fail-open/security acceptance criteria.
+- PR #98 by @charles5g, authored by jackmim, contributed the semantic model-color idea; mainline adds HTML escaping and layout-invariant tests.
+
+## V3.9.1 — 2026-07-11
+
+See also: [docs/release-notes-v3.9.1.md](docs/release-notes-v3.9.1.md)
+
+### Fixed
+- Preserved the complete final answer when a completed event contains a substantial suffix, fixing issue #96 without reintroducing duplicated native replies (PR #97 by @colinaaa).
+- Serialized interrupted-session terminal updates so a late coalesced PATCH cannot overwrite the abandoned card state, fixing issue #92 (PR #93 by @colinaaa).
+- ACKed model-picker callbacks immediately and performed the switch asynchronously; the original card is updated first and a single fallback card is sent only when needed (PR #98 by @charles5g).
+- Recovered issue #82's verified marker-only hook damage from the owned backup/manifest while continuing to reject unknown edits; source-stripped Hermes diagnostics now report `version: unknown (source-stripped metadata)` instead of a misleading version.
+- Made local health checks bypass ambient HTTP proxies and repaired the tools package syntax, adopting the loopback diagnosis from PR #52 by @wjiemin49-ux.
+
+### Compatibility
+- Normal streaming-card footer/layout remains unchanged.
+- Unknown or unverifiable installer states remain fail-closed; unsupported runtime paths remain fail-open.
+
+### Credits
+- @colinaaa: PR #93 and PR #97.
+- @charles5g: PR #98.
+- @wjiemin49-ux: PR #52 diagnosis and repair direction.
+
+## V3.9.0 — 2026-07-11
+
+See also: [docs/release-notes-v3.9.0.md](docs/release-notes-v3.9.0.md)
+
+### Added
+- Added the operations and reliability foundation: Feishu/Lark operations cards guide diagnosis, two-step safe repair, recheck, and Gateway restart while retaining CLI fallback when operations cards are unavailable.
+- Operations cards preserve ownership boundaries: private chats do not compare operators; group cards require the initiating operator for repair/restart confirmation. Transport authentication uses a zero-configuration secret rooted in the private sidecar state directory.
+- Added profile-aware setup, environment diagnostics, lifecycle cleanup metrics, automatic known-safe repair (with `--no-repair` opt-out), and Hermes/Docker compatibility coverage. `doctor` shows the full redacted identity/profile/event-endpoint route chain; `status` summarizes runtime routing/profile events and `/health` reports routing health.
+
+### Fixed
+- Operations-card WebSocket clicks now ACK Feishu immediately, then use a bounded background dispatcher with retry to forward authenticated actions to the sidecar. Slow local callbacks no longer surface Feishu's target-callback timeout toast.
+- Every authenticated operations response now PATCHes the original card through the sidecar delivery mapping. Transition-card publishing is independent from recheck/repair/restart execution, so a slow or failed Feishu PATCH cannot prevent an accepted operation from starting.
+- Restored verified Python 3.9 support for operations diagnostics: asynchronous semaphore and publish-lock state is now created only on first use inside the active event loop. The test suite no longer relies on Python 3.10-only `zip(strict=...)` behavior.
+
+### Credits
+- PR #84 by @Zanetach contributed card progress-status routing and `.env` allowlist expansion for profile environment support.
+
+### Validation
+- Automated release gate: `1172 passed, 3 skipped` on both Python 3.9 and Python 3.12.
+- Real Feishu private-chat acceptance passed on 2026-07-11: `/hfc doctor` produced one operations card without a gray native unknown-command reply; details and two consecutive rechecks (including a background successor) ACKed in 156–201 ms without a callback-timeout toast and PATCHed the same card; sandboxed two-step safe repair, card-triggered Gateway restart, and the normal streaming-card footer also passed with zero send/update failures.
+- Existing-container Docker smoke plus group ownership and topic smoke remain pending acceptance.
 
 ## V3.8.18 — 2026-07-10
 

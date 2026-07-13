@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from ipaddress import ip_address
 from typing import Any
 
 from aiohttp import web
 
 from .bots import BotRegistry, FeishuClientFactory, RoutingContext
 from .bots import resolve_card_config as _resolve_card_config
-from .config import load_config
+from .config import load_config, resolve_operations_hermes_root
 from .feishu_client import FeishuClient, FeishuClientConfig
 from .server import create_app
+from .operations_transport import ensure_transport_root_secret
 
 
 class NoopFeishuClient:
@@ -178,32 +178,10 @@ def _card_config_for_server(config: dict[str, Any]) -> dict[str, Any]:
     card_config = dict(config.get("card", {}))
     mode = str(card_config.get("interaction_mode") or "callback").strip().lower()
     if mode == "auto":
-        server = config.get("server", {})
-        host = str(server.get("host") or "").strip()
-        card_config["interaction_mode"] = (
-            "text" if _is_local_sidecar_host(host) else "callback"
-        )
+        card_config["interaction_mode"] = "callback"
     elif mode not in {"callback", "text", "markdown", "reply"}:
         card_config["interaction_mode"] = "callback"
     return card_config
-
-
-def _is_local_sidecar_host(host: str) -> bool:
-    normalized = host.strip().lower().strip("[]")
-    if normalized in {"", "localhost"}:
-        return True
-    try:
-        address = ip_address(normalized)
-    except ValueError:
-        return False
-    return (
-        address.is_loopback
-        or address.is_private
-        or address.is_link_local
-        or address.is_unspecified
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     import os as _os
     try:
@@ -213,11 +191,16 @@ def main(argv: list[str] | None = None) -> int:
         pass
     parser = argparse.ArgumentParser(prog="hermes-feishu-card-sidecar")
     parser.add_argument("--config", default="config.yaml.example")
+    parser.add_argument("--env-file")
     parser.add_argument("--token", default="")
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
     server = config["server"]
+    try:
+        operations_transport_root_secret = ensure_transport_root_secret()
+    except OSError:
+        operations_transport_root_secret = None
     if _has_any_feishu_credentials(config):
         boundary = build_feishu_boundary(config)
     else:
@@ -228,6 +211,12 @@ def main(argv: list[str] | None = None) -> int:
             process_token=args.token,
             card_config=_card_config_for_server(config),
             bot_router=boundary.router,
+            operations_config_path=args.config,
+            operations_hermes_root=resolve_operations_hermes_root(
+                config_path=args.config,
+                env_file=args.env_file,
+            ),
+            operations_transport_root_secret=operations_transport_root_secret,
         ),
         host=server["host"],
         port=server["port"],

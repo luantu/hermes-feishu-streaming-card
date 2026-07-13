@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current package version: `3.8.18`. This release keeps the sidecar-only mainline, preserves V3.8.2 timeline readability, V3.8.10 group diagnostics, the V3.8.11 `/hfc` command-claim fix, V3.8.12 attachment-summary duplicate reply suppression, V3.8.13 Hermes upgrade compatibility, V3.8.14 WebSocket interaction card actions, V3.8.15 input-attachment duplicate reply suppression, the V3.8.16 reused-topic-`message_id` card fix, and the V3.8.17 cron routing-intent fix, then fixes cron cards that could not return to their originating Feishu topic thread (PR #91, contributed by @colinaaa).
+Current release candidate: `4.0.3`. It fixes #106 duplicate gray native text when only the runtime is upgraded and restarted while a V4.0.0 completion hook remains, while preserving native media and fail-open boundaries. V3.9.1 was released on 2026-07-11; V4.0.0 through V4.0.2 are released.
 
 ## Ready
 
@@ -15,7 +15,7 @@ Current package version: `3.8.18`. This release keeps the sidecar-only mainline,
 - Real long-card stress test: one Feishu card updated to 16k Chinese characters.
 - Real Hermes `v2026.4.23` `restore -> install` loop verification.
 - Hermes `0.13.0+` / `0.14.0` / `0.15.x` / `0.17.x` / `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` / `v2026.7.7.2` use the `gateway_run_013_plus` hook strategy, while older `v2026.4.x` keeps `legacy_gateway_run`.
-- Feishu card button interactions are covered through local mock acceptance for `interaction.requested`, `/card/actions`, and `/interactions/{interaction_id}`; localhost/private sidecar text fallback is covered through `card.interaction_mode: text`.
+- Feishu card button interactions are covered through local mock acceptance for `interaction.requested`, `/card/actions`, and `/interactions/{interaction_id}`; localhost/private sidecars use WebSocket-native callbacks in default `auto` mode, while explicit `card.interaction_mode: text` retains numbered-text fallback.
 - Feishu thread messages can carry optional `thread_id`; with a reply anchor, the sidecar uses the Feishu reply API to create the initial card in the original thread, and later updates keep PATCHing the same card.
 - Cron delivery can extract chat ids from `deliver: "feishu:oc_xxx"` and can resolve `deliver: origin`, `deliver: all`, and `origin,all` through Feishu origins or scheduler targets, avoiding plain-text fallback for scheduled Feishu deliveries; `deliver: local` remains no delivery.
 - Long Markdown tables and fenced code blocks over `MAIN_CONTENT_CHUNK_CHARS` are split as complete repeated structures to avoid raw Markdown rendering.
@@ -57,6 +57,18 @@ Current package version: `3.8.18`. This release keeps the sidecar-only mainline,
 - Hermes key release matrix covers `v2026.4.23`, `v2026.5.7`, `v2026.5.16+`, `v2026.5.29`, `v2026.6.19+`, `v2026.7.1+`, `v2026.7.7.2`, `0.13.x`, `0.14.x`, `0.15.x`, `0.17.x`, `0.18.x`, semantic versions with or without a `v` prefix, and descriptive version metadata.
 - GitHub Actions Python 3.9 / 3.12 test matrix for PRs and pushes, plus Windows parser validation for `install.ps1`.
 - Release assets workflow packages macOS/Linux/Windows installers and checksums for tags.
+- V3.9.0 operations cards support diagnosis, recheck, two-step safe repair, and restart confirmation; private chats do not compare operators, while group repair/restart confirmation stays with the initiator. Use CLI fallback when the card is unavailable.
+- The state-dir transport root automatically creates a private-permission transport secret. No secret configuration is required, and diagnostics/cards never output it.
+- Setup resolves profile/event URL by explicit argument, process environment, selected env file, then default; only `doctor` shows the complete redacted identity/profile/event-endpoint route chain, `status` summarizes runtime routing/profile events, and `/health` reports actual routing-health fields.
+- Install/setup can automatically repair known-safe state; `--no-repair` opts out, and unverifiable user edits remain refused. Cleanup history and metrics are bounded and hashed.
+- Operations-card WebSocket callbacks ACK immediately, authenticated actions enter a bounded background queue with finite retry, and every authenticated state PATCHes the original card without making recheck/repair/restart wait for Feishu PATCH completion.
+- Automated release gate: `1172 passed, 3 skipped` on Python 3.9 and Python 3.12. Operations semaphore/publish-lock state is initialized only inside the active event loop, preserving the declared Python 3.9 support.
+- Real Feishu private-chat acceptance passed on 2026-07-11: `/hfc doctor` produced no gray native unknown-command reply; localized details and two consecutive rechecks (including the background successor) ACKed in 156–201 ms without a target-callback timeout toast and updated the same card; sandboxed two-step safe repair, card-triggered Gateway restart, and the normal completed-card footer passed with zero sidecar send/update failures.
+- V3.9.1 regression coverage includes completed-answer boundaries, interrupted terminal ordering, asynchronous model-picker callbacks, loopback no-proxy behavior, marker-only recovery, and refusal of unknown edits.
+- V3.9.1 automated release gate: `1198 passed, 3 skipped` on both Python 3.9 and Python 3.12, followed by `git diff --check`.
+- V3.10.0 bare `/resume` picker tests cover the original Hermes handler, group initiator, topic metadata, expired/invalid state, fail-open behavior, and immediate ACK.
+- V3.10.0 footer tests prove only the escaped model label changes color; element ids, field order, separators, text size, and non-completed states remain unchanged.
+- V4.0.0 combines Hermes tool names and `tool.updated.detail` into deterministic non-completed Header action summaries and streams public `thinking.delta` independently in the body; final `answer.delta` remains the primary body content.
 
 ## Required Pre-release Checks
 
@@ -68,6 +80,70 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 ```
 
 Real Feishu integration must use local config or environment variables for `FEISHU_APP_ID` and `FEISHU_APP_SECRET`. Do not commit App Secret, tenant token, real chat_id, or sensitive screenshots. Public screenshots must be checked for secrets and private conversation content before being added to the repository.
+
+## V3.9.0 Manual Acceptance Progress
+
+- Existing-container Docker: fresh install, pinned upgrade, known-safe corrupt-marker auto-repair, user-edit refusal, main/child profile endpoint mapping, and final `doctor`. **Pending acceptance**.
+- Real Feishu private chat: `/hfc doctor`, localized details, recheck, a second click from the background successor, same-card PATCH, sandboxed two-step safe repair, card-triggered Gateway restart, and the normal footer snapshot. **Passed on 2026-07-11**.
+- Real Feishu cron: a no-agent one-shot result reached a normal completed card; sidecar event receive/apply/card-send metrics succeeded with no fallback. **Passed on 2026-07-11**.
+- Profile route mismatch: a temporary invalid `HERMES_FEISHU_CARD_PROFILE_ID` produced a redacted `profile_unknown` route chain, and removing the temporary environment restored the default profile without changing persistent config. **Passed on 2026-07-11**.
+- V3.10.0 real Feishu `/resume`: private chat, group initiator, topic placement, and same-card PATCH passed; changed-operator rejection remains automation-backed because the test group had one human participant.
+
+Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a successful finite one-shot can print `Ran now: failed` because Hermes re-reads `last_status` after the completed job record has already been deleted. This does not indicate a card-delivery failure; the acceptance decision uses the matching Feishu card, sidecar metrics, and saved cron output. The plugin deliberately does not add another source patch for Hermes `tools/cronjob_tools.py` just to mask this upstream CLI issue.
+
+## V3.9.1 Release Gates
+
+- Python 3.9 / 3.12 full automation: **passed (`1198 passed, 3 skipped`)**.
+- `git diff --check`: **passed**.
+- Real Feishu focus: model-picker callbacks, interrupted terminal cards, and completed-answer preservation follow the [Feishu acceptance checklist](wiki/feishu-acceptance.md); public evidence remains redacted.
+- Release assets: verify macOS, Linux, Windows, and checksums after tagging.
+
+## V3.10.0 Release Gates
+
+- Focused interaction/installer/render matrix: **passed (`416 passed`)**.
+- Python 3.9 / 3.12 full automation: **passed (`1216 passed, 3 skipped`)**.
+- Real Feishu: private chat, group initiator, topic same-thread update, and footer passed; changed-operator rejection is covered by automation.
+- `v4.0.0`: **released on 2026-07-12**. The release-assets workflow succeeded; the macOS, Linux, Windows, and checksums assets were complete and checksum-verified; installation from the public tag reported version `4.0.0` and the CLI started successfully.
+- `v3.10.0`: **released on 2026-07-11** with all four assets verified.
+
+## V4.0.1 Release Gates
+
+- Issue #106 data-flow regression, normal/queued completion, and V4.0.0 hook-upgrade tests: **passed**.
+- Hook/patcher/install/server hot-path matrix: **passed (`509 passed`)**.
+- Hermes `extract_media()` verification: **passed**, preserving the media path with an empty native-visible text body.
+- Full automation: **passed (`1257 passed, 3 skipped`)**; `git diff --check` passed.
+- Local package smoke: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.1`.
+- V4.0.1 public installation and Release assets: **passed**; all four assets were present and checksum-verified.
+
+## V4.0.3 Release Gates
+
+- Stale-hook exact media-text deduplication, one-shot consumption, media preservation, and sidecar fail-open regressions: **passed**.
+- Hook/patcher/install/server hot-path matrix: **passed (`513 passed`)**.
+- Full automation: **passed (`1269 passed, 3 skipped`)**; `git diff --check` passed.
+- Local package: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.3` from `site-packages`.
+- Public installation and Release assets: **pending post-tag verification**.
+
+## V4.0.2 Release Gates
+
+- Recovery/install regression matrix: **passed (`121 passed`)**.
+- Real local upgrade from an older owned hook: **passed**. Recovery emitted `run.py: reapplied current hook`; doctor reported a complete, consistent install state; Gateway and sidecar resumed.
+- Issue #107 opt-in quota footer: **passed**. The server/render/subscription-usage focused matrix reported `237 passed`; a read-only call through the local Hermes native API returned and formatted both Session and Weekly windows.
+- Full automation: **passed (`1266 passed, 3 skipped`)**; `git diff --check` passed.
+- Local package: **passed**. The sdist and wheel built successfully, and a clean venv imported version `4.0.2` from `site-packages`.
+- Public installation and Release assets: **pending post-tag verification**.
+
+## V4.0.0 Release Gates
+
+- Session/render/status focused tests: **passed (`139 passed`)**.
+- Server/hook/model-picker hot-path matrix: **passed (`341 passed`)**.
+- Private/group real-Feishu four-state acceptance: **passed on 2026-07-12**. Running, waiting, failed, and completed states updated one card in place; runtime action summaries remained independent from public interim output; non-completed footers contained status only; completed cards kept the native reply quote without a duplicate Card JSON Header; no gray native duplicate or callback timeout appeared.
+- Real Feishu `/model`: **passed on 2026-07-12**. Provider and model data came directly from the same upstream Hermes CLI picker list; provider navigation, Back, model switching, and same-card result updates all succeeded.
+- All four public screenshots: **passed privacy and visual review**, retaining only redacted real-Feishu card regions.
+- Full automation: **passed (`1252 passed, 3 skipped`)**; `git diff --check` passed.
+- Local release-package smoke: **passed**. The sdist and wheel built successfully, a clean Python 3.12 venv imported version `4.0.0`, and the Hermes `v2026.7.7.2` doctor confirmed runtime import, streaming, and install state.
+- Verify macOS, Linux, Windows, and checksums assets after tagging.
+
+The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
 
 ## Current Boundaries
 

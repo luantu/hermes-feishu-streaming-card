@@ -20,13 +20,25 @@ It targets the real pain points of running Hermes inside Feishu: missing or out-
 
 ![Hermes Feishu card command interaction, command result feedback, and tool timeline showcase](docs/assets/feishu-card-showcase-v385.png)
 
+## V4 Live Agent States
+
+| Running | Waiting for user |
+|---|---|
+| ![Real Feishu running state with the current tool action in the Header](docs/assets/feishu-v4-runtime-running.png) | ![Real Feishu waiting state with native buttons in the same card](docs/assets/feishu-v4-runtime-waiting.png) |
+| Failed | Completed |
+| ![Real Feishu failed state retaining the last tool preview](docs/assets/feishu-v4-runtime-failed.png) | ![Real Feishu completed state with only the native reply Header and final result](docs/assets/feishu-v4-runtime-completed.png) |
+
+During execution, the Header follows real Hermes tool actions while public interim output continues streaming in the body. On completion, the native Feishu reply quote becomes the only Header instead of stacking a second `Hermes Agent` card title above it.
+
 ## What You Get
 
 - **One continuously updated Feishu card**: `thinking.delta`, `answer.delta`, `tool.updated`, and `message.completed` merge into one card.
+- **A live runtime Header**: the title keeps the user-configured card name (`Hermes Agent` by default), while the subtitle turns tool names and `tool.updated.detail` into concise action summaries; full commands remain in the timeline.
 - **Primary answer and process timeline**: the final answer stays in the main content area while pre-tool answers, tool calls, and system notices move into the "Reasoning and Tools" timeline.
-- **In-card interactions**: approval and clarify choices render as buttons; standalone commands such as `/new`, `/reset`, `/undo`, and `/model` use native interactive cards.
+- **In-card interactions**: approval and clarify choices render as buttons; standalone commands such as `/new`, `/reset`, `/undo`, and `/model` use native interactive cards. V4 `/model` uses the same Provider/model list as Hermes CLI and follows a Provider → Model flow instead of crowding every model into one dropdown.
 - **Consistent topic replies**: later topic stream events resolve by `reply_to_message_id` and keep updating the original card; system notices no longer spill out as duplicates.
 - **Clearer group diagnostics**: `/hfc status` explains group chat binding state, the suggested bind command, and slash-command behavior boundaries.
+- **Bounded operations cards**: `/hfc doctor` can present diagnosis, two-step safe repair, and restart confirmation; private chats do not compare operators, while group confirmations stay with the initiator. When operations cards are unavailable, use the CLI; normal streaming-card layout and footer are unchanged.
 - **Long content protection**: long Markdown tables and fenced code blocks split on structure boundaries instead of raw character cuts.
 - **Diagnostics and recovery**: `doctor`, `/hfc status`, `/health` metrics, runtime import checks, and safe repair/restore/uninstall cover common failures.
 
@@ -87,6 +99,8 @@ card:
   footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
+To show remaining Codex subscription quota, add `subscription_usage` to `footer_fields`. The plugin calls Hermes native `fetch_account_usage("openai-codex")` only when explicitly enabled; older Hermes versions, missing login, or network failures silently omit the field without affecting card completion.
+
 Feishu credentials can also live in a `.env` next to the config:
 
 ```bash
@@ -121,7 +135,7 @@ For an existing Hermes container:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.18
+export HFC_VERSION=v4.0.4
 bash install-docker.sh
 ```
 
@@ -144,6 +158,7 @@ Defaults:
 | `doctor --config ... --hermes-dir ... --explain` | Diagnose Hermes version, runtime import, hook strategy, anchors, and recommendations |
 | `install --hermes-dir ... --yes` | Install the plugin into Hermes runtime venv and patch Hermes |
 | `repair --hermes-dir ... --yes` | Repair verifiable hook manifest/backup state |
+| `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore the original Hermes file |
 | `start --config ...` / `status --config ...` / `stop --config ...` | Manage the sidecar process and `/health` checks |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu card smoke test |
@@ -163,6 +178,14 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 
 | Version | Highlights |
 |---|---|
+| [v4.0.4](docs/release-notes-v4.0.4.en.md) | Fixes Markdown `MEDIA:` literals, interaction forwarding with an SDK-retained callback, and misleading `5h` labels when Codex exposes one ambiguous limit window |
+| [v4.0.3](docs/release-notes-v4.0.3.en.md) | Fixes duplicate gray answer text when the package is upgraded and restarted while a V4.0.0 completion hook remains; suppresses one exact text copy while preserving native media |
+| [v4.0.2](docs/release-notes-v4.0.2.en.md) | Allows safe upgrades from verified older owned hooks when manifest and backup evidence match; includes the v4.0.1 media-text deduplication fix |
+| [v4.0.1](docs/release-notes-v4.0.1.en.md) | Fixes duplicate native answer text after `MEDIA:` image/file cards; the native path delivers media only and the card hides internal local paths |
+| [v4.0.0](docs/release-notes-v4.0.0.en.md) | The running Header shows the latest Hermes tool preview while public interim output streams independently in the body; waiting, failed, and completed states preserve established Footer and reply boundaries |
+| [v3.10.0](docs/release-notes-v3.10.0.md) | Bare `/resume` uses a native session picker while retaining Hermes' security path; the model footer gains escaped semantic color without changing layout or field order |
+| [v3.9.1](docs/release-notes-v3.9.1.md) | Reliability hotfix: preserve completed answers, serialize interrupted terminal cards, make model-picker callbacks asynchronous, and recover verifiable marker-only installer damage; normal streaming-card footer/layout remains unchanged |
+| [v3.9.0](docs/release-notes-v3.9.0.md) | Operations/reliability foundation: PR #84 / @Zanetach contributed card progress-status routing and `.env` allowlist expansion for profile environment support, plus safe repair/restart operations cards and CLI fallback; normal streaming-card footer/layout remains unchanged |
 | [v3.8.18](docs/release-notes-v3.8.18.md) | Cron cards preserve `thread_id` and return to the originating Feishu topic thread (PR #91, contributed by @colinaaa) |
 | [v3.8.17](docs/release-notes-v3.8.17.md) | Cron `deliver=origin/all` routing intents resolve to Feishu targets and send cards |
 | [v3.8.16](docs/release-notes-v3.8.16.md) | Topic groups that reuse `message_id` now send a fresh card for the second and later messages |
@@ -217,6 +240,16 @@ This is a sidecar-only design: the Hermes hook stays fail-open, while Feishu del
 - [colinaaa](https://github.com/colinaaa) - [PR #88](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/88) fresh cards for second turns when Feishu topic groups reuse `message_id`
 - [colinaaa](https://github.com/colinaaa) - [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron `thread_id` routing back to the originating Feishu topic-group thread
 - [zayn-0101](https://github.com/zayn-0101) - [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` routing-intent card delivery fix
+- [Zanetach](https://github.com/Zanetach) - [PR #84](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/84) card progress-status routing and `.env` allowlist expansion for profile environment support (V3.9.0)
+- [colinaaa](https://github.com/colinaaa) - [PR #93](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/93) reliable terminal cards for interrupted tasks; [PR #97](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/97) completed-answer preservation (V3.9.1)
+- [charles5g](https://github.com/charles5g) - [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) asynchronous model-picker callbacks and original-card status updates (V3.9.1)
+- [wjiemin49-ux](https://github.com/wjiemin49-ux) - [PR #52](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/52) diagnosis and direction for loopback health checks bypassing proxies (adopted in V3.9.1)
+- [colinaaa](https://github.com/colinaaa) - [Issue #94](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/94) requirements, interaction flow, and security boundary for the native bare `/resume` picker (V3.10.0)
+- [charles5g](https://github.com/charles5g) / jackmim - [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) semantic model-footer color concept; mainline adds HTML escaping and preserves layout (V3.10.0)
+- [tianqiii](https://github.com/tianqiii) - [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) requirements, Hermes-native API direction, and display format for the Codex subscription-quota footer (V4.0.2)
+- [sthnow](https://github.com/sthnow) - [Issue #110](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/110) reproduction, root-cause analysis, and expected boundary for literal `MEDIA:` text inside Markdown code (V4.0.4)
+- [zkyken](https://github.com/zkyken) - [Issue #112](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/112) logs, bound-callback diagnosis, and fix direction for non-functional lark SDK interaction buttons (V4.0.4)
+- [ShakuOvO](https://github.com/ShakuOvO) / [blakejia](https://github.com/blakejia) - [Issue #106](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/106) and [#111](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/111) reports, retesting, and screenshots for duplicate gray image-answer text (V4.0.1-V4.0.3)
 
 ## Security
 

@@ -37,6 +37,10 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 - **话题群第二轮继续出卡片**：V3.8.16 起，Feishu/Lark 话题群复用同一 `message_id` 时，第二条及后续消息会创建新卡片。
 - **Cron 路由意图继续出卡片**：V3.8.17 起，cron `deliver: origin` / `deliver: all` / `origin,all` 会解析到 Feishu 目标并发送卡片。
 - **Cron 话题线程保持一致**：V3.8.18 起，从飞书话题线程创建的 cron 任务会携带 `thread_id`，卡片回到原线程；非飞书来源的 thread id 不会泄漏到飞书路由。
+- **运维恢复有边界**：V3.9.0 的运维卡提供诊断、重新检测、两步安全修复和重启确认；私聊不比较操作者，群聊只允许发起者确认，卡片不可用时使用 CLI。普通流式卡的 footer/layout 不变。
+- **可靠性热修**：V3.9.1 修复完成答案截断、打断任务卡片终态、模型选择回调超时和可验证的 marker-only 安装损坏；普通流式卡的 footer/layout 仍保持不变。
+- **会话恢复更直接**：V3.10.0 起，裸 `/resume` 在飞书使用原生下拉卡；群聊/topic 只允许发起者点击，卡片不可用时自动回到 Hermes 文本列表。
+- **footer 轻量增强**：识别到常见模型前缀时只给模型名增加转义后的语义色，既有 footer/layout、字段顺序和字号不变。
 - **长内容更稳**：长 Markdown 表格和 fenced code block 按结构边界切分，降低飞书 raw markdown 和半截代码围栏问题。
 - **工具详情更可读**：`tool.updated` 可展示参数摘要、耗时和失败原因，长详情仍保持紧凑折叠。
 - **多 bot / 多 profile**：支持多飞书机器人、多 Hermes profile、群聊绑定、群聊安全诊断、bot/profile 标题和路由诊断。
@@ -59,6 +63,49 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | 长表格/长代码块被飞书渲染成 raw markdown | Markdown-aware split，重复表头和完整 code fence |
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、`group_rules` 安全诊断、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
+
+## V4.0.0 实时双轨卡片
+
+- 运行态 Header title 保留用户自定义标题（默认 `Hermes Agent`），subtitle 根据工具名和 Hermes `progress_callback.preview` 显示动作摘要；完整命令留在 timeline。
+- 正文显示公开 `thinking.delta` 阶段输出；`answer.delta` 开始后主回答优先。
+- 等待态显示 Hermes 原始交互问题，失败态保留最后工具 preview；普通聊天完成态只保留飞书原生回复引用作为 Header，不再叠加配置标题。
+- 运行、等待、失败 Footer 只显示状态；普通聊天完成态 Footer 显示“已完成”并接续最终统计。
+- preview 缺失时自动回退到现有标题，不要求新的 Hermes patch 字段。
+- `/model` 与 Hermes CLI 使用同一 Provider/模型列表，先选 Provider、再选模型；Provider → Model、返回、取消和最终切换都在同一张命令卡片中完成，不再摊平全部供应商模型。
+
+| 运行中 | 等待用户 |
+|---|---|
+| ![真实飞书运行态：Header 实时显示当前工具动作](assets/feishu-v4-runtime-running.png) | ![真实飞书等待态：原生按钮保持在同一张卡片](assets/feishu-v4-runtime-waiting.png) |
+| 失败 | 已完成 |
+| ![真实飞书失败态：保留最后工具预览](assets/feishu-v4-runtime-failed.png) | ![真实飞书完成态：仅保留原生回复 Header 与最终结果](assets/feishu-v4-runtime-completed.png) |
+
+完整说明见 [V4.0.0 release notes](release-notes-v4.0.0.md)。
+
+## V3.10.0 原生会话恢复与轻量视觉增强
+
+裸 `/resume` 会读取 Hermes 已按当前用户/会话权限过滤的最近命名会话，发送一个 `select_static` 下拉卡。选择后先即时 ACK，再把复制出的 `/resume <session_id>` 事件交给 original Hermes handler，因此 ownership、continuation、running-agent release 和 model/reasoning override cleanup 都沿用上游实现。带参数 `/resume`、非飞书、空列表、卡片失败和群聊身份不可验证均 fail-open。
+
+群聊与 topic 必须由原发起者 `open_id` 点击；私聊不额外比较操作者。模型 footer 的颜色创意来自 PR #98（@charles5g / jackmim），主线增加 HTML escape，并保持 footer/layout 不变。Issue #94 的需求、流程与安全验收由 @colinaaa 提出。
+
+完整说明见 [V3.10.0 release notes](release-notes-v3.10.0.md)。
+
+## V3.9.1 可靠性热修
+
+V3.9.1 修复 issue #96 / PR #97 的完成答案截断、issue #92 / PR #93 的打断任务卡片终态竞争，以及 PR #98 的模型选择 callback 超时。安装器可恢复 manifest/backup 完全可验证的 marker-only 损坏，source-stripped Hermes 则明确显示 metadata 缺失；普通流式卡 footer/layout 不变。
+
+贡献者：@colinaaa（PR #93、PR #97）、@charles5g（PR #98）、@wjiemin49-ux（PR #52 的 loopback 诊断与修复方向）。完整说明见 [V3.9.1 release notes](release-notes-v3.9.1.md)。
+
+## V3.9.0 运维与可靠性基础
+
+V3.9.0 合并 PR #84（贡献者 @Zanetach）的卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持，并将诊断和恢复能力收束为可选运维卡；普通流式卡的 footer/layout 保持不变。
+
+- **受控恢复**：运维卡只用于诊断、重新检测、两步安全修复和 Gateway 重启确认。私聊后续确认不比较操作者；群聊 repair/restart 必须由发起者确认。卡片不可用、超时或不适用时继续使用 `doctor`、`repair`、`install`、`status`、`start/stop` CLI。
+- **零配置 transport root**：sidecar state-dir 自动创建私有权限的 transport secret，不写入 config 或环境变量，也不会回显到卡片、`status` 或诊断输出。
+- **profile 路由排障**：setup 的 `--profile-id` / `--event-url` 显式参数优先于进程环境、选定 env file 和默认值；仅 `doctor` 显示脱敏的完整 identity/profile/event endpoint route chain；`status` 只显示运行时的 `last_route` 和各 profile 的 events/profile-source 摘要；`/health` 只返回当前 `active_sessions`、`metrics`、`routing` 和 `profile_diagnostics` 等实际字段。
+- **安全 repair 与清理**：install/setup 仅自动修复已知安全的 manifest/backup 状态，`--no-repair` 可关闭；无法验证的用户编辑仍拒绝覆盖。lifecycle cleanup 回收终态 runtime state，并保留有界 hash 化 metrics/history。
+- **兼容与验收边界**：Hermes/Docker 自动化回归已覆盖参数与行为边界；existing-container Docker、真实飞书私聊/群聊 repair/restart、topic、cron 和 profile mismatch 仍为待验收，不能视为已通过。
+
+完整发布说明见 [V3.9.0 release notes](release-notes-v3.9.0.md)。
 
 ## V3.8.18 Cron 话题线程回传补丁
 
@@ -279,7 +326,7 @@ V3.6.4 修复 issues #61 和 #62：用户在飞书 thread / 话题里发消息�
 
 V3.6.3 修复 issues #56-#59：Hermes v0.17.0+ / `v2026.6.19+` 将真实 streaming callback 移到 `_run_agent_inner` 后，patcher 会优先在 `_run_agent_inner` 注入 `tool.updated`、`answer.delta`、`thinking.delta`、clarify 和 approval hook，避免卡片停在“思考中”。
 
-localhost/private sidecar 默认使用 `card.interaction_mode: auto`，sidecar-owned choices 会降级成卡片内编号选项，并立即交还 Hermes 原生文本交互流程。V3.8.5 的 `/new`、`/reset`、`/model` 独立命令不依赖公网 HTTP 回调，而是直接复用 Feishu/Lark WebSocket 长连接 card action；命令执行结果也会保持卡片反馈。
+localhost/private sidecar 默认使用 `card.interaction_mode: auto`，sidecar-owned choices 会通过 Feishu/Lark WebSocket 长连接原生 card action 保持按钮交互，不需要公网 HTTP callback。只有显式配置 `card.interaction_mode: text` 时才会显示编号选项并交还 Hermes 原生文本交互。`/new`、`/reset`、`/model` 等独立命令同样复用这条路径，命令执行结果也会保持卡片反馈。
 
 这一版还隔离了非飞书平台事件，安装插件后不会影响 Telegram 原生消息；Windows `HERMES_HOME=C:\Users\...\AppData\Local\hermes\profiles\thinking` 也能正确解析 profile。
 
@@ -384,6 +431,20 @@ irm https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --config ~/.hermes/config.yaml --yes
 ```
 
+本地脚本、Docker 脚本和 PowerShell 安装器支持同一组显式参数：`--config`、`--env-file`、`--version`、`--profile-id`、`--event-url`、`--no-repair`；PowerShell 使用对应的 `-Config`、`-EnvFile`、`-Version`、`-ProfileId`、`-EventUrl`、`-NoRepair`。旧的一行安装命令无需修改。参数解析优先级固定为：显式参数 > 进程环境变量 > 选中的 `.env` > 脚本默认值。
+
+```bash
+bash install.sh \
+  --config ~/.hermes/config.yaml \
+  --env-file ~/.hermes/.env \
+  --version latest \
+  --profile-id child \
+  --event-url http://127.0.0.1:8765/events \
+  --no-repair
+```
+
+`setup` 只会原子更新 selected `.env` 中的 `HERMES_FEISHU_CARD_PROFILE_ID` 和 `HERMES_FEISHU_CARD_EVENT_URL`，其他注释、顺序和未知 key 保持不变。event URL 必须是无凭据、query 和 fragment 的 HTTP(S) `/events` endpoint；host 可使用 loopback、`host.docker.internal` 或单标签 Docker Compose service 名称。
+
 安装完成后可以检查 sidecar 状态：
 
 ```bash
@@ -418,7 +479,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v3.8.18`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.0.0`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -426,8 +487,8 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v3.8.18
-bash install-docker.sh
+export HFC_VERSION=v4.0.4
+bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
 `docker-compose.example.yml` 只是适配示例，不是官方镜像。它展示 `/opt/hermes`、`/opt/data` 挂载和非交互安装方式。
@@ -448,6 +509,16 @@ python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --ye
 ```
 
 `setup` 是整合安装器：自动生成配置、检查 Hermes 版本和代码 anchor、把插件安装到 Hermes Gateway 实际运行的 venv Python、安装 hook、启动 sidecar 并做健康检查。它支持 `v2026.4.23` 起的旧版 Hermes，也支持 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 新版 anchor；Hermes `VERSION` 可带或不带 `v` 前缀，也可从 `Hermes Agent v0.18.2 (...)` 这类描述型版本中提取数字版本。V3.8.6 起，Docker/source-stripped 环境缺少 `VERSION` 和 `.git` 时也可用 `gateway/run.py` anchor 兜底识别；当前版本在 `VERSION` 可读但不可解析时，也会在 anchors 可验证后继续安装。
+
+多 profile 安装后可用 `doctor` 只读检查完整脱敏 route chain；`status` 仅摘要运行时路由和 profile 事件，`/health` 仅报告实际 routing health 字段。`doctor` 输出不包含 App Secret、token 或 URL credentials：
+
+```bash
+python3 -m hermes_feishu_card.cli doctor \
+  --config ~/.hermes/config.yaml \
+  --hermes-dir ~/.hermes/hermes-agent \
+  --profile-id child \
+  --explain
+```
 
 如果你使用 Hermes 默认目录，也可以把凭据放在 `~/.hermes/.env`：
 
@@ -596,7 +667,7 @@ card:
   footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-多 Profile 模式下，`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会覆盖 profile 内的 `feishu` 配置。`footer_fields` 支持 `duration`、`model`、`input_tokens`、`output_tokens`、`context`。
+多 Profile 模式下，`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会覆盖 profile 内的 `feishu` 配置。`footer_fields` 支持 `duration`、`model`、`input_tokens`、`output_tokens`、`context`、`subscription_usage`。其中 `subscription_usage` 默认关闭；显式加入后，完成态会通过 Hermes runtime 的 `fetch_account_usage("openai-codex")` 显示 `5h 26% · weekly 89%` 风格的剩余额度。旧 Hermes、未登录、网络错误或超时会静默跳过。
 
 ## 飞书应用配置
 
@@ -638,6 +709,7 @@ streaming:
 | `doctor --config ... --hermes-dir ...` | 诊断 Hermes 版本、runtime import、`hook_strategy`、`compatibility`、anchors 和原因；支持 `--explain` / `--json` |
 | `install --hermes-dir ... --yes` | 安装插件到 Hermes runtime venv，并安装 hook 到 Hermes |
 | `repair --hermes-dir ... --yes` | 修复可验证的 hook manifest/backup 状态，不覆盖用户改动 |
+| `setup --repair ... --yes` / `--no-repair` | 自动修复已知安全状态，或显式关闭自动 repair |
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
 | `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
 | `start --config ...` | 启动 sidecar |
@@ -684,6 +756,10 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.0.0](release-notes-v4.0.0.md) | 2026-07-12 | 实时工具 preview Header、公开阶段输出正文、等待/失败/完成状态衔接与兼容降级 |
+| [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | 裸 `/resume` 原生会话下拉与模型 footer 安全语义色；布局和 Hermes 安全恢复路径不变 |
+| [v3.9.1](release-notes-v3.9.1.md) | 2026-07-11 | 完成答案、打断终态、模型选择回调和 marker-only 安装恢复可靠性热修；普通 footer/layout 不变 |
+| [v3.9.0](release-notes-v3.9.0.md) | 2026-07-11 | PR #84 / @Zanetach：卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持、运维安全修复/重启与 CLI fallback；普通流式卡的 footer/layout 保持不变 |
 | [v3.8.18](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.18) | 2026-07 | PR #91：cron 卡片携带 `thread_id` 回到飞书话题原线程 |
 | [v3.8.17](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.17) | 2026-07 | PR #77：cron `deliver=origin/all` 等路由意图会解析到 Feishu 目标并发送卡片 |
 | [v3.8.16](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v3.8.16) | 2026-07 | issue #89 / PR #88：话题群复用 `message_id` 时第二条及后续消息重新发送卡片 |
@@ -758,6 +834,13 @@ python3 -m pytest -q
 - [colinaaa](https://github.com/colinaaa) — [PR #88](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/88) 话题群 `message_id` 复用下第二轮消息新卡片修复（V3.8.16）
 - [colinaaa](https://github.com/colinaaa) — [PR #91](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/91) cron 结果回到飞书话题群原线程的 `thread_id` 路由修复（V3.8.18）
 - [zayn-0101](https://github.com/zayn-0101) — [PR #77](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/77) cron `deliver=origin/all` 路由意图卡片投递修复（V3.8.17）
+- [Zanetach](https://github.com/Zanetach) — [PR #84](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/84) 卡片 progress-status 路由与 `.env` 白名单扩展的 profile 环境支持（V3.9.0）
+- [colinaaa](https://github.com/colinaaa) — [PR #93](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/93) 打断任务终态；[PR #97](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/97) 完成答案保留（V3.9.1）
+- [charles5g](https://github.com/charles5g) — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) 模型选择异步 callback 与原卡更新（V3.9.1）
+- [wjiemin49-ux](https://github.com/wjiemin49-ux) — [PR #52](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/52) loopback 健康检查代理诊断与修复方向（V3.9.1 采用）
+- [colinaaa](https://github.com/colinaaa) — [Issue #94](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/94) 裸 `/resume` 原生选择器的需求、流程与安全边界（V3.10.0）
+- [charles5g](https://github.com/charles5g) / jackmim — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) 模型 footer 语义色创意（V3.10.0，主线补充 HTML 转义）
+- [tianqiii](https://github.com/tianqiii) — [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) Codex 订阅配额 footer 的需求、Hermes 原生接口方案与展示格式（V4.0.2）
 
 ## 安全说明
 
