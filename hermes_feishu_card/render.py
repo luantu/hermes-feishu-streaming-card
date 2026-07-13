@@ -205,6 +205,66 @@ def render_card(
     return card
 
 
+def render_cards(
+    session: CardSession,
+    footer_fields: list[str] | tuple[str, ...] | None = None,
+    title: str = DEFAULT_TITLE,
+    interaction_mode: str = "callback",
+    show_reasoning: bool = True,
+    timeline_expanded: bool = False,
+    max_timeline_items: int = 12,
+    max_reasoning_chars: int = 1200,
+    max_tool_result_chars: int = 600,
+    loading_gif_img_key: str | None = None,
+    status_config: Optional[StatusConfig] = None,
+) -> list[Dict[str, Any]]:
+    main_text = normalize_stream_text(session.visible_main_text)
+    content_parts = _split_content_by_tables(main_text)
+    if len(content_parts) <= 1:
+        return [render_card(
+            session, footer_fields=footer_fields, title=title,
+            interaction_mode=interaction_mode, show_reasoning=show_reasoning,
+            timeline_expanded=timeline_expanded, max_timeline_items=max_timeline_items,
+            max_reasoning_chars=max_reasoning_chars, max_tool_result_chars=max_tool_result_chars,
+            loading_gif_img_key=loading_gif_img_key, status_config=status_config,
+        )]
+    cards = []
+    for index, part_text in enumerate(content_parts):
+        part_card = render_card(
+            session, footer_fields=footer_fields,
+            title=f"{title} ({index + 1}/{len(content_parts)})",
+            interaction_mode=interaction_mode, show_reasoning=show_reasoning,
+            timeline_expanded=timeline_expanded, max_timeline_items=max_timeline_items,
+            max_reasoning_chars=max_reasoning_chars, max_tool_result_chars=max_tool_result_chars,
+            loading_gif_img_key=loading_gif_img_key, status_config=status_config,
+        )
+        if part_card:
+            cards.append(part_card)
+    return cards
+
+
+def _split_content_by_tables(text: str) -> list[str]:
+    from .text import count_markdown_tables, MAX_CARD_TABLES
+    table_count = count_markdown_tables(text)
+    if table_count <= MAX_CARD_TABLES:
+        return [text] if text else []
+    blocks = _markdown_structure_blocks(text)
+    parts: list[str] = []
+    current_tables = 0
+    current_blocks: list[str] = []
+    for block in blocks:
+        block_tables = count_markdown_tables(block)
+        if current_tables + block_tables > MAX_CARD_TABLES and current_tables > 0:
+            parts.append("".join(current_blocks))
+            current_blocks = []
+            current_tables = 0
+        current_blocks.append(block)
+        current_tables += block_tables
+    if current_blocks:
+        parts.append("".join(current_blocks))
+    return parts
+
+
 def _render_status(
     session: CardSession, *, status_config: Optional[StatusConfig] = None
 ) -> Dict[str, str]:
@@ -278,20 +338,6 @@ def _sanitize_runtime_header(text: str) -> str:
 
 
 def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
-    import re
-
-    from .text import count_markdown_tables, MAX_CARD_TABLES
-    table_count = count_markdown_tables(main_text)
-    if table_count > MAX_CARD_TABLES:
-        matches = list(re.finditer(r'^\|[-: ]+\|', main_text, re.MULTILINE))
-        cutoff = matches[MAX_CARD_TABLES - 1].end()
-        rest = main_text[cutoff:]
-        next_para = re.search(r'\n\n', rest)
-        if next_para:
-            cutoff += next_para.start()
-        main_text = main_text[:cutoff].rstrip() + (
-            "\n\n> 内容含超过 5 个表格，超出部分已省略。"
-        )
     chunks = split_markdown_blocks(main_text, MAIN_CONTENT_CHUNK_CHARS)
     elements = []
     for index, chunk in enumerate(chunks):
