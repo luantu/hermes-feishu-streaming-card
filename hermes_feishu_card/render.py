@@ -402,7 +402,7 @@ def _render_timeline_elements(
                 _timeline_markdown_elements(
                     "\n".join(lines),
                     f"auxiliary_timeline_reasoningentry_{index}",
-                    text_size="small",
+                    text_size="x-small",
                 )
             )
         elif item.kind == "tool":
@@ -581,7 +581,7 @@ def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
             "tag": "markdown",
             "content": "生成中",
             "text_align": "left",
-            "text_size": "small",
+            "text_size": "x-small",
             "icon": {
                 "tag": "custom_icon",
                 "img_key": img_key,
