@@ -23,6 +23,10 @@ SLASH_CONFIRM_PATCH_BEGIN = "# HERMES_FEISHU_CARD_SLASH_CONFIRM_PATCH_BEGIN"
 SLASH_CONFIRM_PATCH_END = "# HERMES_FEISHU_CARD_SLASH_CONFIRM_PATCH_END"
 COMMAND_CARD_PATCH_BEGIN = "# HERMES_FEISHU_CARD_COMMAND_CARD_PATCH_BEGIN"
 COMMAND_CARD_PATCH_END = "# HERMES_FEISHU_CARD_COMMAND_CARD_PATCH_END"
+COMMAND_CARD_STARTUP_PATCH_BEGIN = (
+    "# HERMES_FEISHU_CARD_COMMAND_CARD_STARTUP_PATCH_BEGIN"
+)
+COMMAND_CARD_STARTUP_PATCH_END = "# HERMES_FEISHU_CARD_COMMAND_CARD_STARTUP_PATCH_END"
 PLATFORM_NOTICE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_PLATFORM_NOTICE_PATCH_BEGIN"
 PLATFORM_NOTICE_PATCH_END = "# HERMES_FEISHU_CARD_PLATFORM_NOTICE_PATCH_END"
 HFC_COMMAND_PATCH_BEGIN = "# HERMES_FEISHU_CARD_HFC_COMMAND_PATCH_BEGIN"
@@ -39,10 +43,11 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
     if strategy not in _SUPPORTED_STRATEGIES:
         raise ValueError(f"unsupported patch strategy: {strategy}")
     content = _apply_start_patch(content, strategy=strategy)
-    content = _apply_complete_patch(content)
+    content = _apply_complete_patch(content, strategy=strategy)
     content = _apply_queued_complete_patch(content)
     if strategy == "gateway_run_013_plus":
         content = _apply_cron_patch(content)
+        content = _apply_command_card_startup_patch(content)
         content = _apply_command_card_adapter_patch(content)
         content = _apply_hfc_command_patch(content)
         content = _apply_platform_notice_patch(content)
@@ -153,14 +158,27 @@ def _apply_start_patch(content: str, *, strategy: str) -> str:
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
-def _apply_complete_patch(content: str) -> str:
+def _apply_complete_patch(content: str, *, strategy: str = "legacy_gateway_run") -> str:
+    renderer = (
+        _render_complete_hook_block_with_reply_anchor
+        if strategy == "gateway_run_013_plus"
+        else _render_complete_hook_block
+    )
+
     owned_block = _find_owned_complete_block(content)
     if owned_block is not None:
+        # Re-apply from a clean slate so a recognised block migrates to the
+        # current expected location (for example, from after an
+        # `already_sent` early return to before it) and to the current
+        # rendering in one pass.
+        stripped = _remove_complete_patch(content)
+        if stripped != content:
+            return _apply_complete_patch(stripped, strategy=strategy)
         lines = content.splitlines(keepends=True)
         begin_index, end_index = owned_block
         indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
         newline = _line_ending(lines[begin_index]) or _detect_newline(content)
-        expected = _render_complete_hook_block(indent, newline)
+        expected = renderer(indent, newline)
         if lines[begin_index : end_index + 1] == expected:
             return content
         return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
@@ -173,7 +191,7 @@ def _apply_complete_patch(content: str) -> str:
 
     newline = _detect_newline(content)
     insert_at, body_indent = completion_location
-    hook = _render_complete_hook_block(body_indent, newline)
+    hook = renderer(body_indent, newline)
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
@@ -199,8 +217,12 @@ def _apply_queued_complete_patch(content: str) -> str:
     for index, line in enumerate(lines):
         if _strip_line_ending(line).strip() != target:
             continue
-        previous = lines[index - 1] if index > 0 else ""
-        if "first_response = result.get(" not in previous:
+        # `first_response = result.get(...)` no longer sits on the immediately
+        # preceding line in newer Hermes (a multi-line call to
+        # _stream_confirmed_final_delivery is interleaved), so scan a short
+        # window above the anchor instead of only lines[index - 1].
+        lookback = lines[max(0, index - 12) : index]
+        if not any("first_response = result.get(" in item for item in lookback):
             continue
         indent = _leading_whitespace(_strip_line_ending(line))
         newline = _line_ending(line) or _detect_newline(content)
@@ -282,6 +304,39 @@ def _apply_command_card_adapter_patch(content: str) -> str:
     return content
 
 
+def _apply_command_card_startup_patch(content: str) -> str:
+    owned_block = _find_simple_marker_block(
+        content,
+        COMMAND_CARD_STARTUP_PATCH_BEGIN,
+        COMMAND_CARD_STARTUP_PATCH_END,
+        "command card startup patch markers",
+    )
+    if owned_block is not None:
+        lines = content.splitlines(keepends=True)
+        begin_index, end_index = owned_block
+        indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
+        newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+        expected = _render_command_card_startup_hook_block(indent, newline)
+        if lines[begin_index : end_index + 1] == expected:
+            return content
+        return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
+
+    tree = _parse_content(content)
+    func = _find_gateway_runner_method(tree, "start")
+    if func is None:
+        return content
+    drain = _find_recovered_watcher_drain(func)
+    if drain is None or drain.lineno is None:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    insert_at = drain.lineno - 1
+    indent = _line_indent(lines, insert_at)
+    newline = _line_ending(lines[insert_at]) or _detect_newline(content)
+    hook = _render_command_card_startup_hook_block(indent, newline)
+    return "".join(lines[:insert_at] + hook + lines[insert_at:])
+
+
 def _apply_platform_notice_patch(content: str) -> str:
     owned_block = _find_simple_marker_block(
         content,
@@ -354,6 +409,13 @@ def _apply_hfc_command_patch(content: str) -> str:
 def remove_patch(content: str) -> str:
     """Remove the owned Feishu card hook block from patched Hermes content."""
     content = _remove_cron_patch(content)
+    content = _remove_simple_owned_patch(
+        content,
+        COMMAND_CARD_STARTUP_PATCH_BEGIN,
+        COMMAND_CARD_STARTUP_PATCH_END,
+        _render_command_card_startup_hook_block,
+        "command card startup patch markers",
+    )
     content = _remove_simple_owned_patch(
         content,
         COMMAND_CARD_PATCH_BEGIN,
@@ -464,6 +526,7 @@ def remove_patch_lenient(content: str) -> str:
         (THINKING_DELTA_PATCH_BEGIN, THINKING_DELTA_PATCH_END),
         (CLARIFY_PATCH_BEGIN, CLARIFY_PATCH_END),
         (APPROVAL_PATCH_BEGIN, APPROVAL_PATCH_END),
+        (COMMAND_CARD_STARTUP_PATCH_BEGIN, COMMAND_CARD_STARTUP_PATCH_END),
         (COMMAND_CARD_PATCH_BEGIN, COMMAND_CARD_PATCH_END),
         (HFC_COMMAND_PATCH_BEGIN, HFC_COMMAND_PATCH_END),
         (PLATFORM_NOTICE_PATCH_BEGIN, PLATFORM_NOTICE_PATCH_END),
@@ -612,6 +675,10 @@ def _find_completion_return_location(tree, lines):
     if handler is None:
         return None
 
+    already_sent_location = _find_already_sent_early_return_location(handler, lines)
+    if already_sent_location is not None:
+        return already_sent_location
+
     returns = [
         node
         for node in ast.walk(handler)
@@ -626,6 +693,46 @@ def _find_completion_return_location(tree, lines):
     target = max(returns, key=lambda node: node.lineno)
     insert_at = target.lineno - 1
     return insert_at, _line_indent(lines, insert_at)
+
+
+def _find_already_sent_early_return_location(handler, lines):
+    """Locate the streaming `already_sent` early-return branch, if present.
+
+    Hermes 0.18.x returns None from the handler before the final
+    `return response` when gateway streaming already delivered the text
+    (``if agent_result.get("already_sent") and not agent_result.get("failed"):``).
+    The completion hook must run before that branch or streamed turns never
+    emit ``message.completed``.
+    """
+    candidates = []
+    for node in ast.walk(handler):
+        if not isinstance(node, ast.If) or node.lineno is None:
+            continue
+        try:
+            test_source = ast.unparse(node.test)
+        except Exception:
+            continue
+        if "agent_result.get('already_sent')" not in test_source:
+            continue
+        if "not agent_result.get('failed')" not in test_source:
+            continue
+        if not _branch_returns(node.body):
+            continue
+        candidates.append(node)
+    if not candidates:
+        return None
+
+    target = min(candidates, key=lambda node: node.lineno)
+    insert_at = target.lineno - 1
+    return insert_at, _line_indent(lines, insert_at)
+
+
+def _branch_returns(body) -> bool:
+    for node in body:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Return):
+                return True
+    return False
 
 
 def _find_cron_deliver_body_location(tree, lines):
@@ -857,12 +964,16 @@ def _find_owned_complete_block(content: str):
 
     indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
     newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+    expected_with_anchor = _render_complete_hook_block_with_reply_anchor(indent, newline)
     expected = _render_complete_hook_block(indent, newline)
     v400 = _render_v400_complete_hook_block(indent, newline)
     legacy = _render_legacy_complete_hook_block(indent, newline)
     previous_async = _render_previous_async_complete_hook_block(indent, newline)
     previous_async_without_platform = (
         _render_previous_async_complete_hook_block_without_platform_guard(indent, newline)
+    )
+    expected_with_anchor_silent = _with_silent_exception_handler(
+        expected_with_anchor, indent, newline
     )
     expected_silent = _with_silent_exception_handler(expected, indent, newline)
     v400_silent = _with_silent_exception_handler(v400, indent, newline)
@@ -875,11 +986,13 @@ def _find_owned_complete_block(content: str):
     )
     actual = lines[begin_index : end_index + 1]
     if actual not in (
+        expected_with_anchor,
         expected,
         v400,
         legacy,
         previous_async,
         previous_async_without_platform,
+        expected_with_anchor_silent,
         expected_silent,
         v400_silent,
         legacy_silent,
@@ -1011,6 +1124,40 @@ def _find_async_function(tree, name: str):
                 if isinstance(child, ast.AsyncFunctionDef) and child.name == name:
                     return child
 
+    return None
+
+
+def _find_gateway_runner_method(tree, name: str):
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name != "GatewayRunner":
+            continue
+        for child in node.body:
+            if isinstance(child, ast.AsyncFunctionDef) and child.name == name:
+                return child
+    return None
+
+
+def _find_recovered_watcher_drain(func):
+    for node in func.body:
+        if not isinstance(node, ast.Try):
+            continue
+        has_pending_watchers = any(
+            isinstance(child, ast.Attribute)
+            and child.attr == "pending_watchers"
+            and isinstance(child.value, ast.Name)
+            and child.value.id == "process_registry"
+            for child in ast.walk(node)
+        )
+        has_watcher_call = any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == "_run_process_watcher"
+            and isinstance(child.func.value, ast.Name)
+            and child.func.value.id == "self"
+            for child in ast.walk(node)
+        )
+        if has_pending_watchers and has_watcher_call:
+            return node
     return None
 
 
@@ -1259,6 +1406,39 @@ def _render_complete_hook_block(indent: str, newline: str):
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{COMPLETE_PATCH_END}{newline}",
     ]
+
+
+def _render_complete_hook_block_with_reply_anchor(indent: str, newline: str):
+    """Completion hook for gateway_run_013_plus handlers.
+
+    Derives an explicit message_id from the same reply anchor the started and
+    delta hooks use, so the terminal event always lands on the session that
+    owns the card instead of relying on the ambiguous terminal fallback cache
+    (which can make build_event return None on streamed turns).
+    """
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    block = list(_render_complete_hook_block(indent, newline))
+    anchor_lines = [
+        f"{inner_indent}_hfc_completed_message_id = None{newline}",
+        f"{inner_indent}try:{newline}",
+        f"{deeper_indent}_hfc_completed_message_id = self._reply_anchor_for_event(event){newline}",
+        f"{inner_indent}except Exception:{newline}",
+        f"{deeper_indent}_hfc_completed_message_id = getattr(event, \"message_id\", None){newline}",
+    ]
+    import_index = next(
+        index
+        for index, line in enumerate(block)
+        if "native_media_only_response as _hfc_media_only" in line
+    )
+    block[import_index + 1 : import_index + 1] = anchor_lines
+    locals_index = next(
+        index for index, line in enumerate(block) if "**locals()," in line
+    )
+    block[locals_index + 1 : locals_index + 1] = [
+        f"{deeper_indent}\"message_id\": _hfc_completed_message_id,{newline}"
+    ]
+    return block
 
 
 def _render_v400_complete_hook_block(indent: str, newline: str):
@@ -1601,6 +1781,21 @@ def _render_command_card_adapter_hook_block(indent: str, newline: str):
         f"{inner_indent}_hfc_install_command_cards(self, event=event){newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{COMMAND_CARD_PATCH_END}{newline}",
+    ]
+
+
+def _render_command_card_startup_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    return [
+        f"{indent}{COMMAND_CARD_STARTUP_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import install_feishu_command_card_adapter_methods as _hfc_install_command_cards{newline}"
+        ),
+        f"{inner_indent}_hfc_install_command_cards(self){newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{COMMAND_CARD_STARTUP_PATCH_END}{newline}",
     ]
 
 

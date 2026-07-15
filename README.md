@@ -14,9 +14,7 @@
 
 ![Hermes Feishu Streaming Card 封面](docs/assets/readme-cover.png)
 
-Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片。思考过程、工具调用、最终答案、授权确认、选项选择、系统提示和运行统计会收束在卡片内，而不是散落成多条灰色原生消息。
-
-它面向真实飞书使用场景：流式内容漏字/乱序、长表格和代码块变成 raw markdown、工具过程不可见、approval/clarify 需要手工回复、话题里卡片不更新、多 bot / 多 profile 难排查，以及 Hermes 升级后 hook 兼容不确定。
+Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片。思考过程、工具调用、最终答案、授权确认、选项选择、系统提示和运行统计会收束在卡片内，而不是散落成多条灰色原生消息。<br><br>它面向真实飞书使用场景：流式内容漏字/乱序、长表格和代码块变成 raw markdown、工具过程不可见、approval/clarify 需要手工回复、话题里卡片不更新、多 bot / 多 profile 难排查，以及 Hermes 升级后 hook 兼容不确定。
 
 ![Hermes 飞书卡片命令交互、结果反馈与工具 timeline 展示](docs/assets/feishu-card-showcase-v385.png)
 
@@ -135,7 +133,7 @@ Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x �
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.4
+export HFC_VERSION=v4.0.6
 bash install-docker.sh
 ```
 
@@ -178,6 +176,8 @@ bash install-docker.sh
 
 | 版本 | 重点 |
 |---|---|
+| [v4.0.6](docs/release-notes-v4.0.6.md) | 修复 Hermes 0.18.x 完成 hook、队列完成 hook，以及无灰色原生输出且可正确收束的 background 通知卡片；新增显式且 fail-closed 的 Hermes 升级恢复 |
+| [v4.0.5](docs/release-notes-v4.0.5.md) | 修复升级后 Gateway venv 仍加载旧插件的问题；安装器会比较 runtime 版本、自动同步并在安装后复核版本与路径 |
 | [v4.0.4](docs/release-notes-v4.0.4.md) | 修复 Markdown `MEDIA:` 字面量、SDK 预绑定旧 callback 的交互转发，以及 Codex 只返回单个限额窗口时的错误 `5h` 标签 |
 | [v4.0.3](docs/release-notes-v4.0.3.md) | 修复仅升级包并重启、但仍保留 V4.0.0 completion hook 时的媒体回答灰色正文重复；匹配正文只抑制一次，原生图片/文件继续发送 |
 | [v4.0.2](docs/release-notes-v4.0.2.md) | 修复 manifest 与 backup 均可信时，合法旧 owned hook 仍被拒绝升级的问题；保留 v4.0.1 的媒体正文去重修复 |
@@ -249,7 +249,7 @@ Hermes Gateway
 - [tianqiii](https://github.com/tianqiii) - [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) Codex 订阅配额 footer 的需求、Hermes 原生接口方案与展示格式（V4.0.2）
 - [sthnow](https://github.com/sthnow) - [Issue #110](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/110) Markdown 代码中的 `MEDIA:` 字面量误解析复现、根因与期望边界（V4.0.4）
 - [zkyken](https://github.com/zkyken) - [Issue #112](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/112) lark SDK 预绑定 callback 下交互按钮失效的日志、根因线索与修复方向（V4.0.4）
-- [ShakuOvO](https://github.com/ShakuOvO) / [blakejia](https://github.com/blakejia) - [Issue #106](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/106) 与 [#111](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/111) 图片回答灰色正文重复的报告、复测与截图（V4.0.1–V4.0.3）
+- [ShakuOvO](https://github.com/ShakuOvO) / [blakejia](https://github.com/blakejia) - [Issue #106](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/106) 与 [#111](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/111) 图片回答灰色正文重复的报告、复测与截图（V4.0.1–V4.0.3）；另感谢 [blakejia](https://github.com/blakejia) 在 [#115](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/115) 提供 Gateway venv 旧版本证据、完整升级步骤与复测指标（V4.0.5）；感谢 [nasvip](https://github.com/nasvip) / [hzy](https://github.com/hzy) / [lRoccoon](https://github.com/lRoccoon) 贡献 V4.0.6 的 Hermes 升级恢复复现、background 通知卡片实现，以及 Hermes 0.18.x completion hook 生产诊断与修复
 
 ## 安全说明
 

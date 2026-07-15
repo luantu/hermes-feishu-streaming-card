@@ -163,7 +163,7 @@ V3.8.13 修复 Hermes 升级到 `v2026.7.7.2` / `0.18.2` 后卡片失效的问�
 
 - **版本格式更宽容**：`v2026.7.7.2`、`0.18.2`、`Hermes Agent v0.18.2 (...)` 这类版本 metadata 都能识别。
 - **anchor 优先保持可用**：版本 metadata 完全不可解析时，只要 `gateway/run.py` anchors 可验证，仍可用 `VERSION + gateway anchors` / `git tag + gateway anchors` 兜底。
-- **升级残留可修复**：Hermes 升级后如果 `run.py` 已是未打补丁的上游文件，`repair` 会清理 stale backup/manifest，然后 `install` 可重新安装 hook。
+- **升级残留可修复**：当前无补丁源码与旧 backup 相同时，`repair` 会自动清理 stale backup/manifest；如果 Hermes 升级确实替换了源码，默认仍拒绝，用户确认升级后需显式使用 `--accept-hermes-upgrade --yes`，且不会用旧 backup 覆盖新源码。
 
 完整发布说明见 [V3.8.13 release notes](release-notes-v3.8.13.md)。
 
@@ -487,7 +487,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.4
+export HFC_VERSION=v4.0.6
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -705,10 +705,10 @@ streaming:
 
 | 命令 | 说明 |
 |------|------|
-| `setup --hermes-dir ... --yes` | 一键安装：配置、检测、hook、sidecar、健康检查 |
+| `setup --hermes-dir ... --yes` | 一键安装：配置、检测、hook、sidecar、健康检查；确认 Hermes 替换了源码时可加 `--accept-hermes-upgrade` |
 | `doctor --config ... --hermes-dir ...` | 诊断 Hermes 版本、runtime import、`hook_strategy`、`compatibility`、anchors 和原因；支持 `--explain` / `--json` |
-| `install --hermes-dir ... --yes` | 安装插件到 Hermes runtime venv，并安装 hook 到 Hermes |
-| `repair --hermes-dir ... --yes` | 修复可验证的 hook manifest/backup 状态，不覆盖用户改动 |
+| `install --hermes-dir ... --yes` | 安装插件到 Hermes runtime venv，并安装 hook；确认 Hermes 替换了源码时可加 `--accept-hermes-upgrade` 一步恢复并重装 |
+| `repair --hermes-dir ... --yes` | 修复可验证的 hook manifest/backup 状态，不覆盖用户改动；真实升级源码变更需显式加 `--accept-hermes-upgrade` |
 | `setup --repair ... --yes` / `--no-repair` | 自动修复已知安全状态，或显式关闭自动 repair |
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
 | `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
@@ -748,14 +748,15 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 - **长表格/代码显示成 raw markdown**：V3.5.x 会结构化拆分；如果仍异常，减少单个表格列宽或代码块长度。
 - **重复卡片**：检查 `/health` metrics（`events_received`、`events_applied`、`feishu_send_successes`）。多 Profile 下 session key 为 `profile_id:message_id`。
 - **多 Profile 路由不确定**：跑 `status --config ...`，查看 `routing.last_route`、`profile.<id>.events`、`profile.<id>.last_profile_source`，再用 `smoke-feishu-card --profile-id ...` 或 `bots test --profile-id ...` 定向验证。
-- **Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 升级后无卡片**：先跑 `doctor --config ... --hermes-dir ...`，确认 `hook_strategy` 为 `gateway_run_013_plus`，再按需重新安装 hook。
-- **恢复失败**：`restore`/`uninstall` 检测到文件改动会拒绝覆盖，先跑 `doctor --explain` 看 manifest/backup/run.py 状态；若提示可自动修复，执行 `repair --hermes-dir ... --yes`，否则先备份再人工确认差异。
+- **Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 升级后无卡片**：先跑 `doctor --config ... --hermes-dir ...`，确认 `hook_strategy` 为 `gateway_run_013_plus`。如果安装器报告当前无补丁源码与旧 backup 不同，并且你已确认这是有意的 Hermes 升级，执行 `install --hermes-dir ... --accept-hermes-upgrade --yes`；否则不要绕过默认拒绝。
+- **恢复失败**：`restore`/`uninstall` 检测到文件改动会拒绝覆盖，先跑 `doctor --explain` 看 manifest/backup/run.py 状态；若提示可自动修复，执行 `repair --hermes-dir ... --yes`。只有确认 Hermes 升级替换了源码时才使用 `repair --hermes-dir ... --accept-hermes-upgrade --yes`；其他差异先备份再人工确认。
 - **只想验证本地 sidecar**：可以用 no-op client 跑测试；真实飞书 smoke 需要真实 App ID/Secret 和 chat id。
 
 ## 版本历史
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.0.6](release-notes-v4.0.6.md) | 2026-07-15 | Hermes 0.18.x terminal/queued completion、无灰色且可收束的 background 通知卡片，以及显式 fail-closed 的 Hermes 升级恢复 |
 | [v4.0.0](release-notes-v4.0.0.md) | 2026-07-12 | 实时工具 preview Header、公开阶段输出正文、等待/失败/完成状态衔接与兼容降级 |
 | [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | 裸 `/resume` 原生会话下拉与模型 footer 安全语义色；布局和 Hermes 安全恢复路径不变 |
 | [v3.9.1](release-notes-v3.9.1.md) | 2026-07-11 | 完成答案、打断终态、模型选择回调和 marker-only 安装恢复可靠性热修；普通 footer/layout 不变 |

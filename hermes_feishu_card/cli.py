@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from hermes_feishu_card import __version__ as PACKAGE_VERSION
 from hermes_feishu_card.config import load_config
 from hermes_feishu_card.bots import BotRegistry, RoutingContext
 from hermes_feishu_card.diagnostics import (
@@ -131,6 +132,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="do not automatically repair known-safe Hermes hook install state",
     )
     setup.add_argument(
+        "--accept-hermes-upgrade",
+        action="store_true",
+        help=(
+            "accept a supported unpatched Hermes source replacement and clear "
+            "only verified stale HFC install state"
+        ),
+    )
+    setup.add_argument(
         "--yes",
         action="store_true",
         required=True,
@@ -179,6 +188,15 @@ def _build_parser() -> argparse.ArgumentParser:
         command_parser.add_argument("--yes", action="store_true", required=True)
         if command == "install":
             command_parser.add_argument("--no-repair", action="store_true")
+        if command in {"install", "repair"}:
+            command_parser.add_argument(
+                "--accept-hermes-upgrade",
+                action="store_true",
+                help=(
+                    "accept a supported unpatched Hermes source replacement "
+                    "and clear only verified stale HFC install state"
+                ),
+            )
     return parser
 
 
@@ -240,7 +258,11 @@ def _run_setup(args: argparse.Namespace) -> int:
 
     if args.repair and not args.no_repair:
         repair_code = _run_repair(
-            argparse.Namespace(hermes_dir=args.hermes_dir, yes=True)
+            argparse.Namespace(
+                hermes_dir=args.hermes_dir,
+                yes=True,
+                accept_hermes_upgrade=args.accept_hermes_upgrade,
+            )
         )
         if repair_code != 0:
             return repair_code
@@ -250,6 +272,7 @@ def _run_setup(args: argparse.Namespace) -> int:
             hermes_dir=args.hermes_dir,
             yes=True,
             no_repair=args.no_repair,
+            accept_hermes_upgrade=args.accept_hermes_upgrade,
         )
     )
     if install_code != 0:
@@ -995,8 +1018,13 @@ def _detect_hermes_runtime_python(hermes_root: Path | str) -> Path | None:
 
 def _check_runtime_hook_import(runtime_python: Path) -> dict[str, Any]:
     code = (
-        "import hermes_feishu_card.hook_runtime as hook_runtime; "
-        "print(getattr(hook_runtime, '__file__', ''))"
+        "import json; "
+        "import hermes_feishu_card as package; "
+        "import hermes_feishu_card.hook_runtime; "
+        "print(json.dumps({"
+        "'version': getattr(package, '__version__', ''), "
+        "'location': getattr(package, '__file__', '')"
+        "}))"
     )
     cwd = _hermes_runtime_cwd(runtime_python)
     try:
@@ -1026,12 +1054,24 @@ def _check_runtime_hook_import(runtime_python: Path) -> dict[str, Any]:
             ),
         }
     if result.returncode == 0:
-        location = result.stdout.strip()
+        try:
+            metadata = json.loads(result.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            return {
+                "checked": True,
+                "status": "failed",
+                "python": str(runtime_python),
+                "message": "Hermes runtime returned invalid package metadata.",
+            }
+        version = str(metadata.get("version", "")).strip()
+        location = str(metadata.get("location", "")).strip()
         suffix = f" from {location}" if location else ""
         return {
             "checked": True,
             "status": "ok",
             "python": str(runtime_python),
+            "version": version,
+            "location": location,
             "message": f"Hermes runtime can import hook_runtime{suffix}.",
         }
     detail = _summarize_process_output(result)
@@ -1057,9 +1097,11 @@ def _ensure_hermes_runtime_package(detection: HermesDetection) -> None:
         print("runtime package: skipped (Hermes venv Python not found)")
         return
     report = _check_runtime_hook_import(runtime_python)
-    if report["status"] == "ok":
-        print(f"runtime package: import ok ({runtime_python})")
+    if report["status"] == "ok" and report.get("version") == PACKAGE_VERSION:
+        print(f"runtime package: {PACKAGE_VERSION} import ok ({runtime_python})")
         return
+
+    previous_version = report.get("version") if report["status"] == "ok" else None
 
     spec = _runtime_install_spec()
     if not spec:
@@ -1088,7 +1130,20 @@ def _ensure_hermes_runtime_package(detection: HermesDetection) -> None:
     report = _check_runtime_hook_import(runtime_python)
     if report["status"] != "ok":
         raise ValueError(report["message"])
-    print(f"runtime package: installed into {runtime_python}")
+    if report.get("version") != PACKAGE_VERSION:
+        actual = report.get("version") or "unknown"
+        raise ValueError(
+            "Hermes runtime package version mismatch after install: "
+            f"expected {PACKAGE_VERSION}, got {actual} from "
+            f"{report.get('location') or runtime_python}."
+        )
+    if previous_version:
+        print(
+            f"runtime package: upgraded {previous_version} -> {PACKAGE_VERSION} "
+            f"in {runtime_python}"
+        )
+    else:
+        print(f"runtime package: installed into {runtime_python}")
 
 
 def _run_runtime_pip(
@@ -1858,16 +1913,30 @@ def _run_install(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    recovery_plan = plan_recovery(detection)
+    accept_hermes_upgrade = bool(
+        getattr(args, "accept_hermes_upgrade", False)
+    )
+    recovery_plan = plan_recovery(
+        detection,
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
     if recovery_plan.actions:
         if not recovery_plan.executable:
-            print(f"error: {_first_refusal(recovery_plan)}", file=sys.stderr)
+            print(
+                "error: "
+                + _recovery_refusal_message(
+                    recovery_plan,
+                    accept_hermes_upgrade=accept_hermes_upgrade,
+                ),
+                file=sys.stderr,
+            )
             return 1
         if not getattr(args, "no_repair", False):
             try:
                 recovery_result = execute_recovery(
                     detection,
                     expected_fingerprint=recovery_plan.fingerprint,
+                    accept_hermes_upgrade=accept_hermes_upgrade,
                 )
             except (OSError, UnicodeError, RecoveryRefused) as exc:
                 print(f"error: {exc}", file=sys.stderr)
@@ -1949,7 +2018,12 @@ def _run_repair(args: argparse.Namespace) -> int:
         print(_format_hermes_detection(detection), file=sys.stderr)
         return 1
     try:
-        actions = _repair_install_state(detection)
+        actions = _repair_install_state(
+            detection,
+            accept_hermes_upgrade=bool(
+                getattr(args, "accept_hermes_upgrade", False)
+            ),
+        )
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1990,21 +2064,47 @@ def _automatic_repair_available(detection: HermesDetection) -> bool:
 
 
 def _repair_install_state(
-    detection: HermesDetection, *, dry_run: bool = False
+    detection: HermesDetection,
+    *,
+    dry_run: bool = False,
+    accept_hermes_upgrade: bool = False,
 ) -> list[str]:
-    plan = plan_recovery(detection)
+    plan = plan_recovery(
+        detection,
+        accept_hermes_upgrade=accept_hermes_upgrade,
+    )
     if not plan.actions:
         return []
     if not plan.executable:
-        raise RecoveryRefused(_first_refusal(plan))
+        raise RecoveryRefused(
+            _recovery_refusal_message(
+                plan,
+                accept_hermes_upgrade=accept_hermes_upgrade,
+            )
+        )
     if dry_run:
         return [_repair_action_message(action) for action in plan.actions]
     return list(
         execute_recovery(
             detection,
             expected_fingerprint=plan.fingerprint,
+            accept_hermes_upgrade=accept_hermes_upgrade,
         ).actions
     )
+
+
+def _recovery_refusal_message(
+    plan,
+    *,
+    accept_hermes_upgrade: bool,
+) -> str:
+    message = _first_refusal(plan)
+    if plan.state == "stale_unpatched" and not accept_hermes_upgrade:
+        message += (
+            " If Hermes was intentionally upgraded, rerun with "
+            "--accept-hermes-upgrade --yes."
+        )
+    return message
 
 
 def _repair_action_message(action: str) -> str:
