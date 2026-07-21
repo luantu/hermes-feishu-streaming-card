@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from contextlib import suppress
 from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
@@ -19,10 +19,12 @@ from typing import Any, Callable, Dict
 from aiohttp import web
 
 from .bots import RouteResult
-from .config import load_config, resolve_operations_hermes_root
+from .config import load_config, merge_card_config, resolve_operations_hermes_root
 from .diagnostics import DiagnosticFinding, DiagnosticReport, build_diagnostic_report
 from .events import EventValidationError, SidecarEvent
+from .event_auth import EventAuthenticationError, EventProofVerifier
 from .flush import FlushController
+from .feishu_client import FeishuAPIError, build_delivery_uuid
 from .lifecycle import (
     cleanup_closed_controller,
     cleanup_orphan_message_lock,
@@ -41,7 +43,7 @@ from .operations_transport import (
     derive_operation_transport_secret,
 )
 from .profile_sources import PROFILE_SOURCE_FALLBACK, PROFILE_SOURCES
-from .render import render_card, render_cards
+from .render import render_card
 from .session import CardSession
 from .status import StatusConfig
 from .subscription_usage import fetch_codex_subscription_usage
@@ -65,6 +67,9 @@ ROUTING_DIAGNOSTICS_KEY = web.AppKey("routing_diagnostics", dict)
 PROFILE_DIAGNOSTICS_KEY = web.AppKey("profile_diagnostics", dict)
 PROCESS_TOKEN_KEY = web.AppKey("process_token", str)
 METRICS_KEY = web.AppKey("metrics", SidecarMetrics)
+NOOP_MODE_KEY = web.AppKey("noop_mode", bool)
+EVENT_AUTH_REQUIRED_KEY = web.AppKey("event_auth_required", bool)
+EVENT_AUTH_VERIFIER_KEY = web.AppKey("event_auth_verifier", EventProofVerifier)
 MESSAGE_LOCKS_KEY = web.AppKey("message_locks", dict)
 MESSAGE_LOCK_USERS_KEY = web.AppKey("message_lock_users", dict)
 FOOTER_FIELDS_KEY = web.AppKey("footer_fields", Any)
@@ -72,6 +77,7 @@ CARD_TITLE_KEY = web.AppKey("card_title", str)
 BASE_CARD_CONFIG_KEY = web.AppKey("base_card_config", dict)
 OPERATIONS_STORE_KEY = web.AppKey("operations_store", OperationStore)
 OPERATIONS_CONFIG_PATH_KEY = web.AppKey("operations_config_path", Path)
+OPERATIONS_ENV_FILE_KEY = web.AppKey("operations_env_file", Any)
 OPERATIONS_HERMES_ROOT_KEY = web.AppKey("operations_hermes_root", Path)
 OPERATIONS_DELIVERIES_KEY = web.AppKey("operations_deliveries", dict)
 OPERATIONS_COMMAND_AUTH_KEY = web.AppKey(
@@ -133,6 +139,18 @@ def _ensure_logger() -> None:
     _log_handler_configured = True
 
 
+@dataclass(frozen=True)
+class CardDeliveryResult:
+    message_id: str | None
+    outcome: str
+    retry_count: int = 0
+    error_kind: str = ""
+
+    @property
+    def delivered(self) -> bool:
+        return self.outcome == "delivered" and bool(self.message_id)
+
+
 class _OperationsDiagnosticCapacityError(RuntimeError):
     pass
 
@@ -170,10 +188,19 @@ def create_app(
     card_config: dict[str, Any] | None = None,
     bot_router: Any = None,
     operations_config_path: str | Path | None = None,
+    operations_env_file: str | Path | None = None,
     operations_hermes_root: str | Path | None = None,
     operations_transport_root_secret: bytes | None = None,
+    event_auth_required: bool = False,
+    noop_mode: bool = False,
 ) -> web.Application:
     _ensure_logger()
+    valid_transport_root = (
+        isinstance(operations_transport_root_secret, bytes)
+        and len(operations_transport_root_secret) == 32
+    )
+    if event_auth_required and not valid_transport_root:
+        raise ValueError("event authentication requires a private transport root")
     app = web.Application()
     card_config = card_config or {}
     app[FEISHU_CLIENT_KEY] = feishu_client
@@ -190,6 +217,12 @@ def create_app(
     app[BOT_ROUTER_KEY] = bot_router
     app[PROCESS_TOKEN_KEY] = process_token
     app[METRICS_KEY] = SidecarMetrics()
+    app[NOOP_MODE_KEY] = bool(noop_mode)
+    app[EVENT_AUTH_REQUIRED_KEY] = bool(event_auth_required)
+    if event_auth_required:
+        app[EVENT_AUTH_VERIFIER_KEY] = EventProofVerifier(
+            operations_transport_root_secret
+        )
     app[MESSAGE_LOCKS_KEY] = {}
     app[MESSAGE_LOCK_USERS_KEY] = {}
     app[FLUSH_CONTROLLERS_KEY] = {}
@@ -228,14 +261,16 @@ def create_app(
         or Path.home() / ".hermes_feishu_card" / "config.yaml"
     ).expanduser()
     app[OPERATIONS_CONFIG_PATH_KEY] = operations_config
+    app[OPERATIONS_ENV_FILE_KEY] = (
+        Path(operations_env_file).expanduser()
+        if operations_env_file is not None
+        else None
+    )
     app[OPERATIONS_HERMES_ROOT_KEY] = resolve_operations_hermes_root(
         operations_hermes_root, config_path=operations_config
     )
     app[OPERATIONS_DELIVERIES_KEY] = {}
-    if (
-        isinstance(operations_transport_root_secret, bytes)
-        and len(operations_transport_root_secret) == 32
-    ):
+    if valid_transport_root:
         app[OPERATIONS_TRANSPORT_ROOT_KEY] = operations_transport_root_secret
         app[OPERATIONS_COMMAND_AUTH_KEY] = CommandProofVerifier(
             operations_transport_root_secret
@@ -352,7 +387,10 @@ async def _health(request: web.Request) -> web.Response:
     metrics: SidecarMetrics = request.app[METRICS_KEY]
     diagnostics = request.app[DIAGNOSTICS_KEY]
     response = {
-        "status": "healthy",
+        "status": "degraded" if request.app[NOOP_MODE_KEY] else "healthy",
+        "noop_mode": request.app[NOOP_MODE_KEY],
+        "delivery": {"mode": "noop" if request.app[NOOP_MODE_KEY] else "live"},
+        "event_auth_required": request.app[EVENT_AUTH_REQUIRED_KEY],
         "active_sessions": len(sessions),
         "process_pid": os.getpid(),
         "metrics": metrics.snapshot(),
@@ -792,22 +830,29 @@ async def _send_command_card(
     reply_to_message_id: str | None = None,
     operation_id: str = "",
 ) -> str | None:
-    message_id = await _send_card_for_app(
+    delivery = await _send_card_for_app(
         app,
         chat_id,
         card,
         bot_id,
         thread_id=thread_id,
         reply_to_message_id=reply_to_message_id,
+        delivery_key=operation_id or reply_to_message_id or "command",
+        delivery_kind="command",
     )
-    if message_id is None:
-        logger.warning("HFC command card send failed: chat_id=%s bot_id=%s", chat_id, bot_id)
+    if not delivery.delivered:
+        logger.warning(
+            "HFC command card send failed: chat_hash=%s bot_hash=%s outcome=%s",
+            _diagnostic_id_hash(chat_id),
+            _diagnostic_id_hash(bot_id or "default"),
+            delivery.outcome,
+        )
     elif operation_id:
         _store_operation_delivery(app, operation_id, {
-            "message_id": message_id,
+            "message_id": delivery.message_id,
             "bot_id": bot_id,
         })
-    return message_id
+    return delivery.message_id if delivery.delivered else None
 
 
 def _log_background_task_failure(task: asyncio.Task[None]) -> None:
@@ -988,6 +1033,7 @@ async def _build_operations_report(
             profile_id,
             profile_source,
             health,
+            app[OPERATIONS_ENV_FILE_KEY],
         )
         futures.add(future)
         future.add_done_callback(futures.discard)
@@ -1027,10 +1073,15 @@ def _build_operations_report_sync(
     profile_id: str,
     profile_source: str,
     health: dict[str, object],
+    env_file: Path | None = None,
 ) -> tuple[DiagnosticReport, HermesDetection]:
     detection = detect_hermes(hermes_root)
     try:
-        config = load_config(config_path)
+        config = (
+            load_config(config_path, env_file=env_file)
+            if env_file is not None
+            else load_config(config_path)
+        )
         recovery_plan = plan_recovery(detection)
         server = config.get("server", {})
         event_url = (
@@ -1636,6 +1687,17 @@ def _restart_output_status(output: str) -> str:
 
 async def _events(request: web.Request) -> web.Response:
     metrics: SidecarMetrics = request.app[METRICS_KEY]
+    if request.app[EVENT_AUTH_REQUIRED_KEY]:
+        body = await request.read()
+        try:
+            request.app[EVENT_AUTH_VERIFIER_KEY].verify(request.headers, body)
+        except EventAuthenticationError:
+            metrics.events_rejected += 1
+            metrics.event_auth_rejections += 1
+            return web.json_response(
+                {"ok": False, "error": "event authentication failed"},
+                status=401,
+            )
     try:
         payload = await request.json()
         event = SidecarEvent.from_dict(payload)
@@ -1802,8 +1864,13 @@ def _hfc_monitor_lines(request: web.Request, event: SidecarEvent) -> list[str]:
         "terminal_drains",
         "terminal_drain_timeouts",
         "feishu_send_attempts",
+        "feishu_noop_attempts",
         "feishu_send_successes",
         "feishu_send_failures",
+        "feishu_send_retries",
+        "feishu_send_unknown_outcomes",
+        "notice_native_fallbacks",
+        "notice_uncertain_warnings",
         "feishu_update_attempts",
         "feishu_update_successes",
         "feishu_update_failures",
@@ -1843,7 +1910,7 @@ def _hfc_group_context_lines(event: SidecarEvent, route: RouteResult) -> list[st
         "",
         "**群聊**",
         "- @机器人触发: 由 Hermes @/白名单准入控制，sidecar 只负责卡片路由和诊断。",
-        "- 群内 slash command: `/new`、`/model`、`/reset` 等独立命令先通过 Hermes @/白名单，再使用独立命令卡片；`/update` 仍保持 Hermes 后台升级流程。",
+        "- 群内 slash command: 先通过 Hermes @/白名单；所有非空文本反馈使用独立命令卡片。`/update` 仍保持后台升级流程，仅将重启前反馈卡片化。",
     ]
     if group.get("enabled"):
         allowed = "yes" if group.get("chat_allowed") else "no"
@@ -1992,9 +2059,12 @@ def _thread_id_for_event(event: SidecarEvent) -> str | None:
 def _reply_to_message_id_for_event(event: SidecarEvent) -> str | None:
     data = event.data if isinstance(event.data, dict) else {}
     reply_to = data.get("reply_to_message_id")
-    if isinstance(reply_to, str) and reply_to.startswith("om_"):
-        return reply_to
-    return None
+    if _thread_id_for_event(event):
+        if isinstance(reply_to, str) and reply_to.startswith("om_"):
+            return reply_to
+        if event.message_id.startswith("om_"):
+            return event.message_id
+        return None
     if event.message_id.startswith("om_"):
         return event.message_id
     if isinstance(reply_to, str) and reply_to.startswith("om_"):
@@ -2034,6 +2104,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             }
         ), None
 
+    if (
+        session is None
+        and event.event == "system.notice"
+        and not _is_independent_notice_event(event)
+        and not _is_compaction_session_start(event)
+    ):
+        # Session-scoped notices are auxiliary timeline entries, not a reason
+        # to create a new primary card. Background callbacks can outlive the
+        # turn that supplied their reply anchor; report applied=False so the
+        # runtime wrapper retries it as an independent card with its own lifecycle.
+        metrics.events_ignored += 1
+        return web.json_response({"ok": True, "applied": False}), None
+
     if event.event == "message.started":
         if session is not None:
             if session.status in {"completed", "failed"}:
@@ -2070,8 +2153,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             if route is None:
                 _cleanup_failed_session_state(request.app, session_key, session)
                 metrics.events_rejected += 1
+                delivery = CardDeliveryResult(
+                    message_id=None,
+                    outcome="not_sent",
+                    error_kind="RouteResolutionError",
+                )
                 return web.json_response(
-                    {"ok": False, "error": "bot route failed"},
+                    {
+                        "ok": False,
+                        "error": "bot route failed",
+                        "delivery": _delivery_payload(delivery),
+                    },
                     status=502,
                 ), None
             session_card_config = _resolve_session_card_config(
@@ -2079,36 +2171,49 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             )
             request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
             _refresh_session_display_status(request, session)
-            message_id = await _send_card(
+            delivery = await _send_card(
                 request,
                 event.chat_id,
                 _render_session_card(request, session),
                 route.bot_id,
                 thread_id=_thread_id_for_event(event),
                 reply_to_message_id=_reply_to_message_id_for_event(event),
+                delivery_key=session_key,
+                delivery_kind=_delivery_kind(event) or "chat",
             )
-            if message_id is None:
+            if not delivery.delivered:
                 _cleanup_failed_session_state(
                     request.app,
                     session_key,
                     session,
                     session_card_config,
                 )
+                _record_notice_delivery_decision(metrics, event, delivery)
                 metrics.events_rejected += 1
                 return web.json_response(
-                    {"ok": False, "error": "feishu send failed"},
+                    {
+                        "ok": False,
+                        "error": "feishu send failed",
+                        "delivery": _delivery_payload(delivery),
+                    },
                     status=502,
                 ), None
-            feishu_message_ids[session_key] = message_id
+            feishu_message_ids[session_key] = delivery.message_id
             message_bot_ids[session_key] = route.bot_id
         if applied:
             metrics.events_applied += 1
         else:
             metrics.events_ignored += 1
-        return web.json_response({"ok": True, "applied": applied}), None
+        return web.json_response(
+            {
+                "ok": True,
+                "applied": applied,
+                "delivery": _delivery_payload(delivery),
+            }
+        ), None
 
     if session is None:
-        if event.event in SESSION_CREATING_EVENTS:
+        if event.event in SESSION_CREATING_EVENTS or _is_compaction_session_start(event):
             # Abandon stale sessions for the same conversation when a new
             # session is being created.  This handles the interrupt scenario:
             # the gateway interrupts a running turn and starts a new one
@@ -2136,9 +2241,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     _cleanup_failed_session_state(request.app, session_key, session)
                     if is_cron_completed:
                         metrics.cron_fallbacks += 1
+                    delivery = CardDeliveryResult(
+                        message_id=None,
+                        outcome="not_sent",
+                        error_kind="RouteResolutionError",
+                    )
+                    _record_notice_delivery_decision(metrics, event, delivery)
                     metrics.events_rejected += 1
                     return web.json_response(
-                        {"ok": False, "error": "bot route failed"},
+                        {
+                            "ok": False,
+                            "error": "bot route failed",
+                            "delivery": _delivery_payload(delivery),
+                        },
                         status=502,
                     ), None
                 session_card_config = _resolve_session_card_config(
@@ -2146,15 +2261,18 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 )
                 request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
                 _refresh_session_display_status(request, session)
-                message_id = await _send_card(
+                delivery = await _send_card(
                     request,
                     event.chat_id,
                     _render_session_card(request, session),
                     route.bot_id,
                     thread_id=_thread_id_for_event(event),
                     reply_to_message_id=_reply_to_message_id_for_event(event),
+                    delivery_key=session_key,
+                    delivery_kind=_delivery_kind(event)
+                    or ("notice" if event.event == "system.notice" else "chat"),
                 )
-                if message_id is None:
+                if not delivery.delivered:
                     _cleanup_failed_session_state(
                         request.app,
                         session_key,
@@ -2163,11 +2281,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     )
                     if is_cron_completed:
                         metrics.cron_fallbacks += 1
+                    _record_notice_delivery_decision(metrics, event, delivery)
                     metrics.events_rejected += 1
                     return web.json_response(
-                        {"ok": False, "error": "feishu send failed"},
+                        {
+                            "ok": False,
+                            "error": "feishu send failed",
+                            "delivery": _delivery_payload(delivery),
+                        },
                         status=502,
                     ), None
+                message_id = str(delivery.message_id)
                 feishu_message_ids[session_key] = message_id
                 message_bot_ids[session_key] = route.bot_id
                 if event.event == "interaction.requested":
@@ -2188,6 +2312,8 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             else:
                 metrics.events_ignored += 1
             response_payload = {"ok": True, "applied": applied}
+            if applied:
+                response_payload["delivery"] = _delivery_payload(delivery)
             if event.event == "interaction.requested":
                 response_payload["interaction_mode"] = _interaction_mode_for_session_key(
                     request.app,
@@ -2443,13 +2569,16 @@ def _record_attachment_diagnostics(app: web.Application, event: SidecarEvent) ->
     attachments = data.get("attachments")
     if not isinstance(attachments, list) or not attachments:
         return
+    native_delivery = str(data.get("native_delivery") or "allowed").strip().lower()
+    if native_delivery not in {"allowed", "required"}:
+        native_delivery = "allowed"
     app[DIAGNOSTICS_KEY]["last_attachment_event"] = {
         "message_id_hash": _diagnostic_id_hash(event.message_id),
         "event": event.event,
         "attachment_count": len(
             [item for item in attachments if isinstance(item, dict)]
         ),
-        "native_delivery": "allowed",
+        "native_delivery": native_delivery,
     }
 
 
@@ -2478,6 +2607,18 @@ def _is_independent_notice_event(event: SidecarEvent) -> bool:
     scope = str(data.get("notice_scope") or "session").strip().lower()
     delivery_kind = str(data.get("delivery_kind") or "").strip().lower()
     return scope == "independent" or delivery_kind == "notice"
+
+
+def _is_compaction_session_start(event: SidecarEvent) -> bool:
+    if event.event != "system.notice":
+        return False
+    data = event.data if isinstance(event.data, dict) else {}
+    return (
+        str(data.get("notice_kind") or "") == "context-compaction"
+        and str(data.get("phase") or "") == "started"
+        and data.get("create_session") is True
+        and str(data.get("notice_scope") or "session").strip().lower() == "session"
+    )
 
 
 def _event_is_terminal(event: SidecarEvent) -> bool:
@@ -2587,31 +2728,11 @@ def _render_session_card_for_app(
             card_config.get("max_tool_result_chars"), 600
         ),
         status_config=StatusConfig.from_mapping(card_config.get("status")),
-    )
-
-
-def _render_session_cards(request: web.Request, session: CardSession) -> list[dict[str, Any]]:
-    app = request.app
-    footer_fields = _footer_fields_for_session(app, session)
-    card_config = app[SESSION_CARD_CONFIGS_KEY].get(
-        _session_key_for_session(app, session), {},
-    )
-    title = card_config.get("title", app[CARD_TITLE_KEY])
-    if not isinstance(title, str):
-        title = app[CARD_TITLE_KEY]
-    interaction_mode = _interaction_mode_for_session_key(
-        app, _session_key_for_session(app, session),
-    )
-    loading_gif_img_key = _resolve_gif_img_key(app, session)
-    return render_cards(
-        session, footer_fields=footer_fields, title=title,
-        interaction_mode=interaction_mode, loading_gif_img_key=loading_gif_img_key,
-        show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
-        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), session.status not in {"completed", "failed"}),
-        max_timeline_items=_safe_positive_int(card_config.get("max_timeline_items"), 12),
-        max_reasoning_chars=_safe_positive_int(card_config.get("max_reasoning_chars"), 1200),
-        max_tool_result_chars=_safe_positive_int(card_config.get("max_tool_result_chars"), 600),
-        status_config=StatusConfig.from_mapping(card_config.get("status")),
+        text_sizes=(
+            card_config.get("text_sizes")
+            if isinstance(card_config.get("text_sizes"), dict)
+            else None
+        ),
     )
 
 
@@ -2701,10 +2822,7 @@ def _card_config_for_client(
             return resolver(bot_id, base_card=base_card, profile_card=profile_card)
         except Exception:
             return dict(base_card)
-    resolved = dict(base_card)
-    if isinstance(profile_card, dict):
-        resolved.update(profile_card)
-    return resolved
+    return merge_card_config(base_card, profile_card)
 
 
 async def _send_card(
@@ -2714,7 +2832,9 @@ async def _send_card(
     bot_id: str | None,
     thread_id: str | None = None,
     reply_to_message_id: str | None = None,
-) -> str | None:
+    delivery_key: str = "",
+    delivery_kind: str = "chat",
+) -> CardDeliveryResult:
     return await _send_card_for_app(
         request.app,
         chat_id,
@@ -2722,6 +2842,8 @@ async def _send_card(
         bot_id,
         thread_id=thread_id,
         reply_to_message_id=reply_to_message_id,
+        delivery_key=delivery_key,
+        delivery_kind=delivery_kind,
     )
 
 
@@ -2732,21 +2854,130 @@ async def _send_card_for_app(
     bot_id: str | None,
     thread_id: str | None = None,
     reply_to_message_id: str | None = None,
-) -> str | None:
+    delivery_key: str = "",
+    delivery_kind: str = "chat",
+) -> CardDeliveryResult:
     metrics: SidecarMetrics = app[METRICS_KEY]
     metrics.feishu_send_attempts += 1
-    try:
-        message_id = await _client_for_bot(app, bot_id).send_card(
-            chat_id,
-            card,
-            thread_id=thread_id,
-            reply_to_message_id=reply_to_message_id,
+    if app[NOOP_MODE_KEY]:
+        result = CardDeliveryResult(
+            message_id=None,
+            outcome="not_sent",
+            error_kind="NoopDeliveryMode",
         )
-    except Exception:
+        metrics.feishu_noop_attempts += 1
         metrics.feishu_send_failures += 1
-        return None
+        _record_send_error(app, result, bot_id=bot_id)
+        return result
+    delivery_uuid = build_delivery_uuid(
+        bot_id=bot_id or "default",
+        chat_id=chat_id,
+        reply_to_message_id=reply_to_message_id or "",
+        session_key=delivery_key,
+        delivery_kind=delivery_kind,
+    )
+    client = _client_for_bot(app, bot_id)
+    try:
+        send_delivery = getattr(client, "send_card_delivery", None)
+        if callable(send_delivery):
+            send_result = await send_delivery(
+                chat_id,
+                card,
+                thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+                delivery_uuid=delivery_uuid,
+            )
+            message_id = str(getattr(send_result, "message_id", "") or "")
+            retry_count = int(getattr(send_result, "retry_count", 0) or 0)
+        else:
+            message_id = await client.send_card(
+                chat_id,
+                card,
+                thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+            retry_count = 0
+        if not isinstance(message_id, str) or not message_id:
+            raise FeishuAPIError(
+                "Feishu send result missing message_id",
+                retryable=False,
+                outcome="unknown",
+                retry_count=retry_count,
+            )
+    except FeishuAPIError as exc:
+        outcome = exc.outcome if exc.outcome in {"not_sent", "unknown"} else "unknown"
+        result = CardDeliveryResult(
+            message_id=None,
+            outcome=outcome,
+            retry_count=max(0, int(exc.retry_count)),
+            error_kind=exc.__class__.__name__,
+        )
+        metrics.feishu_send_failures += 1
+        metrics.feishu_send_retries += result.retry_count
+        if result.outcome == "unknown":
+            metrics.feishu_send_unknown_outcomes += 1
+        _record_send_error(
+            app,
+            result,
+            bot_id=bot_id,
+            status_code=exc.status_code,
+            api_code=exc.api_code,
+        )
+        return result
+    except Exception as exc:
+        result = CardDeliveryResult(
+            message_id=None,
+            outcome="unknown",
+            error_kind=exc.__class__.__name__,
+        )
+        metrics.feishu_send_failures += 1
+        metrics.feishu_send_unknown_outcomes += 1
+        _record_send_error(app, result, bot_id=bot_id)
+        return result
+    metrics.feishu_send_retries += retry_count
     metrics.feishu_send_successes += 1
-    return message_id
+    return CardDeliveryResult(
+        message_id=message_id,
+        outcome="delivered",
+        retry_count=retry_count,
+    )
+
+
+def _delivery_payload(result: CardDeliveryResult) -> dict[str, str]:
+    return {"outcome": result.outcome}
+
+
+def _record_send_error(
+    app: web.Application,
+    result: CardDeliveryResult,
+    *,
+    bot_id: str | None,
+    status_code: int | None = None,
+    api_code: int | str | None = None,
+) -> None:
+    diagnostic: dict[str, Any] = {
+        "outcome": result.outcome,
+        "error_kind": result.error_kind,
+        "bot_hash": _diagnostic_id_hash(bot_id or "default"),
+    }
+    if status_code is not None:
+        diagnostic["status_code"] = status_code
+    if api_code is not None:
+        diagnostic["api_code"] = api_code
+    app[DIAGNOSTICS_KEY]["last_send_error"] = diagnostic
+
+
+def _record_notice_delivery_decision(
+    metrics: SidecarMetrics,
+    event: SidecarEvent,
+    result: CardDeliveryResult,
+) -> None:
+    if event.event != "system.notice" or result.delivered:
+        return
+    if result.outcome == "not_sent":
+        metrics.notice_native_fallbacks += 1
+    else:
+        metrics.notice_uncertain_warnings += 1
 
 
 async def _update_card(
@@ -2790,6 +3021,35 @@ async def _update_card_for_app(
             return False
         return True
     return False
+
+
+async def _delete_and_resend(
+    request: web.Request,
+    session: CardSession,
+    old_message_id: str,
+    cards: list[dict[str, Any]],
+    bot_id: str | None,
+) -> bool:
+    metrics: SidecarMetrics = request.app[METRICS_KEY]
+    metrics.feishu_delete_attempts += 1
+    try:
+        await _client_for_bot(request.app, bot_id).delete_message(old_message_id)
+        metrics.feishu_delete_successes += 1
+    except Exception:
+        metrics.feishu_delete_failures += 1
+    metrics.feishu_resend_attempts += 1
+    new_card = cards[0] if cards else _render_session_card(request, session)
+    new_message_id = await _send_card(
+        request, session.chat_id, new_card, bot_id,
+    )
+    if new_message_id is None:
+        metrics.feishu_resend_failures += 1
+        return False
+    metrics.feishu_resend_successes += 1
+    feishu_message_ids: Dict[str, str] = request.app[FEISHU_MESSAGE_IDS_KEY]
+    session_key = _session_key_for_session(request.app, session)
+    feishu_message_ids[session_key] = new_message_id
+    return True
 
 
 async def _retry_terminal_update(

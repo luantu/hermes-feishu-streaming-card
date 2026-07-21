@@ -13,6 +13,14 @@ Hermes Gateway
 
 Hermes 进程内的 hook 只负责提取和转发。sidecar 负责会话状态、卡片渲染、Feishu API、重试、诊断和 metrics。
 
+## 初始卡片可靠投递
+
+sidecar 为 Feishu create/reply 初始卡片生成同一条逻辑投递稳定、不同 bot/route 隔离的 `delivery_uuid`。仅 429、502、503、504、连接异常和超时会在 Feishu API 边界内重试，最多 3 次；不重试 `/events`，PATCH 更新继续沿用原有独立策略。
+
+初始投递对 hook 只暴露三种结果：`delivered` 表示拿到 message id；`not_sent` 表示确定未发送；`unknown` 表示请求可能已被飞书接收但客户端无法确认。异常、日志和 `/health` 不记录 UUID、原始响应正文、chat/message id、URL 或凭据。
+
+`/health.metrics` 使用 `feishu_send_retries` 统计额外 Feishu 尝试，`feishu_send_unknown_outcomes` 统计不确定结果，`notice_native_fallbacks` / `notice_uncertain_warnings` 分别统计 hook 被要求执行原文回退和通用提示的次数；后两项不代表原生飞书发送一定成功。
+
 ## 普通消息生命周期
 
 1. `message.started`
@@ -73,6 +81,22 @@ message.completed
 
 sidecar 仍应创建 session 并发送初始卡片，不能把整条流计入 `events_ignored`。
 
+## 上下文压缩运行阶段
+
+新版 Hermes 在 `_status_callback_sync` 里产生 `Compacting context` 状态。patcher 在 Hermes 自身过滤前插入可移除、fail-open 的 hook；`hook_runtime` 只匹配这个固定标记并发出 `system.notice`，其中 `notice_kind=context-compaction`、`phase=started`、`create_session=true`。
+
+- 已有 session：更新同一张卡，Header 临时显示“正在压缩上下文”。
+- 压缩是首个可见事件：仅该精确事件可创建 primary card，并保留原 reply/topic 锚点；后续 answer/tool 继续更新同一张卡。
+- thinking、answer、tool 或 terminal 到来时立即清除运行阶段；不写入最终答案、footer 或诊断正文。
+- 缺少 callback anchor 时 `status_callback=false`，doctor 报 partial compatibility，但其他可验证能力仍可安装。
+- 不使用静默 watchdog，不从等待时长猜测压缩，也不展示虚构百分比。
+
+## 卡片文字字号
+
+`card.text_sizes` 只接受 `body`、`reasoning`、`tool`、`notice`、`footer` 五个角色。每个角色可用 scalar，也可使用 `default`、`pc`、`mobile` 映射；映射只为实际渲染的角色生成 `hfc_<role>` alias。
+
+允许值为：`heading-0`、`heading-1`、`heading-2`、`heading-3`、`heading-4`、`heading`、`normal`、`notation`、`xxxx-large`、`xxx-large`、`xx-large`、`x-large`、`large`、`medium`、`small`、`x-small`。平台示例中的 `normal_v2` 是自定义 alias，本项目不接受。未配置时不输出 `config.style`，保持既有 Card JSON；物理 width/height 由 Feishu/Lark 客户端控制。
+
 ## Feishu topic / thread 锚点
 
 话题场景里，用户原消息、topic thread 和 Hermes 内部 stream id 可能不是同一个值。
@@ -95,6 +119,8 @@ sidecar 仍应创建 session 并发送初始卡片，不能把整条流计入 `e
 
 从 Feishu/Lark 话题线程创建的 cron job 也必须保留 origin 的 `thread_id`。`build_cron_event` 的目标优先级为：scheduler 已解析的 Feishu target、Feishu origin、显式环境 fallback；没有 thread id 时继续按 `chat_id` 投递。
 
+cron scheduler 必须先完成 `BasePlatformAdapter.extract_media(...)` 与 `media_files` 安全过滤，再让 HFC 接管完成卡。卡片成功且 `native_delivery=required` 时，只清空 `cleaned_delivery_content` 并继续 Hermes 原生附件上传；无媒体时才直接结束。这样正文只在卡片出现一次，真实文件仍沿用 Hermes 的平台上传和 topic 路由。
+
 只有 `origin.platform == feishu` 时才读取 origin thread id。Telegram 等非 Feishu origin 的 thread id 不得进入 Feishu 事件，避免跨平台路由数据泄漏。
 
 ## `system.notice`
@@ -114,28 +140,35 @@ Hermes 原生运行提示会被归一为 `system.notice`：
 
 1. 如果当前 session 可用，notice 进入辅助 timeline。
 2. 如果没有当前 session，发送独立小卡片。
-3. 同一 background process 使用稳定的 `notice_id` 和独立 message id；running 更新与 finished 终态复用同一张卡。exit code `0` 显示成功，非零显示失败，未知 exit code 显示警告。
-4. Gateway 启动时会在 recovered watcher drain 前安装 adapter wrapper；contextless / recovered watcher 优先沿用 Hermes `metadata.thread_id`，避免独立通知掉出原 topic。
-5. 已识别 notice 如果卡片投递超时，也不再退回原生灰色文本。
-6. 只有严格匹配 Hermes 固定 envelope 和 production process/task id 的后台通知才会被接管；未知或不完整文本保持 Hermes 原生路径，避免吞掉普通回复。
+3. `Working` heartbeat 始终是非终态；主 session 缺失时，chat + 原始用户消息锚点 + notice kind 组成稳定的 independent message id。连续 heartbeat 更新同一卡，不同任务锚点保持隔离，最终 `message.completed` 通过 reply-anchor alias 收束该卡。
+4. 同一 background process 使用稳定的 `notice_id` 和独立 message id；running 更新与 finished 终态复用同一张卡。exit code `0` 显示成功，非零显示失败，未知 exit code 显示警告。
+5. Gateway 启动时会在 recovered watcher drain 前安装 adapter wrapper；contextless / recovered watcher 优先沿用 Hermes `metadata.thread_id`，避免独立通知掉出原 topic。
+6. `delivered` 抑制原生灰色文本；`not_sent` 才回退原始通知文本；`unknown` 或不可解析响应只尝试发送 `⚠️ 一条运行提示的卡片投递结果无法确认，请稍后查看 /hfc status。`，不重复原始通知文本。飞书本身完全不可用时，不保证通用提示最终可见。
+7. 只有严格匹配 Hermes 固定 envelope 和 production process/task id 的后台通知才会被接管；未知或不完整文本保持 Hermes 原生路径，避免吞掉普通回复。
 
-## 独立 slash command 卡片
+## 全 slash command 反馈卡片
 
-独立命令不混入正在运行的 Agent 卡片：
+`all slash command feedback` 使用统一的命令上下文，不混入正在运行的 Agent 卡片，也不再维护固定命令 allowlist：
 
-- `/new`
-- `/reset`
-- `/clear`
-- `/undo`
-- `/stop`
-- `/model`
+1. Feishu/Lark inbound event 只要是 slash command，built-in、alias、plugin/quick 和 unknown-command 提示都建立有期限的 task-local context。
+2. Hermes 发出第一条非空文本反馈时 reply 创建 interactive card；同一命令后续反馈串行 PATCH the same card。
+3. `/help`、`/commands`、`/debug` 等长反馈按 Markdown 结构拆成多个 element；topic/thread metadata 与原 user message reply anchor 保持不变。
+4. create/PATCH 成功才抑制该条原生灰色文本；失败把未修改的 Hermes feedback fail-open 回 original adapter `send`。
+5. 手动 `/compress` 运行时包装 original handler：先创建“正在压缩上下文”卡，再以成功、no-op、fallback 或 aborted 原文更新同一卡。
 
-这些命令在 Feishu/Lark WebSocket 长连接环境中优先走原生 interactive card。按钮或下拉选择通过 Hermes 原 handler 回写结果。
+专用交互路径仍优先：
 
-特殊情况：
+- `/model`、裸 `/resume` 和 `/new`、`/reset`、`/undo` 等 destructive confirmation 继续使用原有按钮、下拉框和同卡结果更新；成功时不会再创建第二张命令卡。
+- `/hfc help/status/doctor/monitor` 继续使用 sidecar 运维卡；只有专用路径失败返回文本时才进入统一反馈卡。
+- `/learn`、`/blueprint`、`/steer`、`/queue`、`/moa` 等转入 Agent turn 的命令只把即时确认、usage 或错误当作命令反馈；正常 reasoning/answer 仍由普通流式卡承载。
+- `/update` 的重启前反馈进入命令卡；Gateway 重启后的状态继续由现有 `system.notice` 卡承载。
+- 文件、图片、音频等附件继续使用 Hermes 原生媒体发送路径。
 
-- `/update` 是 Hermes 后台升级命令，不渲染交互命令卡片。
-- sidecar 或 command card 不可用时，允许回到 Hermes 原生文本 fallback。
+### V4.0.9 WebSocket live handler 边界
+
+Hermes 建立 Feishu/Lark WebSocket 时，SDK 持有一个包含消息、卡片、reaction、bot 生命周期等 processor 的 live `EventDispatcherHandler`。HFC startup hook 不得调用 `_build_event_handler()` 重建它，也不得替换 adapter 或 WS client 上的 handler identity。
+
+HFC 只更新现有 `p2.card.action.trigger` processor 的 callback，使 `/new`、`/model`、`/resume` 等命令卡片继续进入运行时包装后的 handler。WebSocket 模式必须通过 `_ws_thread_loop.call_soon_threadsafe(...)` 在 SDK 线程执行；如果当前 Hermes/Lark SDK 内部结构不兼容，则保持 fail-open，不改写 live handler。这样消息、reaction、bot 生命周期、drive、meeting 等其他 processor 和 WebSocket receive loop 始终使用连接建立时的同一 handler 对象。
 
 ### 裸 `/resume` 原生选择器
 
@@ -170,7 +203,7 @@ sidecar 负责：
 - 根据 `bindings.chats` 选择 bot 或 fallback/default 路由。
 - 在群内 `/hfc status` 中提示是否已绑定当前 chat。
 - 读取 `bindings.group_rules` 的 enabled/require_mention/计数用于安全诊断，不展示真实 chat/user id。
-- 说明群内 `/new`、`/model`、`/reset` 等 slash command 先经过 Hermes 准入，再进入独立命令卡片；`/update` 仍是 Hermes 后台升级命令。
+- 说明群内所有 slash command 先经过 Hermes 准入；built-in、alias、plugin/quick 和 unknown command 的非空文本反馈都进入独立命令卡片。`/update` 仍是后台升级命令，仅将重启前反馈卡片化。
 
 ## 运维卡与恢复边界
 

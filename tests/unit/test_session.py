@@ -1,5 +1,6 @@
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.session import CardSession
+import pytest
 
 
 def event(name, sequence, data, **overrides):
@@ -177,6 +178,83 @@ def test_tool_updates_count_all_events():
     assert session.tool_count == 3  # 3 actual tool calls (1 unique: t1 called twice, t2 once)
     assert len(session.tools) == 2  # tools dict still deduplicates
     assert session.tools["t1"].status == "completed"
+
+
+def test_compaction_notice_sets_runtime_phase_without_changing_answer():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "system.notice",
+            1,
+            {
+                "notice_kind": "context-compaction",
+                "phase": "started",
+                "title": "正在压缩上下文",
+                "content": "正在总结较早的对话，完成后会继续当前任务。",
+            },
+        )
+    )
+
+    assert session.runtime_phase_text == "正在压缩上下文"
+    assert session.answer_text == ""
+    assert session.runtime_header_text == "正在压缩上下文"
+
+
+def test_generic_notice_does_not_set_runtime_phase():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+
+    assert session.apply(
+        event(
+            "system.notice",
+            1,
+            {
+                "notice_kind": "system",
+                "phase": "started",
+                "title": "运行提示",
+                "content": "普通提示",
+            },
+        )
+    )
+
+    assert session.runtime_phase_text == ""
+
+
+@pytest.mark.parametrize(
+    ("event_name", "data"),
+    [
+        ("thinking.delta", {"text": "继续思考"}),
+        ("answer.delta", {"text": "继续回答"}),
+        (
+            "tool.updated",
+            {
+                "tool_id": "tool-1",
+                "name": "terminal",
+                "status": "running",
+                "detail": "pytest",
+            },
+        ),
+        ("message.completed", {"answer": "完成"}),
+        ("message.failed", {"error": "失败"}),
+    ],
+)
+def test_runtime_activity_clears_compaction_phase(event_name, data):
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    assert session.apply(
+        event(
+            "system.notice",
+            1,
+            {
+                "notice_kind": "context-compaction",
+                "phase": "started",
+                "title": "正在压缩上下文",
+            },
+        )
+    )
+
+    assert session.apply(event(event_name, 2, data))
+
+    assert session.runtime_phase_text == ""
 
 
 def test_tool_update_builds_compact_detail_from_arguments_duration_and_error():

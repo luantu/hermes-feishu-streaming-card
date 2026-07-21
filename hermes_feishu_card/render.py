@@ -5,6 +5,7 @@ import html
 import json
 import re
 import time as _time
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 from .session import CardSession
@@ -22,6 +23,7 @@ DEFAULT_FOOTER_FIELDS = (
 MAIN_CONTENT_CHUNK_CHARS = 2400
 DEFAULT_TITLE = "Hermes Agent"
 RUNTIME_HEADER_MAX_CHARS = 120
+TEXT_SIZE_ROLE_ORDER = ("body", "reasoning", "tool", "notice", "footer")
 MODEL_COLOR_PREFIXES = (
     (("gpt-", "o1", "o3"), "blue"),
     (("claude-",), "orange"),
@@ -85,8 +87,10 @@ def render_card(
     max_reasoning_chars: int = 1200,
     max_tool_result_chars: int = 600,
     status_config: Optional[StatusConfig] = None,
+    text_sizes: Mapping[str, Any] | None = None,
     loading_gif_img_key: str | None = None,
 ) -> Dict[str, Any]:
+    used_text_size_roles: set[str] = set()
     status = _render_status(session, status_config=status_config)
     display_status = resolve_display_status(
         session, status_config or StatusConfig.defaults()
@@ -103,28 +107,7 @@ def render_card(
     elif session.thinking_text:
         primary_text = normalize_stream_text(session.thinking_text)
     else:
-        primary_text = "生成中..."
-    if session.delivery_kind == "notice":
-        return {
-            "schema": "2.0",
-            "config": {
-                "update_multi": True,
-                "summary": {"content": ""},
-            },
-            "header": {
-                "template": _notice_template(session.notice_level),
-            },
-            "body": {
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "element_id": "notice_content",
-                        "content": primary_text,
-                        "text_size": "x-small",
-                    }
-                ]
-            },
-        }
+        primary_text = _spinner_frame()
     effective_fields = list(DEFAULT_FOOTER_FIELDS) if footer_fields is None else list(footer_fields)
     show_tool_summary = "tool_summary" in effective_fields
     attachment_summary = _render_attachment_summary(session)
@@ -148,7 +131,16 @@ def render_card(
         if runtime_summary
         else _runtime_header_title(session, configured_title)
     )
-    elements = _render_main_content_elements(primary_text)
+    main_role = "notice" if session.delivery_kind == "notice" else "body"
+    elements = _render_main_content_elements(
+        primary_text,
+        text_size=_role_text_size(
+            text_sizes,
+            main_role,
+            default=None,
+            used_roles=used_text_size_roles,
+        ),
+    )
     timeline_elements: list[Dict[str, Any]] = []
     if show_reasoning:
         timeline_elements = _render_timeline_elements(
@@ -157,6 +149,8 @@ def render_card(
             max_items=max_timeline_items,
             max_reasoning_chars=max_reasoning_chars,
             max_tool_result_chars=max_tool_result_chars,
+            text_sizes=text_sizes,
+            used_text_size_roles=used_text_size_roles,
         )
         elements.extend(timeline_elements)
     elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
@@ -169,18 +163,34 @@ def render_card(
             }
         )
     elements.append({"tag": "hr", "element_id": "main_divider"})
-    if not timeline_elements and show_tool_summary:
-        elements.append(
-            {
-                "tag": "markdown",
-                "element_id": "tool_summary",
-                "content": _render_tool_summary(session),
-            }
+    if not timeline_elements:
+        tool_summary = {
+            "tag": "markdown",
+            "element_id": "tool_summary",
+            "content": _render_tool_summary(session),
+        }
+        _set_text_size(
+            tool_summary,
+            _role_text_size(
+                text_sizes,
+                "tool",
+                default=None,
+                used_roles=used_text_size_roles,
+            ),
         )
-    if isinstance(footer, list):
-        elements.extend(footer)
-    else:
-        elements.append({"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"})
+        elements.append(tool_summary)
+    footer_element = {
+        "tag": "markdown",
+        "element_id": "footer",
+        "content": footer,
+        "text_size": _role_text_size(
+            text_sizes,
+            "footer",
+            default="x-small",
+            used_roles=used_text_size_roles,
+        ),
+    }
+    elements.append(footer_element)
     header = {
         "template": status["template"],
         "title": {"tag": "plain_text", "content": header_title},
@@ -200,10 +210,18 @@ def render_card(
             "elements": elements
         },
     }
+    mapped_styles = {
+        f"hfc_{role}": dict(text_sizes[role])
+        for role in TEXT_SIZE_ROLE_ORDER
+        if role in used_text_size_roles
+        and isinstance(text_sizes, Mapping)
+        and isinstance(text_sizes.get(role), Mapping)
+    }
+    if mapped_styles:
+        card["config"]["style"] = {"text_size": mapped_styles}
     if not native_reply_completed:
         card["header"] = header
     return card
-
 
 def render_cards(
     session: CardSession,
@@ -217,6 +235,7 @@ def render_cards(
     max_tool_result_chars: int = 600,
     loading_gif_img_key: str | None = None,
     status_config: Optional[StatusConfig] = None,
+    text_sizes: Mapping[str, Any] | None = None,
 ) -> list[Dict[str, Any]]:
     main_text = normalize_stream_text(session.visible_main_text)
     content_parts = _split_content_by_tables(main_text)
@@ -227,6 +246,7 @@ def render_cards(
             timeline_expanded=timeline_expanded, max_timeline_items=max_timeline_items,
             max_reasoning_chars=max_reasoning_chars, max_tool_result_chars=max_tool_result_chars,
             loading_gif_img_key=loading_gif_img_key, status_config=status_config,
+            text_sizes=text_sizes,
         )]
     cards = []
     for index, part_text in enumerate(content_parts):
@@ -237,6 +257,7 @@ def render_cards(
             timeline_expanded=timeline_expanded, max_timeline_items=max_timeline_items,
             max_reasoning_chars=max_reasoning_chars, max_tool_result_chars=max_tool_result_chars,
             loading_gif_img_key=loading_gif_img_key, status_config=status_config,
+            text_sizes=text_sizes,
         )
         if part_card:
             cards.append(part_card)
@@ -276,9 +297,7 @@ def _render_status(
     display_status = resolve_display_status(session, status_config or StatusConfig.defaults()).value
     if display_status == "completed":
         answer = normalize_stream_text(session.answer_text).strip()
-        if answer:
-            return {"subtitle": answer, "template": "green"}
-        return {"subtitle": "已完成", "template": "green"}
+        return {"subtitle": answer or "已完成", "template": "green"}
     if display_status == "failed":
         return {"subtitle": "", "summary": "处理失败", "template": "red"}
     if display_status == "waiting":
@@ -286,25 +305,6 @@ def _render_status(
     if display_status == "in_progress":
         return {"subtitle": "", "summary": "生成中", "template": "blue"}
     return {"subtitle": "", "summary": "思考中", "template": "indigo"}
-
-
-def _generate_summary_subtitle(text: str, max_length: int = 30) -> str:
-    if not text or not text.strip():
-        return "已完成"
-    cleaned = normalize_stream_text(text)
-    cleaned = re.sub(r'```[\s\S]*?```', '', cleaned)
-    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
-    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
-    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-    cleaned = re.sub(r'#+\s*', '', cleaned)
-    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
-    cleaned = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', cleaned)
-    cleaned = re.sub(r'[\*\#`\[\]()>|-]', '', cleaned)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    first_sentence = re.split(r'[。！？\n]', cleaned)[0].strip()
-    if len(first_sentence) > max_length:
-        return first_sentence[:max_length - 1] + "…"
-    return first_sentence if first_sentence else "已完成"
 
 
 def _runtime_header_title(session: CardSession, configured_title: str) -> str:
@@ -322,6 +322,8 @@ def _runtime_header_summary(session: CardSession) -> str:
         return ""
     if session.status == "completed":
         return ""
+    if session.runtime_phase_text:
+        return ""
     return _sanitize_runtime_header(session.latest_tool_preview)
 
 
@@ -337,12 +339,16 @@ def _sanitize_runtime_header(text: str) -> str:
     return normalized[: RUNTIME_HEADER_MAX_CHARS - 1].rstrip() + "…"
 
 
-def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
+def _render_main_content_elements(
+    main_text: str, *, text_size: str | None = None
+) -> list[Dict[str, Any]]:
     chunks = split_markdown_blocks(main_text, MAIN_CONTENT_CHUNK_CHARS)
     elements = []
     for index, chunk in enumerate(chunks):
         element_id = "main_content" if index == 0 else f"main_content_{index}"
-        elements.append({"tag": "markdown", "element_id": element_id, "content": chunk})
+        element = {"tag": "markdown", "element_id": element_id, "content": chunk}
+        _set_text_size(element, text_size)
+        elements.append(element)
     return elements
 
 
@@ -459,6 +465,8 @@ def _render_timeline_elements(
     max_items: int,
     max_reasoning_chars: int,
     max_tool_result_chars: int,
+    text_sizes: Mapping[str, Any] | None = None,
+    used_text_size_roles: set[str] | None = None,
 ) -> list[Dict[str, Any]]:
     if not getattr(session, "timeline", None):
         return []
@@ -473,7 +481,12 @@ def _render_timeline_elements(
             _timeline_markdown_elements(
                 f"> 已折叠 {folded} 条早期思考/工具记录",
                 "auxiliary_timeline_folded",
-                text_size="x-small",
+                text_size=_role_text_size(
+                    text_sizes,
+                    "notice",
+                    default="x-small",
+                    used_roles=used_text_size_roles,
+                ),
             )
         )
     for index, item in enumerate(entries):
@@ -490,7 +503,12 @@ def _render_timeline_elements(
                 _timeline_markdown_elements(
                     "\n".join(lines),
                     f"auxiliary_timeline_reasoningentry_{index}",
-                    text_size="small",
+                    text_size=_role_text_size(
+                        text_sizes,
+                        "reasoning",
+                        default="small",
+                        used_roles=used_text_size_roles,
+                    ),
                 )
             )
         elif item.kind == "tool":
@@ -506,7 +524,12 @@ def _render_timeline_elements(
                 _timeline_markdown_elements(
                     _quote_markdown("\n".join(lines)),
                     f"auxiliary_timeline_toolentry_{index}",
-                    text_size="x-small",
+                    text_size=_role_text_size(
+                        text_sizes,
+                        "tool",
+                        default="x-small",
+                        used_roles=used_text_size_roles,
+                    ),
                 )
             )
         elif item.kind == "notice":
@@ -522,7 +545,12 @@ def _render_timeline_elements(
                 _timeline_markdown_elements(
                     _quote_markdown("\n".join(lines)),
                     f"auxiliary_timeline_noticeentry_{index}",
-                    text_size="x-small",
+                    text_size=_role_text_size(
+                        text_sizes,
+                        "notice",
+                        default="x-small",
+                        used_roles=used_text_size_roles,
+                    ),
                 )
             )
     if not panel_elements:
@@ -547,22 +575,46 @@ def _render_timeline_elements(
 
 
 def _timeline_markdown_elements(
-    content: str, element_id_prefix: str, *, text_size: str
+    content: str, element_id_prefix: str, *, text_size: str | None
 ) -> list[Dict[str, Any]]:
-    return [
+    elements = [
         {
             "tag": "markdown",
             "element_id": element_id_prefix
             if index == 0
             else f"{element_id_prefix}_{index}",
             "content": chunk,
-            "text_size": text_size,
         }
         for index, chunk in enumerate(
             split_markdown_blocks(content, MAIN_CONTENT_CHUNK_CHARS)
         )
         if chunk.strip()
     ]
+    for element in elements:
+        _set_text_size(element, text_size)
+    return elements
+
+
+def _role_text_size(
+    text_sizes: Mapping[str, Any] | None,
+    role: str,
+    *,
+    default: str | None,
+    used_roles: set[str] | None = None,
+) -> str | None:
+    value = (text_sizes or {}).get(role)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        if used_roles is not None:
+            used_roles.add(role)
+        return f"hfc_{role}"
+    return default
+
+
+def _set_text_size(element: dict[str, Any], text_size: str | None) -> None:
+    if text_size is not None:
+        element["text_size"] = text_size
 
 
 def _quote_markdown(content: str) -> str:
@@ -668,6 +720,15 @@ def _render_footer(
     return " · ".join(selected) if selected else values["duration"]
 
 
+def _colored_model_label(model: str) -> str:
+    text = str(model or "")
+    safe = html.escape(text, quote=True)
+    normalized = text.lower()
+    for prefixes, color in MODEL_COLOR_PREFIXES:
+        if normalized.startswith(prefixes):
+            return f'<font color="{color}">{safe}</font>'
+    return safe
+
 def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
     return [
         {
@@ -681,16 +742,6 @@ def _render_thinking_footer_gif(img_key: str) -> list[dict[str, Any]]:
             },
         },
     ]
-
-
-def _colored_model_label(model: str) -> str:
-    text = str(model or "")
-    safe = html.escape(text, quote=True)
-    normalized = text.lower()
-    for prefixes, color in MODEL_COLOR_PREFIXES:
-        if normalized.startswith(prefixes):
-            return f'<font color="{color}">{safe}</font>'
-    return safe
 
 
 def _safe_int(value: Any) -> int:

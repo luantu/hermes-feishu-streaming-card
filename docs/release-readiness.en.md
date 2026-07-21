@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.3`. It fixes #106 duplicate gray native text when only the runtime is upgraded and restarted while a V4.0.0 completion hook remains, while preserving native media and fail-open boundaries. V3.9.1 was released on 2026-07-11; V4.0.0 through V4.0.2 are released.
+Current release candidate: `4.0.14`. It fixes Issue #142 so orphaned long-running heartbeats remain non-terminal, update one card per original user-message anchor, and complete when the final event arrives. V3.9.1 was released on 2026-07-11, and V4.0.13 and earlier releases are public.
 
 ## Ready
 
@@ -144,6 +144,28 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.0.14 Release Gates
+
+- Non-terminal heartbeat state, same-anchor reuse, different-anchor isolation, orphaned six/nine-minute updates, and final completion: **passed focused automation**.
+- Stable independent-card recovery after an unknown delivery outcome and the existing fail-open branches: **passed regression coverage**.
+- The real-Feishu `v4.0.13` reproduction for Issue #142 is recorded. This candidate does not wait another real six/nine minutes and does not describe the equivalent automated replay as a client visual retest.
+- Final full automation: **passed (`1488 passed, 3 skipped`)**; sdist/wheel, isolated Python 3.12 `site-packages` import of `4.0.14`, and CLI smoke: **passed**; `git diff --check` is rerun before tagging.
+
+## V4.0.13 Release Gates
+
+- Generic command contexts, same-card multi-feedback, concurrent single-create behavior, long Markdown, exact create/PATCH fallback, and all `/compress` branches: **passed**.
+- Dedicated `/model`, bare `/resume`, confirmation, `/hfc`, Agent-turn, media, and `/update` restart-boundary regressions: **passed**.
+- Real Feishu client command matrix and final desktop/mobile visual acceptance: **not run and not claimed as passed**.
+- Final full automation: **passed (`1482 passed, 4 skipped`)**; `git diff --check`, sdist/wheel, and isolated Python 3.12 import/CLI smoke are verified before tagging.
+
+## V4.0.12 Release Gates
+
+- Focused compaction hook/session/render/server and text-size schema/merge/render/device matrices: **passed**.
+- A real selected-env subprocess starts as `healthy/live`; a credential-free subprocess starts as `degraded/noop`, returns `not_sent`, and does not increase successes: **passed**.
+- Automatic long-session compaction smoke and final desktop/mobile visual confirmation: **not run by release decision and not claimed as passed**.
+- Final full automation: **passed (`1460 passed, 4 skipped`)**; `git diff --check`, sdist/wheel, and clean Python 3.12 import `4.0.12` also passed.
+- Annotated tag `v4.0.12` points to merge commit `00a48a7`; release-assets workflow `29632908140` succeeded, and all four assets/checksums plus the public tagged installer: **passed**.
 
 ## Current Boundaries
 

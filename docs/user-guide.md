@@ -406,10 +406,12 @@ V3.6.0 面向真实线上使用后的排障和维护场景：当 Hermes 升级�
 
 **配置与运行安全**
 
-- `--config` 指向的配置文件同目录存在 `.env` 时，会自动读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`HERMES_FEISHU_CARD_HOST`、`HERMES_FEISHU_CARD_PORT`。
-- 真实进程环境变量优先级高于同目录 `.env`。
+- 默认 `server.host: 127.0.0.1` 属于本机进程互信；不要把 sidecar 未鉴权暴露到网络。
+- 非 loopback 必须显式设置 `server.allow_non_loopback: true`，并强制使用私有 state directory 的 HMAC 事件鉴权；事件鉴权不提供加密，公网仍需 TLS/mTLS 或受控反向代理。
+- `--config` 指向的配置文件同目录存在 `.env` 时，会自动读取 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`HERMES_FEISHU_CARD_HOST`、`HERMES_FEISHU_CARD_PORT`；`setup` / `start --env-file ...` 选中的 env file 也会进入同一配置加载链。
+- 优先级固定为 YAML < 配置同目录 `.env` < 显式选中的 env file < 真实进程环境变量；不会隐式读取全局 `~/.hermes/.env`。
 - 多 Profile 模式下继续要求每个 profile 显式配置 Feishu 凭据，顶层环境变量不会覆盖 profile 凭据。
-- 无凭据时 sidecar 使用 no-op client，只做本地状态，不会向真实飞书发卡；`/health.routing.bot_count` 可用于确认是否加载到真实 bot。
+- 无凭据时 sidecar 使用 no-op client，不会向真实飞书发卡；`/health` 显示 `status: degraded`、`noop_mode: true`、`delivery.mode: noop`，发送返回 `not_sent` 并计入 `feishu_noop_attempts` / failure，不再伪造成功 message id。
 
 ## 一行安装
 
@@ -457,6 +459,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 |------|--------|------|
 | `HFC_VERSION` | `latest` | 指定安装版本，例如 `v3.8.18`、`v3.6.6` 或 `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway 目录 |
+| `HFC_PYTHON` | 优先自动检测 Hermes venv | 显式覆盖 `install.sh` 使用的 Python |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `HFC_CONFIG` 同目录 `.env` | 飞书凭据保存位置 |
 | `HFC_SKIP_START` | `0` | 设为 `1` 时只安装 hook，不启动 sidecar |
@@ -487,7 +490,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.6
+export HFC_VERSION=v4.0.14
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -508,7 +511,7 @@ export FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-`setup` 是整合安装器：自动生成配置、检查 Hermes 版本和代码 anchor、把插件安装到 Hermes Gateway 实际运行的 venv Python、安装 hook、启动 sidecar 并做健康检查。它支持 `v2026.4.23` 起的旧版 Hermes，也支持 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 新版 anchor；Hermes `VERSION` 可带或不带 `v` 前缀，也可从 `Hermes Agent v0.18.2 (...)` 这类描述型版本中提取数字版本。V3.8.6 起，Docker/source-stripped 环境缺少 `VERSION` 和 `.git` 时也可用 `gateway/run.py` anchor 兜底识别；当前版本在 `VERSION` 可读但不可解析时，也会在 anchors 可验证后继续安装。
+`setup` 是整合安装器：自动生成配置、检查 Hermes 版本和代码 anchor、把插件安装到 Hermes Gateway 实际运行的 venv Python、安装 hook、启动 sidecar 并做健康检查。Linux 上若 systemd user manager 可用，sidecar 会进入独立、可自动重启的 transient user service，不再与 `hermes-gateway` 共用 cgroup；macOS、Windows 和无可用 user manager 的环境继续使用 detached-process fallback。它支持 `v2026.4.23` 起的旧版 Hermes，也支持 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 与 `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` 新版 anchor；Hermes `VERSION` 可带或不带 `v` 前缀，也可从 `Hermes Agent v0.18.2 (...)` 这类描述型版本中提取数字版本。V3.8.6 起，Docker/source-stripped 环境缺少 `VERSION` 和 `.git` 时也可用 `gateway/run.py` anchor 兜底识别；当前版本在 `VERSION` 可读但不可解析时，也会在 anchors 可验证后继续安装。
 
 多 profile 安装后可用 `doctor` 只读检查完整脱敏 route chain；`status` 仅摘要运行时路由和 profile 事件，`/health` 仅报告实际 routing health 字段。`doctor` 输出不包含 App Secret、token 或 URL credentials：
 
@@ -669,6 +672,21 @@ card:
 
 多 Profile 模式下，`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会覆盖 profile 内的 `feishu` 配置。`footer_fields` 支持 `duration`、`model`、`input_tokens`、`output_tokens`、`context`、`subscription_usage`。其中 `subscription_usage` 默认关闭；显式加入后，完成态会通过 Hermes runtime 的 `fetch_account_usage("openai-codex")` 显示 `5h 26% · weekly 89%` 风格的剩余额度。旧 Hermes、未登录、网络错误或超时会静默跳过。
 
+`card.text_sizes` 可配置 `body`、`reasoning`、`tool`、`notice`、`footer`。base、profile、bot 按角色合并，bot 优先级最高：
+
+```yaml
+card:
+  text_sizes:
+    body: large
+    reasoning: small
+    footer:
+      default: x-small
+      pc: x-small
+      mobile: notation
+```
+
+映射字段只允许 `default`、`pc`、`mobile`。字号只允许 `heading-0`、`heading-1`、`heading-2`、`heading-3`、`heading-4`、`heading`、`normal`、`notation`、`xxxx-large`、`xxx-large`、`xx-large`、`x-large`、`large`、`medium`、`small`、`x-small`；`normal_v2` 是平台示例里的自定义 alias，不接受。未配置时保持原 Card JSON。卡片物理 width/height 由 Feishu/Lark 客户端控制。
+
 ## 飞书应用配置
 
 ```bash
@@ -681,13 +699,13 @@ python3 -m hermes_feishu_card.cli smoke-feishu-card \
   --chat-id oc_xxx
 ```
 
-如果凭据未配置，sidecar 会使用 no-op client；这适合本地单元测试，但不会向真实飞书发卡。真实联调前请检查：
+如果凭据未配置，sidecar 会使用 no-op client；进程仍可被 `start/status/stop` 管理，但 health 为 degraded，任何发卡事件都会明确返回 `not_sent`。真实联调前请检查：
 
 ```bash
 python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```
 
-确认 `/health.routing.bot_count` 大于 0，且 `last_route_error` 为空。
+确认 health 不是 degraded、`/health.routing.bot_count` 大于 0，且 `last_route_error` 为空。
 
 ## Hermes Gateway 流式配置
 
@@ -712,8 +730,8 @@ streaming:
 | `setup --repair ... --yes` / `--no-repair` | 自动修复已知安全状态，或显式关闭自动 repair |
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
 | `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
-| `start --config ...` | 启动 sidecar |
-| `stop --config ...` | 停止 sidecar；校验 PID/token 与 `/health` 的 `process_pid/process_token_hash` 后才停止 |
+| `start --config ...` | 启动 sidecar；Linux/systemd 优先使用独立 user service |
+| `stop --config ...` | 停止 sidecar；校验 PID/token，并通过记录的 systemd unit 或进程身份安全停止 |
 | `status --config ...` | 查看 sidecar 状态、routing、profile diagnostics 与 metrics |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | 按指定 profile 发送真实飞书 smoke 卡片 |
 | `bots list|show|add|remove --config ...` | 管理飞书 Bot 注册 |
@@ -756,6 +774,12 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.0.14](release-notes-v4.0.14.md) | 2026-07-20 | Issue #142：orphan 长任务 heartbeat 保持运行态、按原始消息锚点复用同一卡，并由最终完成事件正常收束 |
+| [v4.0.13](release-notes-v4.0.13.md) | 2026-07-20 | 全部 Hermes slash command 的非空文本反馈统一卡片化，同命令多反馈原位更新，手动 `/compress` 显示运行态与终态 |
+| [v4.0.12](release-notes-v4.0.12.md) | 2026-07-18 | Issues #133/#136：上下文压缩可见、五类字号与 PC/mobile 映射、selected env 凭据加载，以及 degraded Noop 健康状态和失败指标 |
+| [v4.0.9](release-notes-v4.0.9.md) | 2026-07-16 | Issue #130：保持 live Lark WebSocket event handler identity，仅在 WS 线程更新卡片 callback；感谢 @Jasonsun77 提供完整 crash-loop 证据 |
+| [v4.0.8](release-notes-v4.0.8.md) | 2026-07-16 | Issue #127：cron 卡片保留正文，Hermes 原生 `media_files` 链路继续上传真实附件；感谢 @zyq2552899783-lgtm 报告 |
+| [v4.0.7](release-notes-v4.0.7.md) | 2026-07-16 | Linux/systemd sidecar 独立可重启 user service、Hermes venv Python 优先，以及 PR #124 自我改进通知卡片隔离 |
 | [v4.0.6](release-notes-v4.0.6.md) | 2026-07-15 | Hermes 0.18.x terminal/queued completion、无灰色且可收束的 background 通知卡片，以及显式 fail-closed 的 Hermes 升级恢复 |
 | [v4.0.0](release-notes-v4.0.0.md) | 2026-07-12 | 实时工具 preview Header、公开阶段输出正文、等待/失败/完成状态衔接与兼容降级 |
 | [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | 裸 `/resume` 原生会话下拉与模型 footer 安全语义色；布局和 Hermes 安全恢复路径不变 |
@@ -842,10 +866,12 @@ python3 -m pytest -q
 - [colinaaa](https://github.com/colinaaa) — [Issue #94](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/94) 裸 `/resume` 原生选择器的需求、流程与安全边界（V3.10.0）
 - [charles5g](https://github.com/charles5g) / jackmim — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) 模型 footer 语义色创意（V3.10.0，主线补充 HTML 转义）
 - [tianqiii](https://github.com/tianqiii) — [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) Codex 订阅配额 footer 的需求、Hermes 原生接口方案与展示格式（V4.0.2）
+- [zyq2552899783-lgtm](https://github.com/zyq2552899783-lgtm) — [Issue #127](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/127) cron 定时任务附件只显示文件名、未执行原生上传的报告（V4.0.8）
+- [Jasonsun77](https://github.com/Jasonsun77) — [Issue #130](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/130) Linux 上安装 hook 前后 WebSocket 稳定性 A/B、3–6 分钟断连时间线、SDK 版本与上游 reconnect 缺陷关联证据（V4.0.9）
 
 ## 安全说明
 
-不要把 App Secret、tenant token、真实 chat_id 提交到仓库。效果图仅用于展示卡片效果，生产凭据保存在本机配置或环境变量中。
+默认 loopback 采用本机进程互信；非 loopback 必须显式启用 `allow_non_loopback` 并通过事件鉴权。不要把 App Secret、tenant token、真实 chat_id 提交到仓库。效果图仅用于展示卡片效果，生产凭据保存在本机配置或环境变量中。
 
 ## License
 

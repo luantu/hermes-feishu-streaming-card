@@ -433,6 +433,7 @@ Common environment variables:
 |---|---|---|
 | `HFC_VERSION` | `latest` | Version to install, such as `v3.8.18`, `v3.6.6`, or `main` |
 | `HERMES_DIR` | `~/.hermes/hermes-agent` | Hermes Agent Gateway directory |
+| `HFC_PYTHON` | Auto-detected Hermes venv first | Explicit Python override for `install.sh` |
 | `HFC_CONFIG` | `~/.hermes/config.yaml` | sidecar config path |
 | `HFC_ENV_FILE` | `.env` next to `HFC_CONFIG` | Feishu credential file |
 | `HFC_SKIP_START` | `0` | Set to `1` to install the hook without starting sidecar |
@@ -458,7 +459,7 @@ Example:
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.6
+export HFC_VERSION=v4.0.14
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -473,7 +474,7 @@ export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
 python3 -m hermes_feishu_card.cli setup --hermes-dir ~/.hermes/hermes-agent --yes
 ```
 
-`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. Hermes semantic `VERSION` values may include or omit the `v` prefix, and descriptive values such as `Hermes Agent v0.18.2 (...)` are parsed for the numeric version token. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors; current versions also fall back to anchors when readable `VERSION` metadata is unparseable.
+`setup` generates config, validates Hermes (older Hermes from `v2026.4.23` through `v2026.4.x`, plus Hermes `0.13.0+`, `0.14.0`, `0.15.x`, `0.17.x`, `0.18.x` / `v2026.5.16+` / `v2026.6.19+` / `v2026.7.1+` anchors), installs the package into the Hermes Gateway runtime venv Python, installs the hook, starts the sidecar, and checks health — all in one pass. On Linux with an available systemd user manager, the sidecar runs in an independent restartable transient service instead of sharing the `hermes-gateway` cgroup; macOS, Windows, and environments without that manager keep the detached-process fallback. Hermes semantic `VERSION` values may include or omit the `v` prefix, and descriptive values such as `Hermes Agent v0.18.2 (...)` are parsed for the numeric version token. Since V3.8.6, Docker/source-stripped installs without `VERSION` or `.git` metadata can fall back to verified `gateway/run.py` anchors; current versions also fall back to anchors when readable `VERSION` metadata is unparseable.
 
 After a multi-profile setup, use `doctor` to inspect the complete redacted route chain without mutation. `status` summarizes runtime routing/profile events and `/health` reports only its actual routing-health fields. `doctor` never renders App Secret, tokens, or URL credentials:
 
@@ -620,6 +621,21 @@ card:
 
 In multi-profile mode, `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars are ignored. `footer_fields` accepts: `duration`, `model`, `input_tokens`, `output_tokens`, `context`, `subscription_usage`. `subscription_usage` is disabled by default; when explicitly included, completed cards use Hermes runtime `fetch_account_usage("openai-codex")` and render remaining quota in the `5h 26% · weekly 89%` style. Older Hermes versions, missing login, network errors, and timeouts silently omit it.
 
+`card.text_sizes` configures `body`, `reasoning`, `tool`, `notice`, and `footer`. Base, profile, and bot settings merge by role, with bot settings taking precedence:
+
+```yaml
+card:
+  text_sizes:
+    body: large
+    reasoning: small
+    footer:
+      default: x-small
+      pc: x-small
+      mobile: notation
+```
+
+Mappings accept only `default`, `pc`, and `mobile`. Allowed sizes are `heading-0`, `heading-1`, `heading-2`, `heading-3`, `heading-4`, `heading`, `normal`, `notation`, `xxxx-large`, `xxx-large`, `xx-large`, `x-large`, `large`, `medium`, `small`, and `x-small`; `normal_v2` is a custom alias in platform examples and is rejected. With no setting, the existing Card JSON is unchanged. Physical card width/height are controlled by the Feishu/Lark client.
+
 ## Feishu App Setup
 
 ```bash
@@ -643,8 +659,8 @@ Ensure Hermes `config.yaml` has `streaming.enabled: true` and `streaming.transpo
 | `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore original Hermes files |
 | `uninstall --hermes-dir ... --yes` | Uninstall and restore |
-| `start --config ...` | Start sidecar |
-| `stop --config ...` | Stop sidecar (validates PID/token against `/health` `process_pid/process_token_hash`) |
+| `start --config ...` | Start sidecar; prefer an independent systemd user service on Linux |
+| `stop --config ...` | Stop sidecar after validating its PID/token and recorded process manager identity |
 | `status --config ...` | Sidecar status, routing, profile diagnostics, and metrics |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu smoke card for a specific profile |
 | `bots list|show|add|remove --config ...` | Manage bot registry |
@@ -685,6 +701,12 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.0.14](release-notes-v4.0.14.en.md) | 2026-07-20 | Issue #142: orphaned long-task heartbeats stay running, reuse one card per original message anchor, and complete on the final event |
+| [v4.0.13](release-notes-v4.0.13.en.md) | 2026-07-20 | Cardifies every non-empty Hermes slash-command feedback message, updates one card for multi-message feedback, and shows manual `/compress` progress and terminal results in place |
+| [v4.0.12](release-notes-v4.0.12.en.md) | 2026-07-18 | Issues #133/#136: visible context-compaction phases, five text-size roles with PC/mobile mappings, selected-env credentials, and degraded Noop health/failure metrics |
+| [v4.0.9](release-notes-v4.0.9.en.md) | 2026-07-16 | Issue #130: preserve the live Lark WebSocket event-handler identity and update only the card callback on the WS thread; thanks to @Jasonsun77 for the complete crash-loop evidence |
+| [v4.0.8](release-notes-v4.0.8.en.md) | 2026-07-16 | Issue #127: cron cards retain the text while Hermes native `media_files` delivery uploads the actual attachment; thanks to @zyq2552899783-lgtm for the report |
+| [v4.0.7](release-notes-v4.0.7.en.md) | 2026-07-16 | Restartable Linux/systemd user-service lifecycle, Hermes venv Python preference, and PR #124 self-improvement notice isolation |
 | [v4.0.6](release-notes-v4.0.6.en.md) | 2026-07-15 | Hermes 0.18.x terminal/queued completion, terminal background notice cards without gray native output, and explicit fail-closed Hermes-upgrade recovery |
 | [v4.0.0](release-notes-v4.0.0.en.md) | 2026-07-12 | Live tool-preview Header, public interim body stream, natural waiting/failed/completed transitions, and compatibility fallback |
 | [v3.10.0](release-notes-v3.10.0.md) | 2026-07-11 | Native bare `/resume` picker and safe semantic model-footer color; layout and Hermes' security path remain unchanged |
@@ -773,7 +795,9 @@ Thanks to these contributors for improving the project:
 - [colinaaa](https://github.com/colinaaa) — [Issue #94](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/94) bare `/resume` picker requirements, flow, and security boundary (V3.10.0)
 - [charles5g](https://github.com/charles5g) / jackmim — [PR #98](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/98) semantic model-footer color concept (V3.10.0, with mainline HTML escaping)
 - [tianqiii](https://github.com/tianqiii) — [Issue #107](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/107) requirements, Hermes-native API direction, and display format for the Codex subscription-quota footer (V4.0.2)
+- [zyq2552899783-lgtm](https://github.com/zyq2552899783-lgtm) — [Issue #127](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/127) report that cron attachments showed only their filename and never reached native upload (V4.0.8)
+- [Jasonsun77](https://github.com/Jasonsun77) — [Issue #130](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/130) Linux before/after hook stability evidence, 3–6 minute disconnect timing, SDK versions, and upstream reconnect correlation (V4.0.9)
 
 ## Security
 
-Do not commit App Secret, tenant token, or real chat_id. Screenshots demonstrate card rendering only. Production credentials belong in local config or environment variables.
+Default loopback uses local-process trust; do not expose an unauthenticated sidecar to the network. Non-loopback requires explicit `server.allow_non_loopback: true` and state-directory HMAC event authentication. Event authentication does not encrypt traffic, so public deployment still requires TLS/mTLS or a controlled reverse proxy. Do not commit App Secret, tenant token, or real chat_id. Production credentials belong in local config or environment variables.

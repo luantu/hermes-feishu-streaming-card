@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前候选包版本为 `4.0.3`。它修复只升级 runtime 并重启、仍保留 V4.0.0 completion hook 时的 #106 灰色原生正文重复，同时保留原生媒体与 fail-open 边界。V3.9.1 已于 2026-07-11 发布；V4.0.0、V4.0.1 与 V4.0.2 已发布。
+当前发布候选为 `4.0.14`。它修复 Issue #142：orphan 长任务 heartbeat 保持非终态、按原始用户消息锚点更新同一卡，并在最终完成事件到达时正常收束。V3.9.1 已于 2026-07-11 发布，V4.0.13 及更早版本也已发布。
 
 ## 已具备
 
@@ -34,11 +34,11 @@
 - pre-tool answer 会先显示在正文区，并在下一段 answer 或终态到来时归档进辅助 timeline；终态卡片会剥离已归档的中间说明。
 - 辅助 timeline 中思考条目和工具详情使用不同字号和灰度层级，raw `thinking.delta` 不进入用户可见 timeline。
 - 工具详情可展示参数摘要、耗时和失败原因，并继续按紧凑 timeline 渲染。
-- 独立 slash 命令确认支持 Feishu command card：`/new`、`/reset`、`/undo` 和高成本 `/model <model>` 确认会优先渲染为独立命令卡片。
+- 独立 slash 命令确认继续支持 Feishu command card；此外，built-in、alias、plugin/quick 和 unknown command 的所有非空文本反馈都由独立命令卡片承载，同一命令的后续反馈 PATCH 同一卡片。
 - Feishu/Lark WebSocket 长连接部署会动态获得原生 `send_slash_confirm(...)` 和 `send_model_picker(...)` 卡片能力；按钮点击经 `_on_card_action_trigger` 回到 Hermes 原 handler。
 - WebSocket 原生卡片可用时跳过 sidecar `interaction.requested` 预交互，避免同一 slash 命令同时出现 sidecar 选项卡和原生按钮卡。
 - `/model` 无参数选择可通过 Feishu-only `send_model_picker(...)` 卡片呈现；选择后回调 Hermes 并更新同一张命令卡片。
-- `/update` 保持 Hermes 后台升级命令语义，不渲染交互命令卡片；sidecar 不可用或卡片完成态更新失败时退回 Hermes 原生文本路径。
+- `/update` 保持 Hermes 后台升级命令语义，重启前反馈进入命令卡，重启后状态继续由 `system.notice` 承载；命令卡 create/PATCH 失败时，对应反馈逐条退回 Hermes 原生文本路径。
 - terminal 事件会快速 ACK Hermes，慢 Feishu PATCH 在后台完成，避免中断或更新堆积后触发重复原生答复。
 - `load_config()` 会读取 config 同目录 `.env`，真实环境变量仍保持最高优先级。
 - `install.sh` 白名单读取 `.env` 中的飞书/sidecar 变量，不会执行带空格路径等无关配置。
@@ -144,6 +144,28 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.14 发布门禁
+
+- heartbeat 非终态、同锚点复用、不同锚点隔离、orphan 6/9 分钟更新与最终完成收束：**已通过聚焦自动化**。
+- unknown delivery 后的稳定独立卡恢复与既有 fail-open 分支：**已通过回归测试**。
+- Issue #142 的真实 Feishu `v4.0.13` 复现证据已记录；候选版不重复等待真实 6/9 分钟，不把自动化等价重放写成客户端视觉复验。
+- 最终全量自动化：**已通过（`1488 passed, 3 skipped`）**；sdist/wheel、隔离 Python 3.12 `site-packages` import `4.0.14` 与 CLI smoke：**已通过**；tag 前再执行 `git diff --check`。
+
+## V4.0.13 发布门禁
+
+- 全命令上下文、同卡多反馈、并发单 create、长 Markdown、create/PATCH 原文回退与 `/compress` 全分支矩阵：**已通过**。
+- 专用 `/model`、裸 `/resume`、confirmation、`/hfc`、Agent turn、媒体和 `/update` 重启边界回归：**已通过**。
+- 真实 Feishu 客户端命令矩阵和桌面/移动端视觉确认：**本次未执行，不写成已通过**。
+- 最终全量自动化：**已通过（`1482 passed, 4 skipped`）**；`git diff --check`、sdist/wheel 和隔离 Python 3.12 import/CLI smoke 均在 tag 前验证。
+
+## V4.0.12 发布门禁
+
+- compaction hook/session/render/server 与字号 schema/merge/render/device 聚焦矩阵：**已通过**。
+- selected env 真实子进程启动为 `healthy/live`；缺凭据子进程为 `degraded/noop`，发送 `not_sent` 且 success 不增加：**已通过**。
+- 自动压缩长会话 smoke 与桌面/移动端最终视觉确认：**按发布决定未执行，不写成已通过**。
+- 最终全量自动化：**已通过（`1460 passed, 4 skipped`）**；`git diff --check`、sdist/wheel 和干净 Python 3.12 import `4.0.12` 均通过。
+- annotated tag `v4.0.12` 指向合并提交 `00a48a7`；release-assets workflow `29632908140` 成功，四个 assets/checksums 与公共 tagged installer：**已通过**。
 
 ## 当前边界
 

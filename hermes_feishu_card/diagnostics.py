@@ -77,6 +77,7 @@ _CARD_CAPABILITIES = {
     "message_handler",
     "reply_context",
     "run_agent",
+    "status_callback",
     "thinking_delta_callback",
     "tool_callback",
 }
@@ -87,8 +88,10 @@ _CARD_METRICS = {
     "events_ignored",
     "events_received",
     "events_rejected",
+    "event_auth_rejections",
     "feishu_send_attempts",
     "feishu_send_failures",
+    "feishu_noop_attempts",
     "feishu_send_successes",
     "feishu_update_attempts",
     "feishu_update_failures",
@@ -523,14 +526,25 @@ def _build_findings(
             )
         )
     elif detection.compatibility != "full":
+        status_callback_missing = detection.capabilities.get("status_callback") is False
         findings.append(
             DiagnosticFinding(
                 "hermes_compatibility_partial",
                 "warning",
                 "Hermes is supported, but optional compatibility anchors are missing.",
-                "Some streaming, cron, reply, or attachment features may be unavailable.",
                 (
-                    "Review the anchors section if streaming, cron, reply, or attachment features do not behave as expected.",
+                    "Context-compaction visibility is unavailable; other supported "
+                    "features remain installable."
+                    if status_callback_missing
+                    else "Some streaming, cron, reply, or attachment features may be unavailable."
+                ),
+                (
+                    (
+                        "Review anchors.status_callback before relying on "
+                        "context-compaction visibility."
+                        if status_callback_missing
+                        else "Review the anchors section if streaming, cron, reply, or attachment features do not behave as expected."
+                    ),
                 ),
             )
         )

@@ -5,6 +5,121 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.14 — 2026-07-20
+
+See also: [docs/release-notes-v4.0.14.md](docs/release-notes-v4.0.14.md)
+
+### Fixed
+- Fixed Issue #142: orphaned long-running `Working` heartbeats are explicitly non-terminal, so standalone cards remain in the running state instead of combining a “运行中” title with an “已完成” subtitle.
+- Consecutive heartbeat updates now derive one stable independent card identity from the chat and original message anchor rather than changing heartbeat text or a five-minute bucket. Separate user-message anchors remain isolated.
+- A later `message.completed` event still resolves the original reply-anchor alias and completes the same card. The existing `unknown` delivery warning and fail-open rules remain unchanged.
+
+### Tests
+- Added regression coverage for non-terminal heartbeat classification, stable per-anchor identity, orphaned 6/9-minute updates, final completion, and recovery after an unknown delivery outcome.
+- Thanks to @ati121 for reporting the long-task duplicate-card and contradictory-status symptom in Issue #142.
+
+## V4.0.13 — 2026-07-20
+
+See also: [docs/release-notes-v4.0.13.md](docs/release-notes-v4.0.13.md)
+
+### Added
+- All non-empty Feishu/Lark slash-command feedback now enters a generic command-card context, covering built-ins, aliases, plugin/quick commands, and unknown-command feedback without a fixed allowlist.
+- Manual `/compress` creates an in-place running card before invoking the original Hermes handler, then updates the same card with the unchanged success, no-op, or aborted result.
+
+### Changed
+- The first feedback creates one interactive card; later feedback for the same command is serialized and PATCHed into that card. Long Markdown uses the existing structural splitter, and topic/reply anchors are preserved.
+- Existing `/model`, bare `/resume`, destructive-confirmation, and `/hfc` cards retain priority. Agent turns, native media delivery, and post-restart `/update` status notices keep their established paths.
+
+### Reliability
+- Native gray text is suppressed only after confirmed card create/PATCH success. Any failed card operation returns the exact original Hermes feedback through the native adapter.
+
+## V4.0.12 — 2026-07-18
+
+See also: [docs/release-notes-v4.0.12.md](docs/release-notes-v4.0.12.md)
+
+### Added
+- Fixed Issue #133's silent context-compaction gap by forwarding Hermes' exact `Compacting context` status callback into a `context-compaction` card phase. Existing cards stay visible, and a missing primary card is created without timeout inference or fabricated progress.
+- Added closed-schema `card.text_sizes` configuration for `body`, `reasoning`, `tool`, `notice`, and `footer`, with scalar values or deterministic `default` / `pc` / `mobile` mappings. Physical card dimensions remain controlled by Feishu/Lark clients.
+
+### Fixed
+- Fixed Issue #136: `setup` / `start --env-file` credentials now reach the sidecar runner and operations diagnostics with precedence YAML < sibling `.env` < selected env file < process environment; no implicit global env fallback was added.
+- Credential-free Noop mode now logs a warning, reports `degraded` health with `noop_mode: true`, returns `not_sent`, and records `feishu_noop_attempts` / failures instead of fake message IDs and successes.
+
+### Credits
+- Thanks to @tianxia3111 for Issue #133's production compaction and mobile-readability report, @Jasonsun77 for reinforcing the configurable-font request, and @nasvip for Issue #136's complete Linux/systemd credential-chain diagnosis and health evidence.
+
+## V4.0.11 — 2026-07-18
+
+See also: [docs/release-notes-v4.0.11.md](docs/release-notes-v4.0.11.md)
+
+### Fixed
+- Fixed issue #135: initial Feishu create/reply delivery now uses a stable UUID and at most three attempts for retryable HTTP/network failures, while sidecar `/events` requests remain single-shot.
+- System notices now distinguish `delivered`, `not_sent`, and `unknown`: only definite non-delivery falls back to the original text, while uncertain outcomes use a generic warning without repeating private notice content.
+
+### Operations and safety
+- Added retry, unknown-outcome, native-fallback, and uncertain-warning metrics plus redacted send-error diagnostics; raw IDs, UUIDs, response bodies, URLs, and credentials are excluded.
+
+## V4.0.10 — 2026-07-17
+
+See also: [docs/release-notes-v4.0.10.md](docs/release-notes-v4.0.10.md)
+
+### Security
+- Non-loopback sidecar listeners now require explicit `server.allow_non_loopback: true`; accidental `0.0.0.0`, private-address, or named-host exposure fails before binding.
+- Every enabled non-loopback `/events` request requires a timestamped, nonce-bound HMAC-SHA256 proof over the exact raw body using the private operations transport root. Missing, invalid, stale, and replayed proofs return a generic 401.
+- Loopback listeners remain backward compatible with unsigned hook events. HMAC authenticates but does not encrypt; cross-host deployments still require a trusted private network plus TLS or mTLS.
+
+### Operations and documentation
+- `/health`, CLI `status`, and card-safe diagnostics expose bounded `event_auth_required` / `event_auth_rejections` state without exposing proof headers or secret material.
+- Replaced stale architecture claims with the current V4 event flow and added a maintainer fail-open boundary matrix for authentication, native suppression, delivery, and installer recovery.
+
+## V4.0.9 — 2026-07-16
+
+See also: [docs/release-notes-v4.0.9.md](docs/release-notes-v4.0.9.md)
+
+### Fixed
+- Fixed issue #130: the startup hook no longer rebuilds and replaces the live `EventDispatcherHandler` owned by an already-connected Lark WebSocket client.
+- HFC now updates only the `p2.card.action.trigger` processor callback, scheduled through the SDK WebSocket thread with `call_soon_threadsafe(...)`; message, reaction, bot lifecycle, drive, meeting, and other registered processors keep the same handler object.
+
+### Compatibility and safety
+- Unsupported or changed Lark handler internals fail open without falling back to whole-handler replacement.
+- Added a dedicated Ubuntu/Python 3.11 compatibility job for `lark-oapi==1.6.8` and `websockets==15.0.1`, matching the reported production stack.
+- The separate upstream Hermes reconnect-exhaustion bug remains tracked by NousResearch/hermes-agent#64712 and #64741; this release removes HFC's live-handler mutation instead of rewriting Hermes reconnect ownership.
+
+### Credits
+- Thanks to @Jasonsun77 for issue #130's clean-versus-patched Linux A/B, complete 3–6 minute disconnect timeline, SDK versions, sidecar health evidence, and upstream reconnect correlation.
+
+## V4.0.8 — 2026-07-16
+
+See also: [docs/release-notes-v4.0.8.md](docs/release-notes-v4.0.8.md)
+
+### Fixed
+- Fixed issue #127: cron completion cards no longer return before Hermes extracts and uploads native attachments. The card owns the text and attachment summary while the original `media_files` path continues with an empty `cleaned_delivery_content`, avoiding duplicate native text.
+- Cron events now recognize Hermes `(path, is_voice)` media tuples and report `native_delivery=required`; `/health` records that policy instead of always reporting attachments as `allowed`.
+
+### Compatibility and safety
+- Existing V4.0.7 cron hook blocks are recognized and moved from the function entry to the post-media-extraction anchor while remaining idempotent and exactly removable.
+- Text-only cron jobs still stop after a successful card, sidecar failure remains fail-open, and Hermes versions without the media extraction anchor retain the established fallback hook.
+
+### Credits
+- Thanks to @zyq2552899783-lgtm for reporting issue #127's exact symptom: regular conversations uploaded files correctly while cron delivery showed only the attachment filename.
+
+## V4.0.7 — 2026-07-16
+
+See also: [docs/release-notes-v4.0.7.md](docs/release-notes-v4.0.7.md)
+
+### Fixed
+- Fixed issue #125 on Linux/systemd: `start` and `setup` now launch the sidecar in a restartable transient user service, keeping it outside the Hermes Gateway cgroup so `systemctl --user restart hermes-gateway` does not kill both processes.
+- A verified sidecar started by the previous detached-process path is migrated into the systemd user unit during upgrade; PID changes caused by systemd restarts remain safely tied to the existing process token and unit identity.
+- `install.sh` now prefers the Python interpreter from the Hermes venv and uses `HFC_PYTHON` as the explicit override, avoiding split installs between Hermes Python and an externally managed system Python.
+- Merged PR #124 so orphaned session-scoped self-improvement notices retry as independent cards instead of claiming the next conversation's primary card.
+
+### Compatibility
+- macOS, Windows, containers without a working systemd user manager, and Linux fallback environments retain the existing detached sidecar process path.
+
+### Credits
+- Thanks to @nasvip for issue #125's systemd cgroup, PID, Python-environment, and health evidence.
+- Thanks to @hzy for PR #124's self-improvement card lifecycle fix and regression coverage.
+
 ## V4.0.6 — 2026-07-15
 
 See also: [docs/release-notes-v4.0.6.md](docs/release-notes-v4.0.6.md)

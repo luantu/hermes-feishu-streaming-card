@@ -17,6 +17,8 @@ CLARIFY_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_BEGIN"
 CLARIFY_PATCH_END = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_END"
 APPROVAL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_BEGIN"
 APPROVAL_PATCH_END = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_END"
+STATUS_PATCH_BEGIN = "# HERMES_FEISHU_CARD_STATUS_PATCH_BEGIN"
+STATUS_PATCH_END = "# HERMES_FEISHU_CARD_STATUS_PATCH_END"
 CRON_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CRON_PATCH_BEGIN"
 CRON_PATCH_END = "# HERMES_FEISHU_CARD_CRON_PATCH_END"
 SLASH_CONFIRM_PATCH_BEGIN = "# HERMES_FEISHU_CARD_SLASH_CONFIRM_PATCH_BEGIN"
@@ -109,7 +111,7 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         ),
         required_callback_args=("question", "choices"),
     )
-    return _apply_callback_patch(
+    content = _apply_callback_patch(
         content,
         callback_name="_approval_notify_sync",
         begin_marker=APPROVAL_PATCH_BEGIN,
@@ -124,6 +126,23 @@ def apply_patch(content: str, strategy: str = "legacy_gateway_run") -> str:
         ),
         required_callback_args=("approval_data",),
     )
+    if strategy == "gateway_run_013_plus":
+        content = _apply_callback_patch(
+            content,
+            callback_name="_status_callback_sync",
+            begin_marker=STATUS_PATCH_BEGIN,
+            end_marker=STATUS_PATCH_END,
+            renderer=_render_status_hook_block,
+            required_outer_names=(
+                "source",
+                "event_message_id",
+                "_status_chat_id",
+                "_loop_for_step",
+                "_run_still_current",
+            ),
+            required_callback_args=("event_type", "message"),
+        )
+    return content
 
 
 def apply_cron_patch(content: str) -> str:
@@ -481,6 +500,13 @@ def remove_patch(content: str) -> str:
     )
     content = _remove_simple_owned_patch(
         content,
+        STATUS_PATCH_BEGIN,
+        STATUS_PATCH_END,
+        _render_status_hook_block,
+        "status callback patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
         QUEUED_COMPLETE_PATCH_BEGIN,
         QUEUED_COMPLETE_PATCH_END,
         _render_queued_complete_hook_block,
@@ -526,6 +552,7 @@ def remove_patch_lenient(content: str) -> str:
         (THINKING_DELTA_PATCH_BEGIN, THINKING_DELTA_PATCH_END),
         (CLARIFY_PATCH_BEGIN, CLARIFY_PATCH_END),
         (APPROVAL_PATCH_BEGIN, APPROVAL_PATCH_END),
+        (STATUS_PATCH_BEGIN, STATUS_PATCH_END),
         (COMMAND_CARD_STARTUP_PATCH_BEGIN, COMMAND_CARD_STARTUP_PATCH_END),
         (COMMAND_CARD_PATCH_BEGIN, COMMAND_CARD_PATCH_END),
         (HFC_COMMAND_PATCH_BEGIN, HFC_COMMAND_PATCH_END),
@@ -603,23 +630,37 @@ def _apply_cron_patch(content: str) -> str:
     owned_block = _find_owned_cron_block(content)
     if owned_block is not None:
         lines = content.splitlines(keepends=True)
-        begin_index, end_index = owned_block
+        begin_index, end_index, media_aware = owned_block
         indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
         newline = _line_ending(lines[begin_index]) or _detect_newline(content)
-        expected = _render_cron_hook_block(indent, newline)
+        tree = _parse_content_with_markers(content)
+        desired_media_aware = _find_cron_media_delivery_location(tree, lines) is not None
+        if media_aware != desired_media_aware:
+            unpatched = "".join(lines[:begin_index] + lines[end_index + 1 :])
+            return _apply_cron_patch(unpatched)
+        expected = _render_cron_hook_block(
+            indent,
+            newline,
+            media_aware=media_aware,
+        )
         if lines[begin_index : end_index + 1] == expected:
             return content
         return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
 
     tree = _parse_content(content)
     lines = content.splitlines(keepends=True)
-    deliver_body = _find_cron_deliver_body_location(tree, lines)
-    if deliver_body is None:
+    media_delivery = _find_cron_media_delivery_location(tree, lines)
+    location = media_delivery or _find_cron_deliver_body_location(tree, lines)
+    if location is None:
         return content
 
     newline = _detect_newline(content)
-    insert_at, body_indent = deliver_body
-    hook = _render_cron_hook_block(body_indent, newline)
+    insert_at, body_indent = location
+    hook = _render_cron_hook_block(
+        body_indent,
+        newline,
+        media_aware=media_delivery is not None,
+    )
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
@@ -645,7 +686,7 @@ def _remove_cron_patch(content: str) -> str:
     if owned_block is None:
         return content
     lines = content.splitlines(keepends=True)
-    begin_index, end_index = owned_block
+    begin_index, end_index, _media_aware = owned_block
     return "".join(lines[:begin_index] + lines[end_index + 1 :])
 
 
@@ -736,17 +777,73 @@ def _branch_returns(body) -> bool:
 
 
 def _find_cron_deliver_body_location(tree, lines):
+    node = _find_cron_deliver_node(tree)
+    return _body_location(node, lines) if node is not None else None
+
+
+def _find_cron_media_delivery_location(tree, lines):
+    node = _find_cron_deliver_node(tree)
+    if node is None:
+        return None
+
+    extract_assignment = None
+    filter_assignment = None
+    for statement in node.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if _assigns_media_and_cleaned_content(statement):
+            extract_assignment = statement
+        if _assigns_filtered_media_files(statement):
+            filter_assignment = statement
+    target = filter_assignment or extract_assignment
+    if target is None or target.lineno is None:
+        return None
+    end_lineno = getattr(target, "end_lineno", None) or target.lineno
+    return end_lineno, _line_indent(lines, target.lineno - 1)
+
+
+def _find_cron_deliver_node(tree):
     for node in tree.body:
         if _is_cron_deliver(node):
-            return _body_location(node, lines)
-
+            return node
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             for child in node.body:
                 if _is_cron_deliver(child):
-                    return _body_location(child, lines)
-
+                    return child
     return None
+
+
+def _assigns_media_and_cleaned_content(statement) -> bool:
+    names = {
+        element.id
+        for target in statement.targets
+        if isinstance(target, (ast.Tuple, ast.List))
+        for element in target.elts
+        if isinstance(element, ast.Name)
+    }
+    if not {"media_files", "cleaned_delivery_content"}.issubset(names):
+        return False
+    value = statement.value
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "extract_media"
+    )
+
+
+def _assigns_filtered_media_files(statement) -> bool:
+    if not any(
+        isinstance(target, ast.Name) and target.id == "media_files"
+        for target in statement.targets
+    ):
+        return False
+    value = statement.value
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "filter_media_delivery_paths"
+    )
 
 
 def _find_callback_body_location(
@@ -1017,20 +1114,31 @@ def _find_owned_cron_block(content: str):
     begin_index, end_index = marker_block
     indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
     newline = _line_ending(lines[begin_index]) or _detect_newline(content)
-    expected = _render_cron_hook_block(indent, newline)
-    expected_silent = _with_silent_exception_handler(expected, indent, newline)
     actual = lines[begin_index : end_index + 1]
-    if actual not in (expected, expected_silent):
+    pre_media = _render_cron_hook_block(indent, newline, media_aware=False)
+    post_media = _render_cron_hook_block(indent, newline, media_aware=True)
+    pre_media_silent = _with_silent_exception_handler(pre_media, indent, newline)
+    post_media_silent = _with_silent_exception_handler(post_media, indent, newline)
+    if actual in (post_media, post_media_silent):
+        media_aware = True
+    elif actual in (pre_media, pre_media_silent):
+        media_aware = False
+    else:
         raise ValueError("corrupt cron patch markers")
 
     tree = _parse_content_with_markers(content)
-    cron_deliver_body = _find_cron_deliver_body_location(tree, lines)
-    if cron_deliver_body is None:
+    location = (
+        _find_cron_media_delivery_location(tree, lines)
+        if media_aware
+        else _find_cron_deliver_body_location(tree, lines)
+    )
+    if location is None:
         raise ValueError("corrupt cron patch markers")
-    first_body_index, _body_indent = cron_deliver_body
-    if begin_index != first_body_index - 1:
+    insert_at, _body_indent = location
+    expected_begin_index = insert_at if media_aware else insert_at - 1
+    if begin_index != expected_begin_index:
         raise ValueError("corrupt cron patch markers")
-    return begin_index, end_index
+    return begin_index, end_index, media_aware
 
 
 def _parse_content_with_markers(content: str):
@@ -1717,6 +1825,29 @@ def _render_approval_hook_block(indent: str, newline: str):
     ]
 
 
+def _render_status_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    return [
+        f"{indent}{STATUS_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import handle_status_from_hermes_locals as _hfc_handle_status{newline}"
+        ),
+        f"{inner_indent}if _run_still_current():{newline}",
+        f"{deeper_indent}_hfc_handle_status({{{newline}",
+        f"{deeper_indent}    **locals(),{newline}",
+        f"{deeper_indent}    \"source\": source,{newline}",
+        f"{deeper_indent}    \"chat_id\": _status_chat_id,{newline}",
+        f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
+        f"{deeper_indent}    \"_hfc_loop\": _loop_for_step,{newline}",
+        f"{deeper_indent}}}, event_type=event_type, message=message){newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{STATUS_PATCH_END}{newline}",
+    ]
+
+
 def _render_slash_confirm_hook_block(indent: str, newline: str):
     inner_indent = _child_indent(indent)
     deeper_indent = _child_indent(inner_indent)
@@ -1853,8 +1984,33 @@ def _render_hfc_command_hook_block(indent: str, newline: str):
     ]
 
 
-def _render_cron_hook_block(indent: str, newline: str):
+def _render_cron_hook_block(
+    indent: str,
+    newline: str,
+    *,
+    media_aware: bool = False,
+):
     inner_indent = _child_indent(indent)
+    if media_aware:
+        return [
+            f"{indent}{CRON_PATCH_BEGIN}{newline}",
+            f"{indent}try:{newline}",
+            (
+                f"{inner_indent}from hermes_feishu_card.hook_runtime "
+                f"import emit_cron_delivery as _hfc_emit_cron{newline}"
+            ),
+            f"{inner_indent}_hfc_cron_metadata = {{\"delivery_kind\": \"cron\"}}{newline}",
+            (
+                f"{inner_indent}if _hfc_emit_cron({{**locals(), "
+                f"\"_hfc_resolved_targets\": locals().get(\"targets\", [])}}):{newline}"
+            ),
+            f"{_child_indent(inner_indent)}if media_files:{newline}",
+            f"{_child_indent(_child_indent(inner_indent))}cleaned_delivery_content = \"\"{newline}",
+            f"{_child_indent(inner_indent)}else:{newline}",
+            f"{_child_indent(_child_indent(inner_indent))}return None{newline}",
+            *_render_hook_exception_handler(indent, newline),
+            f"{indent}{CRON_PATCH_END}{newline}",
+        ]
     return [
         f"{indent}{CRON_PATCH_BEGIN}{newline}",
         f"{indent}try:{newline}",
