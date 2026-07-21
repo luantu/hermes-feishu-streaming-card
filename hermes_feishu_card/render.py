@@ -107,7 +107,28 @@ def render_card(
     elif session.thinking_text:
         primary_text = normalize_stream_text(session.thinking_text)
     else:
-        primary_text = _spinner_frame()
+        primary_text = "生成中..."
+    if session.delivery_kind == "notice":
+        return {
+            "schema": "2.0",
+            "config": {
+                "update_multi": True,
+                "summary": {"content": ""},
+            },
+            "header": {
+                "template": _notice_template(session.notice_level),
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "element_id": "main_content",
+                        "content": primary_text,
+                        "text_size": "x-small",
+                    }
+                ]
+            },
+        }
     effective_fields = list(DEFAULT_FOOTER_FIELDS) if footer_fields is None else list(footer_fields)
     show_tool_summary = "tool_summary" in effective_fields
     attachment_summary = _render_attachment_summary(session)
@@ -163,7 +184,7 @@ def render_card(
             }
         )
     elements.append({"tag": "hr", "element_id": "main_divider"})
-    if not timeline_elements:
+    if not timeline_elements and show_tool_summary:
         tool_summary = {
             "tag": "markdown",
             "element_id": "tool_summary",
@@ -179,18 +200,21 @@ def render_card(
             ),
         )
         elements.append(tool_summary)
-    footer_element = {
-        "tag": "markdown",
-        "element_id": "footer",
-        "content": footer,
-        "text_size": _role_text_size(
-            text_sizes,
-            "footer",
-            default="x-small",
-            used_roles=used_text_size_roles,
-        ),
-    }
-    elements.append(footer_element)
+    if isinstance(footer, list):
+        elements.extend(footer)
+    else:
+        footer_element = {
+            "tag": "markdown",
+            "element_id": "footer",
+            "content": footer,
+            "text_size": _role_text_size(
+                text_sizes,
+                "footer",
+                default="x-small",
+                used_roles=used_text_size_roles,
+            ),
+        }
+        elements.append(footer_element)
     header = {
         "template": status["template"],
         "title": {"tag": "plain_text", "content": header_title},
