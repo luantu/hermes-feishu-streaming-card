@@ -11,6 +11,7 @@ from typing import Any, Dict, Literal, Optional, Union
 from urllib.parse import quote, urlparse
 
 import aiohttp
+from aiohttp import FormData
 import ssl
 import certifi
 
