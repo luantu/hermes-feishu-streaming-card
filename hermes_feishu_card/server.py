@@ -2728,6 +2728,36 @@ def _render_session_card_for_app(
     )
 
 
+def _render_session_cards(request: web.Request, session: CardSession) -> list[dict[str, Any]]:
+    app = request.app
+    card_config = app[SESSION_CARD_CONFIGS_KEY].get(
+        _session_key_for_session(app, session), {},
+    )
+    footer_fields = _footer_fields_for_session(app, session)
+    title = card_config.get("title", app[CARD_TITLE_KEY])
+    if not isinstance(title, str):
+        title = app[CARD_TITLE_KEY]
+    interaction_mode = _interaction_mode_for_session_key(
+        app, _session_key_for_session(app, session),
+    )
+    loading_gif_img_key = _resolve_gif_img_key(app, session)
+    return render_cards(
+        session, footer_fields=footer_fields, title=title,
+        interaction_mode=interaction_mode, loading_gif_img_key=loading_gif_img_key,
+        show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
+        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), session.status not in {"completed", "failed"}),
+        max_timeline_items=_safe_positive_int(card_config.get("max_timeline_items"), 12),
+        max_reasoning_chars=_safe_positive_int(card_config.get("max_reasoning_chars"), 1200),
+        max_tool_result_chars=_safe_positive_int(card_config.get("max_tool_result_chars"), 600),
+        status_config=StatusConfig.from_mapping(card_config.get("status")),
+        text_sizes=(
+            card_config.get("text_sizes")
+            if isinstance(card_config.get("text_sizes"), dict)
+            else None
+        ),
+    )
+
+
 def _footer_fields_for_session(
     app: web.Application, session: CardSession
 ) -> list[str] | None:
