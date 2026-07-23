@@ -10,10 +10,10 @@
   <img alt="Sidecar only" src="https://img.shields.io/badge/Runtime-Sidecar--only-7C3AED?style=for-the-badge">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/baileyh8/hermes-feishu-streaming-card?style=for-the-badge&color=64748b"></a>
 </p>
+
 ![Hermes Feishu Streaming Card 封面](docs/assets/readme-cover.png)
 
 Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片。思考过程、工具调用、最终答案、授权确认、选项选择、系统提示和运行统计会收束在卡片内，而不是散落成多条灰色原生消息。<br><br>它面向真实飞书使用场景：流式内容漏字/乱序、长表格和代码块变成 raw markdown、工具过程不可见、approval/clarify 需要手工回复、话题里卡片不更新、多 bot / 多 profile 难排查，以及 Hermes 升级后 hook 兼容不确定。
-
 ![Hermes 飞书卡片命令交互、结果反馈与工具 timeline 展示](docs/assets/feishu-card-showcase-v385.png)
 
 ## V4 实时 Agent 状态
@@ -36,7 +36,7 @@ Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变
 - **群聊诊断更清楚**：`/hfc status` 会提示群内 chat binding 状态、绑定命令和 slash command 行为边界。
 - **运维卡有明确边界**：`/hfc doctor` 可给出诊断、两步安全修复和重启确认；私聊不比较操作者，群聊只允许发起者确认。运维卡不可用时继续使用 CLI，不改变普通流式卡的 layout 或 footer。
 - **长内容保护**：长 Markdown 表格、fenced code block 按结构边界拆分，降低 raw markdown 和半截围栏问题。
-- **可诊断、可恢复**：`doctor`、`/hfc status`、`/health` metrics、runtime import 检查、safe repair/restore/uninstall 覆盖常见故障。
+- **可诊断、可恢复**：`doctor`、`/hfc status`、`/health` metrics、runtime import 检查、Hermes Feishu SDK 能力检查、safe repair/restore/uninstall 覆盖常见故障。若 Hermes adapter 使用 `extra_ua_tags` 而 Gateway venv 仍是旧版 `lark-oapi`，`doctor` 会报告 `feishu_sdk_incompatible`，`setup/install` 会补齐已验证的 `lark-oapi==1.6.8`。
 
 ## 适用场景
 
@@ -55,13 +55,11 @@ macOS / Linux：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.sh | bash
 ```
-
 Windows PowerShell：
 
 ```powershell
 irm https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/main/install.ps1 | iex
 ```
-
 安装脚本会安装或升级插件、读取/提示飞书凭据、写入本地 `.env`，并调用整合安装器：
 
 ```bash
@@ -122,7 +120,7 @@ streaming:
 
 不要设置 `display.platforms.feishu.streaming: false`。也不要把 `display.show_reasoning` 当成本插件必需开关；它可能把 reasoning 追加到最终回复里，反而干扰卡片流式体验。插件会直接处理 Hermes 的 `thinking.delta` / `answer.delta`。
 
-Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 均有兼容策略；`doctor` 会优先读取 `VERSION` 或 Git tag `v2026.4.23+`，也会在版本 metadata 不完整或不可解析时用 `gateway/run.py` anchors 兜底。升级 Hermes 或插件后建议重新执行 `setup` 或 `install --hermes-dir ... --yes`。
+Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x 均有兼容策略；`doctor` 会优先读取 `VERSION` 或 Git tag `v2026.4.23+`，也会在版本 metadata 不完整或不可解析时用 `gateway/run.py` anchors 兜底。升级 Hermes 可能替换已注入 hook 的 `gateway/run.py`；`status` / `start` 会从配置旁 `.env` 的 `HERMES_DIR` 主动识别这种残留状态并给出安全恢复命令。确认是有意升级后，执行提示的 `install --accept-hermes-upgrade --yes`，再执行 `hermes gateway start`；若检测到用户改动或证据不完整，只会要求 `doctor --explain` 人工检查。
 
 ## Docker 容器内安装
 
@@ -131,7 +129,7 @@ Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x �
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.14
+export HFC_VERSION=v4.0.20
 bash install-docker.sh
 ```
 
@@ -172,6 +170,12 @@ bash install-docker.sh
 ![飞书话题内卡片连续更新与思考工具 timeline 展示](docs/assets/feishu-topic-card-showcase-v389.png)
 | 版本 | 重点 |
 |---|---|
+| [v4.0.20](docs/release-notes-v4.0.20.md) | 修复 Issue #153：已有卡片的 notice 异步更新返回 `accepted`，不再误报投递未知；真实 PATCH 失败保留脱敏指标和错误码 |
+| [v4.0.19](docs/release-notes-v4.0.19.md) | 修复 one-line installer 在 Hermes venv 中误用 `pip --user`、并确保 pip 失败时立即停止，避免“显示升级但仍运行旧版本” |
+| [v4.0.18](docs/release-notes-v4.0.18.md) | 检测 Hermes Feishu SDK 的真实构造能力；旧版 `lark-oapi` 会被 doctor 明确诊断，并由 setup/install 自动修复 |
+| [v4.0.17](docs/release-notes-v4.0.17.md) | 并行同名工具按真实调用 ID 独立关联，调用计数不再重复，详情不再残留第二个耗时 |
+| [v4.0.16](docs/release-notes-v4.0.16.md) | 去除初始 Header/正文加载文案重复；工具开始后空正文不再保留加载占位，并恢复真实工具耗时显示 |
+| [v4.0.15](docs/release-notes-v4.0.15.md) | 修复 Issue #141：工具事件改为紧凑语义时间线并增加真实加载动画；CLI 主动识别 Hermes 升级覆盖 hook |
 | [v4.0.14](docs/release-notes-v4.0.14.md) | 修复 Issue #142：长任务 orphan heartbeat 保持运行态并按原始消息锚点更新同一卡，最终完成事件继续收束该卡 |
 | [v4.0.13](docs/release-notes-v4.0.13.md) | 所有 Hermes slash command 的非空文本反馈统一进入独立命令卡；多条反馈更新同一卡，手动 `/compress` 原位显示运行态与终态，失败精确回退原生文本 |
 | [v4.0.12](docs/release-notes-v4.0.12.md) | Issue #133：上下文压缩阶段可见、正文/思考/工具/提示/footer 字号可配置；Issue #136：selected env 凭据加载与显式 degraded Noop 诊断 |
@@ -185,7 +189,6 @@ bash install-docker.sh
 | [v4.0.4](docs/release-notes-v4.0.4.md) | 修复 Markdown `MEDIA:` 字面量、SDK 预绑定旧 callback 的交互转发，以及 Codex 只返回单个限额窗口时的错误 `5h` 标签 |
 | [v4.0.3](docs/release-notes-v4.0.3.md) | 修复仅升级包并重启、但仍保留 V4.0.0 completion hook 时的媒体回答灰色正文重复；匹配正文只抑制一次，原生图片/文件继续发送 |
 | [v4.0.2](docs/release-notes-v4.0.2.md) | 修复 manifest 与 backup 均可信时，合法旧 owned hook 仍被拒绝升级的问题；保留 v4.0.1 的媒体正文去重修复 |
-| [v4.0.1](docs/release-notes-v4.0.1.md) | 修复 `MEDIA:` 图片/文件完成卡之后重复发送原生正文；原生通道仅投递媒体，卡片隐藏内部本地路径 |
 | [v4.0.0](docs/release-notes-v4.0.0.md) | 运行态 Header 实时显示 Hermes 工具 preview，正文独立流式显示公开阶段输出；等待、失败、完成状态自然衔接并保持现有 Footer/引用边界 |
 | [v3.10.0](docs/release-notes-v3.10.0.md) | 裸 `/resume` 使用原生会话下拉卡并沿用 Hermes 安全恢复路径；模型 footer 增加转义后的轻量语义色，不改变布局和字段顺序 |
 | [v3.9.1](docs/release-notes-v3.9.1.md) | 可靠性热修：完成答案不截断、打断任务终态串行化、模型选择回调异步化，以及可验证的 marker-only 安装损坏恢复；普通流式卡 footer/layout 保持不变 |
@@ -204,7 +207,6 @@ bash install-docker.sh
 | [v3.8.6](docs/release-notes-v3.8.6.md) | Docker/source-stripped Hermes 缺 `VERSION` 时用 Gateway anchors 兜底，兼容 Hermes v0.18.0 |
 | [v3.8.5](docs/release-notes-v3.8.5.md) | 历史修复版本；完整说明保留在 release notes |
 完整版本历史见 [CHANGELOG.md](CHANGELOG.md)，更长的历史说明保留在 [详细使用手册](docs/user-guide.md#版本历史)。
-
 ## 架构简图
 
 ```text

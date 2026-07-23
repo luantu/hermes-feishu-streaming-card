@@ -203,7 +203,7 @@ V3.8.10 把 TODO 中的群聊能力拆清楚：Hermes Gateway 继续负责真实
 V3.8.9 修复飞书/Lark 话题回复场景：创建话题后与 bot 对话，首张卡片能出现，但后续 `answer.delta`、`thinking.delta`、`tool.updated` 或 `system.notice` 可能因为 Hermes 内部流式 `message_id` 变化而没有更新同一张卡片，系统提示还可能同时出现在卡片 timeline 和外部灰色消息里。
 
 - **话题内同一张卡持续更新**：sidecar 会用 `reply_to_message_id` 把后续 topic 事件映射回当前运行中的卡片 session。
-- **系统提示不再重复外溢**：session-scoped `system.notice` 成功进入卡片后返回 `applied: true`；如果卡片投递短暂超时，已识别的 Hermes 系统提示也会被抑制，不再继续发送原生灰色文本。
+- **系统提示不再重复外溢**：session-scoped `system.notice` 成功进入卡片并排入异步 PATCH 后返回 `applied: true` 与 `delivery.outcome: accepted`，Hook 不会把“已排队”误判为投递未知；真正的异步更新失败会进入 `notice_update_failures` 与脱敏的 `last_update_error`。
 - **适配 Hermes v0.18.x Relay 元数据**：hook runtime 会把 Relay `source.message_id` 保留下来作为话题原消息锚点。
 
 ![飞书话题内卡片连续更新与思考工具 timeline 展示](assets/feishu-topic-card-showcase-v389.png)
@@ -490,7 +490,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.0.14
+export HFC_VERSION=v4.0.20
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -730,9 +730,9 @@ streaming:
 | `setup --repair ... --yes` / `--no-repair` | 自动修复已知安全状态，或显式关闭自动 repair |
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
 | `uninstall --hermes-dir ... --yes` | 卸载并恢复 |
-| `start --config ...` | 启动 sidecar；Linux/systemd 优先使用独立 user service |
+| `start --config ...` | 启动 sidecar；已配置 `HERMES_DIR` 时先检查升级是否覆盖 hook，异常则拒绝静默启动 |
 | `stop --config ...` | 停止 sidecar；校验 PID/token，并通过记录的 systemd unit 或进程身份安全停止 |
-| `status --config ...` | 查看 sidecar 状态、routing、profile diagnostics 与 metrics |
+| `status --config ...` | 查看 sidecar、routing、profile diagnostics、metrics 与 Hermes hook 安装状态 |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | 按指定 profile 发送真实飞书 smoke 卡片 |
 | `bots list|show|add|remove --config ...` | 管理飞书 Bot 注册 |
 | `bots test --profile-id ... --chat-id ...` | 按指定 profile/bot 做真实飞书 bot smoke |
@@ -760,6 +760,7 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 - **卡片没有思考/不流式**：检查 `streaming.enabled: true` 与 `streaming.transport: edit`，确认模型确实输出 `thinking.delta`。
 - **真实飞书没有卡片**：检查凭据是否进入 sidecar；没有凭据时是 no-op client。V3.6.2 会读取 config 同目录 `.env`，真实环境变量仍优先。
 - **hook 已安装但 Hermes 卡片完全不工作**：跑 `doctor --explain`，查看 `Runtime import` 是否为 `ok`。如果 Hermes venv 不能 import `hook_runtime`，重新执行 `setup` 或 `install --hermes-dir ... --yes`。
+- **Gateway 在运行但飞书完全不回应**：跑 `doctor --explain`，查看 `Feishu SDK`。若出现 `feishu_sdk_incompatible`，重新执行 `setup` 或 `install --hermes-dir ... --yes`，让安装器补齐兼容 SDK，再重启 Hermes Gateway。
 - **卡片停在“思考中”**：看 `/health.diagnostics.last_terminal_event` 和 `feishu_update_failures`，确认终态事件是否到达、飞书 PATCH 是否成功。
 - **出现灰色原生文本**：通常说明 sidecar 未成功接收或更新终态；V3.5.x 已补 queued follow-up suppression 和终态优先更新。
 - **思考过程漏字/截断**：V3.5.x 已用 ordered send、append_block、PATCH 合并与终态优先修复；若仍出现，先检查 `/health.metrics.feishu_update_failures`。
@@ -774,6 +775,12 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.0.20](release-notes-v4.0.20.md) | 2026-07-22 | Issue #153：notice 异步 ACK 使用 `accepted`，真实 PATCH 失败增加脱敏指标和错误码 |
+| [v4.0.19](release-notes-v4.0.19.md) | 2026-07-22 | Hermes venv 安装不再误用 `pip --user`，pip 失败会立即中止并保留真实错误 |
+| [v4.0.18](release-notes-v4.0.18.md) | 2026-07-22 | Hermes Feishu SDK 构造能力诊断、旧版 `lark-oapi` 自动修复与运维卡提示 |
+| [v4.0.17](release-notes-v4.0.17.md) | 2026-07-22 | 并行同名工具按真实调用 ID 独立关联，真实调用次数与每条耗时正确显示 |
+| [v4.0.16](release-notes-v4.0.16.md) | 2026-07-22 | 加载态去重、工具开始后移除空正文占位，并恢复真实工具耗时 |
+| [v4.0.15](release-notes-v4.0.15.md) | 2026-07-22 | Issue #141：紧凑工具事件样式、同卡加载动画，以及 Hermes 升级覆盖 hook 的 CLI 主动防护 |
 | [v4.0.14](release-notes-v4.0.14.md) | 2026-07-20 | Issue #142：orphan 长任务 heartbeat 保持运行态、按原始消息锚点复用同一卡，并由最终完成事件正常收束 |
 | [v4.0.13](release-notes-v4.0.13.md) | 2026-07-20 | 全部 Hermes slash command 的非空文本反馈统一卡片化，同命令多反馈原位更新，手动 `/compress` 显示运行态与终态 |
 | [v4.0.12](release-notes-v4.0.12.md) | 2026-07-18 | Issues #133/#136：上下文压缩可见、五类字号与 PC/mobile 映射、selected env 凭据加载，以及 degraded Noop 健康状态和失败指标 |

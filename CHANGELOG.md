@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.0.20 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.20.md](docs/release-notes-v4.0.20.md)
+
+### Fixed
+- Existing-card `system.notice` updates now return `delivery.outcome=accepted` only after the event is applied and the asynchronous PATCH task is queued, preventing the hook from emitting a false unknown-delivery warning.
+- Initial independent notice create/reply semantics remain `delivered`, `not_sent`, or `unknown`; the fix does not wait for every PATCH or weaken create-delivery confirmation.
+
+### Diagnostics
+- `/health.metrics.notice_update_failures` counts accepted notice update tasks that still fail after internal PATCH retries.
+- `last_update_error` may include only validated `status_code` and `api_code` fields in addition to the exception type; response bodies, tokens, URLs, and credentials remain excluded.
+
+### Tests
+- Added hook and sidecar regressions for explicit `accepted + applied=true`, rejection of incomplete acknowledgements, queued update responses, retry exhaustion, and redacted diagnostics.
+- Full automation passed with `1517 passed, 4 skipped`; the package also passed sdist/wheel and isolated `site-packages` import checks.
+
+## V4.0.19 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.19.md](docs/release-notes-v4.0.19.md)
+
+### Fixed
+- The macOS/Linux one-line installer no longer passes `pip --user` when it selects a Python interpreter inside the Hermes venv.
+- A failed package installation now preserves the real pip exit status and stops before setup, preventing an older checkout or installed package from making an upgrade appear successful.
+
+### Tests
+- Added regression coverage for Hermes-venv pip arguments and fail-fast package-install behavior.
+- A fresh public-install fixture completed without `HFC_PIP_USER`, then imported the tagged package from the Hermes venv `site-packages`.
+
+## V4.0.18 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.18.md](docs/release-notes-v4.0.18.md)
+
+### Fixed
+- Hermes Feishu SDK compatibility now follows the adapter's actual `extra_ua_tags` requirement and the installed `lark_oapi.ws.Client` constructor signature instead of assuming a running Gateway means Feishu is connected.
+- `setup/install` repairs stale Gateway venvs with the verified `lark-oapi==1.6.8` and rechecks the constructor capability before patching Hermes.
+
+### Diagnostics
+- `doctor` reports a dedicated `feishu_sdk` section and `feishu_sdk_incompatible` finding; the operations card includes localized recovery guidance.
+- Older Hermes adapters that do not use `extra_ua_tags` remain untouched, while already-compatible newer SDKs are accepted without forced replacement.
+
+### Tests
+- Added red/green regression coverage for stale SDK repair and read-only doctor reporting.
+- Full automation passed with `1511 passed, 4 skipped`; the real Hermes v0.19.0 Gateway recovered its Feishu WebSocket connection after the SDK correction.
+
+## V4.0.17 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.17.md](docs/release-notes-v4.0.17.md)
+
+### Fixed
+- Parallel tools with the same name now use Hermes' stable `tool_start_callback` / `tool_complete_callback` call IDs, so each query, argument set, status, and duration stays on its own timeline row.
+- The timeline header counts tool invocations once instead of counting both started and completed lifecycle events.
+- Rendering removes every duration metadata line from the detail body and keeps only the first valid duration on the compact tool headline.
+
+### Compatibility
+- Existing Hermes tool callbacks are preserved and wrapped without retaining stale per-turn HFC closures on cached agents.
+- Hermes layouts without compatible stable callback anchors retain the established progress-callback fallback and fail-open behavior.
+
+### Tests
+- Added regression coverage for parallel same-name tools, invocation counting, duplicate-duration cleanup, stable patch insertion, idempotency, compilation against the current Hermes Gateway source, and exact restore.
+- Full automation passed with `1508 passed, 4 skipped`; package build, isolated install, public tagged-install, release assets, and local runtime provenance are verified during release.
+
+## V4.0.16 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.16.md](docs/release-notes-v4.0.16.md)
+
+### Fixed
+- Initial loading keeps `Hermes Agent` as the only Header text while the animated `正在加载上下文…` placeholder remains in the body.
+- Once a tool starts, its current action moves to the Header subtitle and an empty model body no longer repeats the loading placeholder.
+- Tool completion now reads Hermes progress-callback `kwargs.duration`, preserves the started-event query and arguments, and renders the duration on the compact tool headline.
+
+### Reliability
+- Explicit upstream duration remains authoritative; a started/completed event-time delta is used only when Hermes omits duration, while terminal-only events never invent elapsed time.
+- Added regression coverage for loading-state transitions, callback duration extraction, detail preservation, explicit-duration precedence, and terminal-only compatibility.
+
+### Tests
+- Full automation passed with `1504 passed, 4 skipped`; release metadata, package build, isolated install, and public tagged-install checks are recorded in the release notes.
+
+## V4.0.15 — 2026-07-22
+
+See also: [docs/release-notes-v4.0.15.md](docs/release-notes-v4.0.15.md)
+
+### Added
+- Fixed Issue #141 with a compact semantic tool-event timeline: the first line shows status, tool name, and duration while arguments, results, and failure details stay on a smaller second line without blockquote backgrounds.
+- The initial card displays an animated `正在加载上下文…` state, and running tools advance the same spinner through the existing serialized PATCH controller without creating a second card.
+
+### Reliability
+- `status` and `start` now detect a verified Hermes upgrade that replaced the injected hook while leaving safe installer evidence. They report `upgrade_repair_required`; `start` refuses the silent broken state and prints the explicit recovery plus Gateway-start commands.
+- User-edited, corrupt, unsupported, or incomplete Hermes source stays fail-closed as `manual_review_required`; the CLI never suggests upgrade acceptance for those states.
+- Hook installation now prints `gateway.restart_required: hermes gateway start` whenever patched Gateway or cron source changed.
+
+### Tests
+- Added render/server animation coverage, first-event compatibility, terminal drain checks, safe upgrade-recovery lifecycle coverage, and real Hermes/Feishu validation with the configured model.
+- Full automation, package build, isolated `site-packages` import, tagged install, and release-asset results are recorded in the release notes.
+
 ## V4.0.14 — 2026-07-20
 
 See also: [docs/release-notes-v4.0.14.md](docs/release-notes-v4.0.14.md)

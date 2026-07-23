@@ -67,6 +67,7 @@ _RUNTIME_SECRET_FLAG_RE = re.compile(
 _RUNTIME_URL_SECRET_RE = re.compile(
     r"(?i)([?&](?:token|password|secret|api_key|api-key|app_secret)=)([^&#\s]+)"
 )
+_TOOL_DURATION_LINE_RE = re.compile(r"^耗时:\s*(.+?)\s*$")
 
 def _spinner_text(label: str = "生成中") -> str:
     return f"{_spinner_frame()} {label}"
@@ -91,6 +92,7 @@ def render_card(
     loading_gif_img_key: str | None = None,
 ) -> Dict[str, Any]:
     used_text_size_roles: set[str] = set()
+    initial_loading = _is_initial_loading(session)
     status = _render_status(session, status_config=status_config)
     display_status = resolve_display_status(
         session, status_config or StatusConfig.defaults()
@@ -106,6 +108,8 @@ def render_card(
         primary_text = normalize_stream_text(session.answer_text)
     elif session.thinking_text:
         primary_text = normalize_stream_text(session.thinking_text)
+    elif session.latest_tool_preview or session.tools:
+        primary_text = ""
     else:
         primary_text = "生成中..."
     if session.delivery_kind == "notice":
@@ -153,15 +157,17 @@ def render_card(
         else _runtime_header_title(session, configured_title)
     )
     main_role = "notice" if session.delivery_kind == "notice" else "body"
-    elements = _render_main_content_elements(
-        primary_text,
-        text_size=_role_text_size(
-            text_sizes,
-            main_role,
-            default=None,
-            used_roles=used_text_size_roles,
-        ),
-    )
+    elements = []
+    if primary_text:
+        elements = _render_main_content_elements(
+            primary_text,
+            text_size=_role_text_size(
+                text_sizes,
+                main_role,
+                default=None,
+                used_roles=used_text_size_roles,
+            ),
+        )
     timeline_elements: list[Dict[str, Any]] = []
     if show_reasoning:
         timeline_elements = _render_timeline_elements(
@@ -351,6 +357,19 @@ def _runtime_header_summary(session: CardSession) -> str:
     return _sanitize_runtime_header(session.latest_tool_preview)
 
 
+def _is_initial_loading(session: CardSession) -> bool:
+    return (
+        session.status not in {"completed", "failed"}
+        and session.delivery_kind == "chat"
+        and session.active_interaction is None
+        and not session.answer_text
+        and not session.thinking_text
+        and not session.runtime_phase_text
+        and not session.latest_tool_preview
+        and not session.tools
+    )
+
+
 def _sanitize_runtime_header(text: str) -> str:
     normalized = normalize_stream_text(str(text or ""))
     normalized = _RUNTIME_FENCE_RE.sub("", normalized)
@@ -498,7 +517,19 @@ def _render_timeline_elements(
     entries = _select_timeline_entries(all_entries, max_items=max_items)
     folded = max(0, len(all_entries) - len(entries))
     if not entries and not folded:
-        return []
+        if not _is_initial_loading(session):
+            return []
+        panel_elements = _timeline_markdown_elements(
+            '<font color="grey">等待工具事件…</font>',
+            "auxiliary_timeline_loading",
+            text_size=_role_text_size(
+                text_sizes,
+                "tool",
+                default="x-small",
+                used_roles=used_text_size_roles,
+            ),
+        )
+        return [_timeline_panel(session, panel_elements, expanded=expanded)]
     panel_elements: list[Dict[str, Any]] = []
     if folded:
         panel_elements.extend(
@@ -536,17 +567,22 @@ def _render_timeline_elements(
                 )
             )
         elif item.kind == "tool":
+            detail, duration = _split_tool_timeline_detail(
+                _redact_tool_detail(item.detail)
+            )
             detail = _limit_text(
-                _redact_tool_detail(item.detail),
+                detail,
                 max_tool_result_chars,
                 overflow_label="工具详情过长，已截断",
             )
-            lines = [f"`{item.title}` · {item.status}"]
-            if detail:
-                lines.append(detail)
             panel_elements.extend(
                 _timeline_markdown_elements(
-                    _quote_markdown("\n".join(lines)),
+                    _render_tool_timeline_row(
+                        item.title,
+                        item.status,
+                        detail,
+                        duration,
+                    ),
                     f"auxiliary_timeline_toolentry_{index}",
                     text_size=_role_text_size(
                         text_sizes,
@@ -579,23 +615,82 @@ def _render_timeline_elements(
             )
     if not panel_elements:
         return []
-    return [
-        {
-            "tag": "collapsible_panel",
-            "element_id": "auxiliary_timeline",
-            "expanded": expanded,
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": f"思考与工具 · {session.tool_count} 次工具调用",
-                },
-                "vertical_align": "center",
+    return [_timeline_panel(session, panel_elements, expanded=expanded)]
+
+
+def _timeline_panel(
+    session: CardSession,
+    elements: list[Dict[str, Any]],
+    *,
+    expanded: bool,
+) -> Dict[str, Any]:
+    return {
+        "tag": "collapsible_panel",
+        "element_id": "auxiliary_timeline",
+        "expanded": expanded,
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": f"思考与工具 · {session.tool_count} 次工具调用",
             },
-            "border": {"color": "grey", "corner_radius": "5px"},
-            "padding": "8px 8px 8px 8px",
-            "elements": panel_elements,
-        }
-    ]
+            "vertical_align": "center",
+        },
+        "border": {"color": "grey", "corner_radius": "8px"},
+        "padding": "8px 8px 8px 8px",
+        "elements": elements,
+    }
+
+
+def _split_tool_timeline_detail(detail: str) -> tuple[str, str]:
+    duration = ""
+    lines: list[str] = []
+    for line in str(detail or "").splitlines():
+        match = _TOOL_DURATION_LINE_RE.fullmatch(line.strip())
+        if match:
+            if not duration:
+                duration = match.group(1)
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip(), duration
+
+
+def _render_tool_timeline_row(
+    title: str,
+    status: str,
+    detail: str,
+    duration: str,
+) -> str:
+    normalized_status = str(status or "running").strip().lower()
+    safe_title = html.escape(str(title or "工具"), quote=False)
+    duration_suffix = f" · {duration}" if duration else ""
+    if normalized_status in {
+        "completed",
+        "success",
+        "succeeded",
+        "ok",
+        "已完成",
+        "完成",
+        "成功",
+    }:
+        color = "green"
+        headline = f"✓ **{safe_title}**{duration_suffix}"
+    elif normalized_status in {"failed", "error", "失败", "已失败", "错误"}:
+        color = "red"
+        headline = f"✕ **{safe_title}**{duration_suffix} · 失败"
+    elif normalized_status in {"cancelled", "canceled", "已取消", "取消"}:
+        color = "grey"
+        headline = f"⊘ **{safe_title}**{duration_suffix} · 已取消"
+    elif normalized_status in {"queued", "waiting", "排队中", "等待中"}:
+        color = "grey"
+        headline = f"○ **{safe_title}**{duration_suffix} · 等待中"
+    else:
+        color = "blue"
+        headline = f"{_spinner_frame()} **{safe_title}**{duration_suffix} · 进行中"
+    lines = [f'<font color="{color}">{headline}</font>']
+    for line in str(detail or "").splitlines():
+        safe_line = html.escape(line, quote=False)
+        lines.append(f'<font color="grey">　{safe_line}</font>')
+    return "\n".join(lines)
 
 
 def _timeline_markdown_elements(

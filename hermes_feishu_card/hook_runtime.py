@@ -2562,12 +2562,12 @@ async def _hfc_send_system_notice_card(
 
 
 def _hfc_notice_post_applied(result: Any) -> bool:
-    return (
-        isinstance(result, dict)
-        and result.get("ok") is not False
-        and result.get("applied") is not False
-        and _hfc_notice_delivery_outcome(result) == "delivered"
-    )
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return False
+    outcome = _hfc_notice_delivery_outcome(result)
+    if outcome == "accepted":
+        return result.get("applied") is True
+    return outcome == "delivered" and result.get("applied") is not False
 
 
 def _hfc_notice_delivery_outcome(result: Any) -> str:
@@ -2577,7 +2577,7 @@ def _hfc_notice_delivery_outcome(result: Any) -> str:
     if not isinstance(delivery, dict):
         return "unknown"
     outcome = delivery.get("outcome")
-    if outcome in {"delivered", "not_sent", "unknown"}:
+    if outcome in {"accepted", "delivered", "not_sent", "unknown"}:
         return outcome
     return "unknown"
 
@@ -5542,15 +5542,20 @@ def _tool_arguments(local_vars: dict[str, Any]) -> Any:
 
 
 def _tool_duration_milliseconds(local_vars: dict[str, Any]) -> int | float | None:
-    for name in ("duration_ms", "elapsed_ms", "tool_duration_ms"):
-        value = _finite_float(local_vars.get(name))
-        if value is not None and value >= 0:
-            return int(value) if value.is_integer() else value
-    for name in ("duration", "elapsed", "tool_duration"):
-        value = _finite_float(local_vars.get(name))
-        if value is not None and value >= 0:
-            milliseconds = value * 1000
-            return int(milliseconds) if milliseconds.is_integer() else milliseconds
+    sources = [local_vars]
+    callback_kwargs = local_vars.get("kwargs")
+    if isinstance(callback_kwargs, dict):
+        sources.append(callback_kwargs)
+    for source in sources:
+        for name in ("duration_ms", "elapsed_ms", "tool_duration_ms"):
+            value = _finite_float(source.get(name))
+            if value is not None and value >= 0:
+                return int(value) if value.is_integer() else value
+        for name in ("duration", "elapsed", "tool_duration"):
+            value = _finite_float(source.get(name))
+            if value is not None and value >= 0:
+                milliseconds = value * 1000
+                return int(milliseconds) if milliseconds.is_integer() else milliseconds
     return None
 
 

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.14`. It fixes Issue #142 so orphaned long-running heartbeats remain non-terminal, update one card per original user-message anchor, and complete when the final event arrives. V3.9.1 was released on 2026-07-11, and V4.0.13 and earlier releases are public.
+Current release candidate: `4.0.20`. It fixes Issue #153's asynchronous acknowledgement semantics for notices on existing cards and adds redacted observability for real PATCH failures. V3.9.1 was released on 2026-07-11, and V4.0.19 and earlier releases are public.
 
 ## Ready
 
@@ -144,6 +144,47 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.0.20 Release Gates
+
+- Existing-card notices return `accepted` only when `applied=true` and the asynchronous PATCH is queued; the hook treats that explicit acknowledgement as handled: **passed hook/server regressions**.
+- Initial independent notice create/reply keeps the three delivery outcomes; queued work is not represented as delivered, and the request does not wait for every PATCH: **passed existing delivery regressions**.
+- After PATCH retry exhaustion, `notice_update_failures` increments once and `last_update_error` retains only the exception type plus validated `status_code` / `api_code`: **passed fault-injection and redaction assertions**.
+- Final full automation: **passed (`1517 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.20`, the public tagged installer, and Release assets are rechecked during release.
+
+## V4.0.19 Release Gates
+
+- Hermes venv Python omits `--user` by default while the system-Python fallback keeps user installs: **passed installer regression**.
+- Pip failures preserve their real exit status and prevent setup from running: **passed red/green regression**.
+- A fresh Hermes venv without `HFC_PIP_USER` completed installation and imported the target version from venv `site-packages`: **passed real install smoke**.
+- Final full automation, sdist/wheel, public tagged installer, and Release assets are rechecked during release.
+
+## V4.0.18 Release Gates
+
+- When the Hermes adapter uses `extra_ua_tags`, the installer checks the real SDK constructor; older adapters do not trigger installation and compatible newer SDKs are not forced backward: **passed CLI/diagnostics regressions**.
+- `doctor` reports `feishu_sdk_incompatible` read-only; `setup/install` must install `lark-oapi==1.6.8` and pass the follow-up capability check: **passed red/green integration coverage**.
+- A real Hermes v0.19.0 Gateway recovered `✓ feishu connected` after moving from `lark-oapi 1.5.3` to `1.6.8`; all 214 runtime packages are dependency-compatible: **passed**.
+- Final full automation: **passed (`1511 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.18`, the public tagged installer, and Release assets are rechecked during release.
+
+## V4.0.17 Release Gates
+
+- Two parallel same-name tools use distinct `call_id` values and preserve independent previews and completion events: **passed session/patcher regressions**.
+- Started/completed counts once per invocation, all duration metadata is removed from details, and one duration remains on each headline: **passed session/renderer regressions**.
+- Patch compilation, idempotency, and exact restore against the current local Hermes original Gateway source: **passed**; the compatibility fallback without stable callback anchors is unchanged.
+- Final full automation: **passed (`1508 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.17`, public tagged installer, and local runtime provenance are rechecked during release.
+
+## V4.0.16 Release Gates
+
+- Initial Header/body responsibilities, removal of the empty body placeholder after tool start, and unchanged final-answer/footer behavior: **passed renderer/session/server regression coverage**.
+- Hermes `kwargs.duration` extraction, `duration_ms` propagation, started/completed fallback, terminal-only non-fabrication, and query/argument preservation: **passed real callback-shape smoke plus automation**.
+- Final full automation: **passed (`1504 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.16`, the public tagged installer, and local runtime provenance are rechecked during release.
+- This patch does not claim a new Feishu client visual retest. V4.0.15 covered the real Hermes/Feishu loading and tool-state path; this delta is verified through the real callback shape and card JSON smoke.
+
+## V4.0.15 Release Gates
+
+- Issue #141's compact tool timeline, loading/running spinner, same-card PATCH path, stop conditions, terminal drain, and topic/reply anchors: **passed focused automation and real Hermes/Feishu model validation**.
+- Read-only detection after a Hermes upgrade, `start` refusal, explicit recovery, installed state after recovery, and fail-closed user edits: **passed a temporary-fixture upgrade loop plus the local real-upgrade diagnosis**.
+- Final full automation: **passed (`1498 passed, 4 skipped`)**; sdist/wheel, isolated `site-packages` import of `4.0.15`, and CLI smoke: **passed**; `git diff --check` is rerun before tagging.
 
 ## V4.0.14 Release Gates
 

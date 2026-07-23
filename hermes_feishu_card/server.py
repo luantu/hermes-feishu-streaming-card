@@ -43,7 +43,7 @@ from .operations_transport import (
     derive_operation_transport_secret,
 )
 from .profile_sources import PROFILE_SOURCE_FALLBACK, PROFILE_SOURCES
-from .render import render_card
+from .render import _is_initial_loading, render_card
 from .session import CardSession
 from .status import StatusConfig
 from .subscription_usage import fetch_codex_subscription_usage
@@ -100,9 +100,13 @@ OPERATIONS_PUBLISH_LOCKS_GUARD_KEY = web.AppKey("operations_publish_locks_guard"
 FLUSH_CONTROLLERS_KEY = web.AppKey("flush_controllers", dict)
 UPLOADED_GIF_IMG_KEYS_KEY = web.AppKey("uploaded_gif_img_keys", dict)
 RESEND_AFTER_SECONDS_KEY = web.AppKey("resend_after_seconds", float)
+CARD_ANIMATION_TASKS_KEY = web.AppKey("card_animation_tasks", dict)
 CLEANUP_TASK_KEY = web.AppKey("cleanup_task", asyncio.Task)
 UPDATE_MAX_ATTEMPTS = 3
 UPDATE_MIN_INTERVAL_SECONDS = 0.2
+CARD_ANIMATION_INTERVAL_SECONDS = 0.8
+CARD_ANIMATION_MAX_UPDATES = 15
+_CARD_ANIMATION_SLEEP = asyncio.sleep
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60.0
 MAX_OPERATION_DELIVERIES = 200
 MAX_STALE_OPERATIONS_REPUBLISHES = 1
@@ -232,6 +236,7 @@ def create_app(
         app[RESEND_AFTER_SECONDS_KEY] = float(raw_resend) if raw_resend is not None else 60.0
     except (TypeError, ValueError):
         app[RESEND_AFTER_SECONDS_KEY] = 60.0
+    app[CARD_ANIMATION_TASKS_KEY] = {}
     app[DIAGNOSTICS_KEY] = {
         "last_update_error": "",
         "last_route_error": "",
@@ -333,6 +338,7 @@ def create_app(
 
         app.on_startup.append(_startup_gif_upload)
     app.on_cleanup.append(_stop_operations_diagnostics)
+    app.on_cleanup.append(_stop_card_animations)
     app.on_cleanup.append(_stop_runtime_cleanup)
     return app
 
@@ -350,6 +356,15 @@ async def _stop_runtime_cleanup(app: web.Application) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _stop_card_animations(app: web.Application) -> None:
+    tasks = list(app[CARD_ANIMATION_TASKS_KEY].values())
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    app[CARD_ANIMATION_TASKS_KEY].clear()
 
 
 async def _stop_operations_diagnostics(app: web.Application) -> None:
@@ -1871,6 +1886,7 @@ def _hfc_monitor_lines(request: web.Request, event: SidecarEvent) -> list[str]:
         "feishu_send_unknown_outcomes",
         "notice_native_fallbacks",
         "notice_uncertain_warnings",
+        "notice_update_failures",
         "feishu_update_attempts",
         "feishu_update_successes",
         "feishu_update_failures",
@@ -2192,6 +2208,13 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 ), None
             feishu_message_ids[session_key] = delivery.message_id
             message_bot_ids[session_key] = route.bot_id
+            _ensure_card_animation(
+                request.app,
+                session_key=session_key,
+                session=session,
+                feishu_message_id=str(delivery.message_id),
+                bot_id=route.bot_id,
+            )
         if applied:
             metrics.events_applied += 1
         else:
@@ -2286,6 +2309,13 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 message_id = str(delivery.message_id)
                 feishu_message_ids[session_key] = message_id
                 message_bot_ids[session_key] = route.bot_id
+                _ensure_card_animation(
+                    request.app,
+                    session_key=session_key,
+                    session=session,
+                    feishu_message_id=message_id,
+                    bot_id=route.bot_id,
+                )
                 if event.event == "interaction.requested":
                     _store_interaction_result(request.app, session)
                 if event_is_terminal:
@@ -2359,6 +2389,13 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         is_terminal = event_is_terminal
         controller = _flush_controller_for_session(request.app, session_key)
         bot_id = message_bot_ids.get(session_key)
+        _ensure_card_animation(
+            request.app,
+            session_key=session_key,
+            session=session,
+            feishu_message_id=feishu_message_id,
+            bot_id=bot_id,
+        )
 
         async def _render_and_update() -> bool:
             latest_session = sessions.get(session_key)
@@ -2371,6 +2408,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 feishu_message_id,
                 latest_card,
                 bot_id,
+                notice_update=event.event == "system.notice",
             )
             if not updated and is_terminal:
                 await _retry_terminal_update(
@@ -2409,6 +2447,8 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     else:
         metrics.events_ignored += 1
     response_payload = {"ok": True, "applied": applied}
+    if applied and event.event == "system.notice" and post_lock_task is not None:
+        response_payload["delivery"] = {"outcome": "accepted"}
     if event.event == "interaction.requested":
         response_payload["interaction_mode"] = _interaction_mode_for_session_key(
             request.app,
@@ -2435,6 +2475,123 @@ def _post_terminal_cleanup(
         now = time.time()
         cleanup_closed_controller(app, session_key, controller, now=now)
         cleanup_runtime_state(app, now)
+
+
+def _ensure_card_animation(
+    app: web.Application,
+    *,
+    session_key: str,
+    session: CardSession,
+    feishu_message_id: str,
+    bot_id: str | None,
+) -> None:
+    if not _card_animation_is_current(app, session_key, session):
+        return
+    tasks: Dict[str, asyncio.Task[None]] = app[CARD_ANIMATION_TASKS_KEY]
+    existing = tasks.get(session_key)
+    if existing is not None and not existing.done():
+        return
+    task = asyncio.create_task(
+        _run_card_animation(
+            app,
+            session_key=session_key,
+            session=session,
+            feishu_message_id=feishu_message_id,
+            bot_id=bot_id,
+        )
+    )
+    tasks[session_key] = task
+    task.add_done_callback(
+        lambda completed: _finish_card_animation(
+            app,
+            session_key,
+            completed,
+        )
+    )
+
+
+async def _run_card_animation(
+    app: web.Application,
+    *,
+    session_key: str,
+    session: CardSession,
+    feishu_message_id: str,
+    bot_id: str | None,
+) -> None:
+    controller = _flush_controller_for_session(app, session_key)
+    for _ in range(CARD_ANIMATION_MAX_UPDATES):
+        await _CARD_ANIMATION_SLEEP(CARD_ANIMATION_INTERVAL_SECONDS)
+        if not _card_animation_is_current(app, session_key, session):
+            return
+
+        update_failed = False
+
+        async def render_and_update() -> bool:
+            nonlocal update_failed
+            if not _card_animation_is_current(app, session_key, session):
+                return False
+            updated = await _update_card_for_app(
+                app,
+                feishu_message_id,
+                _render_session_card_for_app(app, session),
+                bot_id,
+                is_current=lambda: _card_animation_is_current(
+                    app,
+                    session_key,
+                    session,
+                ),
+            )
+            update_failed = not updated
+            return updated
+
+        await controller.schedule(render_and_update, terminal=False)
+        if update_failed:
+            return
+        if not _card_animation_is_current(app, session_key, session):
+            return
+
+
+def _card_animation_is_current(
+    app: web.Application,
+    session_key: str,
+    session: CardSession,
+) -> bool:
+    return app[SESSIONS_KEY].get(session_key) is session and (
+        _is_initial_loading(session) or _has_running_tool(session)
+    )
+
+
+def _has_running_tool(session: CardSession) -> bool:
+    return any(
+        str(tool.status or "").strip().lower()
+        in {
+            "running",
+            "in_progress",
+            "in-progress",
+            "pending",
+            "运行中",
+            "进行中",
+            "处理中",
+        }
+        for tool in session.tools.values()
+    )
+
+
+def _finish_card_animation(
+    app: web.Application,
+    session_key: str,
+    task: asyncio.Task[None],
+) -> None:
+    tasks: Dict[str, asyncio.Task[None]] = app[CARD_ANIMATION_TASKS_KEY]
+    if tasks.get(session_key) is task:
+        tasks.pop(session_key, None)
+    try:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.warning("runtime card animation task failed", exc_info=error)
+    except asyncio.CancelledError:
+        return
 
 
 def _store_interaction_result(app: web.Application, session: CardSession) -> None:
@@ -3015,6 +3172,7 @@ async def _update_card_for_app(
     bot_id: str | None,
     *,
     is_current: Callable[[], bool] | None = None,
+    notice_update: bool = False,
 ) -> bool:
     metrics: SidecarMetrics = app[METRICS_KEY]
     for attempt in range(UPDATE_MAX_ATTEMPTS):
@@ -3042,6 +3200,8 @@ async def _update_card_for_app(
         if is_current is not None and not is_current():
             return False
         return True
+    if notice_update:
+        metrics.notice_update_failures += 1
     return False
 
 
@@ -3100,6 +3260,9 @@ def _reset_session_for_new_turn(app: web.Application, session_key: str) -> None:
     controller = controllers.pop(session_key, None)
     if controller is not None:
         controller.close()
+    animation_task = app[CARD_ANIMATION_TASKS_KEY].pop(session_key, None)
+    if animation_task is not None:
+        animation_task.cancel()
 
 
 async def _abandon_stale_sessions_for_chat(
@@ -3345,7 +3508,29 @@ def _is_client_factory(feishu_client: Any) -> bool:
 
 
 def _safe_update_error_message(bot_id: str | None, exc: Exception) -> str:
-    return f"bot_id={bot_id or ''} {exc.__class__.__name__}"
+    parts = [f"bot_id={bot_id or ''}", exc.__class__.__name__]
+    status_code = getattr(exc, "status_code", None)
+    if (
+        isinstance(status_code, int)
+        and not isinstance(status_code, bool)
+        and 100 <= status_code <= 599
+    ):
+        parts.append(f"status_code={status_code}")
+    api_code = getattr(exc, "api_code", None)
+    if isinstance(api_code, int) and not isinstance(api_code, bool):
+        parts.append(f"api_code={api_code}")
+    elif isinstance(api_code, str):
+        normalized_api_code = api_code.strip()
+        if (
+            normalized_api_code
+            and len(normalized_api_code) <= 32
+            and all(
+                char.isalnum() or char in {"_", "-"}
+                for char in normalized_api_code
+            )
+        ):
+            parts.append(f"api_code={normalized_api_code}")
+    return " ".join(parts)
 
 
 def _initial_routing_diagnostics(feishu_client: Any) -> dict[str, Any]:

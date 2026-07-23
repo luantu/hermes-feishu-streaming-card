@@ -62,6 +62,11 @@ DELIVERED_RESPONSE = {
     "applied": True,
     "delivery": {"outcome": "delivered"},
 }
+ACCEPTED_RESPONSE = {
+    "ok": True,
+    "applied": True,
+    "delivery": {"outcome": "accepted"},
+}
 
 
 def create_app(*args, **kwargs):
@@ -171,6 +176,17 @@ class UnknownFailureClient(FakeFeishuClient):
             retryable=True,
             outcome="unknown",
             retry_count=2,
+        )
+
+
+class UpdateFailureClient(FakeFeishuClient):
+    async def update_card_message(self, message_id, card):
+        raise FeishuAPIError(
+            "Authorization Bearer private-update-token",
+            status_code=503,
+            api_code=9499,
+            retryable=True,
+            outcome="unknown",
         )
 
 
@@ -730,6 +746,7 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "feishu_send_unknown_outcomes": 0,
         "notice_native_fallbacks": 0,
         "notice_uncertain_warnings": 0,
+        "notice_update_failures": 0,
         "feishu_update_attempts": 0,
         "feishu_update_successes": 0,
         "feishu_update_failures": 0,
@@ -4498,6 +4515,164 @@ async def test_message_started_uses_user_message_as_normal_chat_reply_anchor(cli
     assert feishu_client.sent[0][3] == "om_user_message"
 
 
+async def test_initial_loading_animation_updates_same_card_until_first_activity(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        sidecar_server,
+        "CARD_ANIMATION_INTERVAL_SECONDS",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sidecar_server,
+        "CARD_ANIMATION_MAX_UPDATES",
+        50,
+        raising=False,
+    )
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config={"flush_interval_ms": 0})
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        started = await test_client.post(
+            "/events",
+            json=event_payload(
+                "message.started",
+                0,
+                conversation_id="conversation-animation",
+                message_id="message-animation",
+            ),
+        )
+        assert started.status == 200
+        await _wait_until(lambda: len(feishu_client.updated) >= 1)
+        assert {
+            message_id for message_id, _card in feishu_client.updated
+        } == {"feishu-message-1"}
+        assert "正在加载上下文…" in str(feishu_client.sent[0][1])
+
+        activity = await test_client.post(
+            "/events",
+            json=event_payload(
+                "answer.delta",
+                1,
+                {"text": "首个模型输出"},
+                conversation_id="conversation-animation",
+                message_id="message-animation",
+            ),
+        )
+        assert activity.status == 200
+        await wait_for_card_update(feishu_client, "首个模型输出")
+        updates_after_activity = len(feishu_client.updated)
+        await _REAL_ASYNCIO_SLEEP(0.05)
+
+        assert len(feishu_client.updated) == updates_after_activity
+        animation_tasks = app.get(
+            getattr(sidecar_server, "CARD_ANIMATION_TASKS_KEY", object()),
+            {},
+        )
+        assert "message-animation" not in animation_tasks
+    finally:
+        await test_client.close()
+
+
+async def test_running_tool_animation_refreshes_until_tool_finishes(monkeypatch):
+    monkeypatch.setattr(
+        sidecar_server,
+        "CARD_ANIMATION_INTERVAL_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(sidecar_server, "CARD_ANIMATION_MAX_UPDATES", 50)
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config={"flush_interval_ms": 0})
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/events",
+            json=event_payload("message.started", 0),
+        )
+        await test_client.post(
+            "/events",
+            json=event_payload("answer.delta", 1, {"text": "准备执行工具"}),
+        )
+        await wait_for_card_update(feishu_client, "准备执行工具")
+        await _wait_until(
+            lambda: "msg-1"
+            not in app[sidecar_server.CARD_ANIMATION_TASKS_KEY]
+        )
+
+        await test_client.post(
+            "/events",
+            json=event_payload(
+                "tool.updated",
+                2,
+                {
+                    "tool_id": "terminal",
+                    "name": "terminal",
+                    "status": "running",
+                    "detail": "sleep 15",
+                },
+            ),
+        )
+        await wait_for_card_update(feishu_client, "sleep 15")
+        updates_after_tool_started = len(feishu_client.updated)
+        await _wait_until(
+            lambda: len(feishu_client.updated) > updates_after_tool_started
+        )
+
+        await test_client.post(
+            "/events",
+            json=event_payload(
+                "tool.updated",
+                3,
+                {
+                    "tool_id": "terminal",
+                    "name": "terminal",
+                    "status": "completed",
+                    "detail": "sleep 15",
+                    "duration_ms": 15000,
+                },
+            ),
+        )
+        await wait_for_card_update(feishu_client, "15s")
+        updates_after_tool_finished = len(feishu_client.updated)
+        await _REAL_ASYNCIO_SLEEP(0.05)
+
+        assert len(feishu_client.updated) == updates_after_tool_finished
+        assert "msg-1" not in app[sidecar_server.CARD_ANIMATION_TASKS_KEY]
+    finally:
+        await test_client.close()
+
+
+async def test_card_animation_stops_after_update_failure(monkeypatch):
+    monkeypatch.setattr(sidecar_server, "CARD_ANIMATION_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(sidecar_server, "CARD_ANIMATION_MAX_UPDATES", 50)
+    feishu_client = FakeFeishuClient()
+    feishu_client.update_failures_remaining = sidecar_server.UPDATE_MAX_ATTEMPTS
+    app = create_app(feishu_client, card_config={"flush_interval_ms": 0})
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/events",
+            json=event_payload("message.started", 0),
+        )
+        await _wait_until(
+            lambda: app[METRICS_KEY].feishu_update_attempts
+            >= sidecar_server.UPDATE_MAX_ATTEMPTS
+        )
+        await _REAL_ASYNCIO_SLEEP(0.08)
+
+        assert (
+            app[METRICS_KEY].feishu_update_attempts
+            == sidecar_server.UPDATE_MAX_ATTEMPTS
+        )
+        assert "msg-1" not in app[sidecar_server.CARD_ANIMATION_TASKS_KEY]
+    finally:
+        await test_client.close()
+
+
 async def test_topic_stream_event_with_reply_anchor_updates_existing_card(client):
     test_client, feishu_client = client
 
@@ -4584,11 +4759,63 @@ async def test_topic_system_notice_with_reply_anchor_updates_existing_card(clien
     )
 
     assert notice.status == 200
-    assert await notice.json() == {"ok": True, "applied": True}
+    assert await notice.json() == {
+        "ok": True,
+        "applied": True,
+        "delivery": {"outcome": "accepted"},
+    }
     message_id, card = await wait_for_card_update(feishu_client, "auto-compaction")
     assert message_id == "feishu-message-1"
     assert "上下文窗口提示" in str(card)
     assert len(feishu_client.sent) == 1
+
+
+async def test_existing_session_notice_update_failure_is_observable():
+    feishu_client = UpdateFailureClient()
+    app = create_app(feishu_client)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        started = await test_client.post(
+            "/events",
+            json=event_payload("message.started", 0),
+        )
+        notice = await test_client.post(
+            "/events",
+            json=event_payload(
+                "system.notice",
+                1,
+                {
+                    "title": "运行提示",
+                    "content": "后台任务正在运行",
+                    "notice_kind": "context-cap",
+                    "notice_scope": "session",
+                },
+            ),
+        )
+        notice_body = await notice.json()
+        await _wait_until(
+            lambda: app[METRICS_KEY].feishu_update_failures
+            == sidecar_server.UPDATE_MAX_ATTEMPTS
+        )
+        health = await test_client.get("/health")
+        health_body = await health.json()
+    finally:
+        await test_client.close()
+
+    assert started.status == 200
+    assert notice.status == 200
+    assert notice_body == {
+        "ok": True,
+        "applied": True,
+        "delivery": {"outcome": "accepted"},
+    }
+    assert health_body["metrics"]["notice_update_failures"] == 1
+    last_error = health_body["diagnostics"]["last_update_error"]
+    assert "FeishuAPIError" in last_error
+    assert "status_code=503" in last_error
+    assert "api_code=9499" in last_error
+    assert "private-update-token" not in last_error
 
 
 async def test_topic_second_message_reusing_message_id_sends_new_card(client):
@@ -5083,10 +5310,7 @@ async def test_orphaned_heartbeats_update_one_running_notice_card(client):
         )
         responses.append(await response.json())
 
-    assert responses == [
-        DELIVERED_RESPONSE,
-        {"ok": True, "applied": True},
-    ]
+    assert responses == [DELIVERED_RESPONSE, ACCEPTED_RESPONSE]
     assert message_ids[0] == message_ids[1]
     assert len(feishu_client.sent) == 1
     await _wait_until(lambda: len(feishu_client.updated) == 1)
@@ -5506,7 +5730,7 @@ async def test_independent_background_process_notice_updates_same_card(client):
     )
 
     assert completed_response.status == 200
-    assert await completed_response.json() == {"ok": True, "applied": True}
+    assert await completed_response.json() == ACCEPTED_RESPONSE
     assert len(feishu_client.sent) == 1
     assert len(feishu_client.updated) == 1
     card = feishu_client.updated[0][1]
@@ -5633,7 +5857,7 @@ async def test_background_notice_terminal_update_retries_and_cleans_controller(
     )
 
     assert completed.status == 200
-    assert await completed.json() == {"ok": True, "applied": True}
+    assert await completed.json() == ACCEPTED_RESPONSE
     await wait_for_card_update(feishu_client, "Updating files: 100%, done.")
     for _ in range(20):
         if message_id not in test_client.app[FLUSH_CONTROLLERS_KEY]:
@@ -5839,7 +6063,10 @@ async def test_parallel_message_sessions_update_their_own_feishu_cards(client):
         updates_by_message.setdefault(feishu_message_id, []).append(str(card))
     assert set(updates_by_message) == {"feishu-message-1", "feishu-message-2"}
     assert any("第一条完成" in card for card in updates_by_message["feishu-message-1"])
-    assert any("`search` · running" in card for card in updates_by_message["feishu-message-2"])
+    assert any(
+        '<font color="blue">' in card and "**search** · 进行中" in card
+        for card in updates_by_message["feishu-message-2"]
+    )
 
 
 async def test_streaming_deltas_are_throttled_but_terminal_event_updates(client):

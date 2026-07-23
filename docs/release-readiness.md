@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.0.14`。它修复 Issue #142：orphan 长任务 heartbeat 保持非终态、按原始用户消息锚点更新同一卡，并在最终完成事件到达时正常收束。V3.9.1 已于 2026-07-11 发布，V4.0.13 及更早版本也已发布。
+当前发布候选为 `4.0.20`。它修复 Issue #153 中已有卡片 notice 的异步 ACK 语义，并为真实 PATCH 失败补充脱敏可观测性；V3.9.1 已于 2026-07-11 发布，V4.0.19 及更早版本也已发布。
 
 ## 已具备
 
@@ -144,6 +144,47 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.0.20 发布门禁
+
+- 已有卡片 notice 必须只在 `applied=true` 且异步 PATCH 已排队时返回 `accepted`；hook 据此接管并抑制误报：**已通过 hook/server 回归**。
+- 独立 notice 初始 create/reply 继续使用三态投递语义；不把排队等同于送达，也不等待每次 PATCH：**已通过既有投递回归**。
+- PATCH 内部重试耗尽后 `notice_update_failures` 增加一次，`last_update_error` 只保留异常类型和白名单 `status_code` / `api_code`：**已通过故障注入与脱敏断言**。
+- 最终全量自动化：**已通过（`1517 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.20`、公开 tagged installer 与 Release assets 在发布流程中复核。
+
+## V4.0.19 发布门禁
+
+- Hermes venv Python 默认不带 `--user`，system Python fallback 保持 user install：**已通过 installer 回归**。
+- pip 安装失败保留真实退出码并阻止 setup：**已通过红灯/绿灯回归**。
+- fresh Hermes venv 不设置 `HFC_PIP_USER` 完成安装，并从 venv `site-packages` 导入目标版本：**已通过真实安装 smoke**。
+- 最终全量自动化、sdist/wheel、公开 tagged installer 与 Release assets 在发布流程中复核。
+
+## V4.0.18 发布门禁
+
+- Hermes adapter 使用 `extra_ua_tags` 时检查真实 SDK 构造签名；旧 adapter 不触发安装，兼容的新 SDK 不强制降级：**已通过 CLI/diagnostics 回归**。
+- `doctor` 只读输出 `feishu_sdk_incompatible`；`setup/install` 安装 `lark-oapi==1.6.8` 后必须复检通过：**已通过红灯/绿灯集成测试**。
+- 真实 Hermes v0.19.0 Gateway 从 `lark-oapi 1.5.3` 修复到 `1.6.8` 后恢复 `✓ feishu connected`，214 个 runtime 包依赖兼容：**已通过**。
+- 最终全量自动化：**已通过（`1511 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.18`、公开 tagged installer 与 Release assets 在发布流程中复核。
+
+## V4.0.17 发布门禁
+
+- 两个并行同名工具使用不同 `call_id`，查询详情和 completed 事件保持独立：**已通过 session/patcher 回归**。
+- started/completed 只计一次真实调用，详情中的全部 `耗时:` 元数据被清除且标题只保留一个耗时：**已通过 session/renderer 回归**。
+- 本机当前 Hermes 原始 Gateway source 的 patch 编译、幂等与精确 restore：**已通过**；无稳定 callback anchor 的兼容 fallback 保持不变。
+- 最终全量自动化：**已通过（`1508 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.17`、公开 tagged installer 与本机运行来源在发布流程中复核。
+
+## V4.0.16 发布门禁
+
+- 初始 Header/正文职责、工具开始后的空正文占位移除，以及最终答案/footer 保持：**已通过 renderer/session/server 回归**。
+- Hermes `kwargs.duration` 提取、`duration_ms` 传递、started/completed 兜底、terminal-only 不伪造及查询参数保留：**已通过真实 callback 结构 smoke 与自动化**。
+- 最终全量自动化：**已通过（`1504 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.16`、公开 tagged installer 与本机运行来源在发布流程中复核。
+- 本次不重复宣称飞书客户端视觉复验；V4.0.15 已覆盖真实 Hermes/飞书加载与工具状态路径，本补丁的差异由真实 callback 结构和卡片 JSON smoke 验证。
+
+## V4.0.15 发布门禁
+
+- Issue #141 紧凑工具时间线、加载/运行 spinner、同卡 PATCH、停止条件、终态 drain 与 topic/reply anchor：**已通过聚焦自动化和真实 Hermes/飞书模型验证**。
+- Hermes 升级覆盖后的只读发现、`start` 拒绝、显式恢复、恢复后 installed，以及用户编辑 fail-closed：**已通过临时 fixture 升级闭环与本机实际升级排障验证**。
+- 最终全量自动化：**已通过（`1498 passed, 4 skipped`）**；sdist/wheel、隔离 `site-packages` import `4.0.15` 与 CLI smoke：**已通过**；tag 前再执行 `git diff --check`。
 
 ## V4.0.14 发布门禁
 
