@@ -844,7 +844,7 @@ def _colored_model_label(model: str) -> str:
     safe = html.escape(text, quote=True)
     normalized = text.lower()
     for prefixes, color in MODEL_COLOR_PREFIXES:
-        if normalized.startswith(prefixes):
+        if any(prefix in normalized for prefix in prefixes):
             return f'<font color="{color}">{safe}</font>'
     return safe
 
