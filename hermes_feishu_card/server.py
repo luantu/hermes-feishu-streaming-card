@@ -73,7 +73,9 @@ from .profile_sources import PROFILE_SOURCE_FALLBACK, PROFILE_SOURCES
 from .render import (
     CardRenderResult,
     _is_initial_loading,
+    render_card,
     render_card_result,
+    render_cards,
     render_terminal_limit_handoff_card,
 )
 from .process import state_dir
