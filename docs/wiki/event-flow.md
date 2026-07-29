@@ -6,12 +6,34 @@
 Hermes Gateway
   -> patched gateway/run.py hook block
   -> hermes_feishu_card.hook_runtime
+  -> signed sidecar /delivery/policy preflight
   -> sidecar /events
+  -> signed sidecar /runtime/events hello/heartbeat
   -> CardSession / reply index / route lookup
   -> Feishu/Lark send or update card
 ```
 
 Hermes 进程内的 hook 只负责提取和转发。sidecar 负责会话状态、卡片渲染、Feishu API、重试、诊断和 metrics。
+
+## V4.1 投递与完整性控制流
+
+新 turn 在任何 sequence、pending delta、session 或原生抑制发生前，通过 `hfc-policy-v1` 查询 per-chat 决策。card decision 在 turn 内固定；native decision 让 original Hermes 路径继续。sidecar 收到 `/events` 后在创建 CardSession、reply alias、动画或 Feishu client state 前再查一次。未知 profile、配置 reload 失败、proof 无效/过期/重放、timeout 或 malformed response 全部走 native fail-open。
+
+normal answer/tool、approval/clarify、cron、system notice、command feedback 与 picker 使用同一决策；`/hfc help/status/doctor/monitor` 和 smoke card 是显式管理面，始终保持卡片。terminal 会清理本轮 policy cache、pending delta 和 native-media suppression；durable record 可读时，重复 terminal 复用已记录 disposition。durable record 缺失时，只有当前进程仍持有 generation、obligation、content、delivery plan、route 与 target scope 全部相同的完整 descriptor，才允许恢复同一个 fence；其余缺失、冲突、损坏或不可读状态返回 503 让 hook fail-open，绝不临时生成新的权威 descriptor，也不能只凭内存 session 声称已经投递。
+
+实际 card JSON 由共享 serializer 检查 5 table、200 tagged element 与 28,000 UTF-8 byte。非终态超限用小型 waiting card 继续收集；terminal 超限先持久化不含正文和原始路由标识的 handoff delivery record，再立即返回 `applied:false, disposition:native` 与短期 descriptor。有旧卡时，简短 handoff notice 只作为当前进程内 best-effort 异步 PATCH，不阻塞 descriptor；进程在 PATCH 中途退出时，旧卡可能停在 waiting 状态，但完整原答案仍由 Hermes 原生投递，无卡时不额外发卡。
+
+ACK-capable handoff 只在默认 profile 且受管的 Hermes 0.19 `gateway/run.py` 与 `gateway/platforms/base.py` 精确结构同时可验证时启用；Hermes 0.19 startup recovery 不 sweep secondary profile 的独立 ledger，因此 secondary profile 保持普通 native fail-open。run hook 只暂存 terminal；Base 在计算真实 obligation、完成媒体提取并选定真实 Feishu adapter 后，才把 obligation hash、完整答案 hash、当前 delivery-plan fingerprint 和 canonical `create` / `thread-create` route 绑定到 sidecar descriptor。新协议只广告 `native-ack-v2`、`stable-feishu-uuid-v2`、`exact-base-delivery-v1` 并接受 `hfc-native-handoff-v2` descriptor，避免新 Gateway 把旧 sidecar 的 v1 descriptor 当成 exact 授权；缺少任一能力、descriptor 版本或 exact binding 不匹配，都保持 legacy native fail-open，不能宣称受 ACK 保护。
+
+异常恢复的总原则是：状态丢失或损坏时优先避免丢失答案，同时让 exact 与普通 fail-open 的边界对操作者可见。
+
+每个逻辑分片使用稳定 Feishu UUID，adapter 内部重试与 Hermes ledger recovery 都复用相同 UUID。`hfc-native-handoff-recovery-v2` 只按 obligation、content、plan、route、target 五项精确查询，并始终重放 ledger 中保存的原始 content；terminal POST 已在 sidecar 提交但响应丢失/损坏时，Gateway 也立即用这五项查询找回 descriptor。若两次本机响应都丢失，本轮可先使用同五项派生的 provisional UUID seed，并在 ledger 标记 delivered 后异步重查完整 descriptor；provisional seed 本身不构成 ACK 权限。可见 recovered marker 或随机兜底文本只能走普通原生发送，不能借用旧 descriptor。只有全部 required chunks 成功且 Hermes ledger 已持久化 `delivered` 后才发送签名 ACK；ACK 失败不能回滚 ledger。若进程在平台成功与 ledger transition 之间退出，一小时窗口内由 ledger recovery 与稳定 UUID 提供 bounded idempotency；窗口外 exact descriptor 失效、sidecar 记录为 uncertain，Hermes 仍可用带可见 `RECOVERED_MARKER` 的有界 native recovery 避免答案丢失。状态丢失或损坏时同样优先保留这条可见 fail-open，而不虚构 exact 成功；该普通随机 UUID 路径不属于 exact 契约，因此不承诺永久 exactly-once。任何空 body、非 object 或缺少显式 `ok:true, applied:true` 的 terminal/cron/command 响应都必须 fail-open，不能抑制 Hermes 原生答案。附件/媒体、Cron 与 direct command 仍沿用 Hermes 原生 best-effort/fail-open 契约，不纳入这条 exact Base ledger ACK 保证。
+
+Gateway runtime 以独立 `hfc-runtime-v1` 域发送 `runtime.hello` / `runtime.heartbeat`。sidecar readiness 根据本机 monotonic receipt、generation 和 strict integrity 状态计算；heartbeat 只证明 runtime 活性，不授权写源码。on-disk plan 已是 `installed` 时，等待首次 heartbeat 只保持 waiting/missing readiness，不触发 repair，也不写 restart/manual-review fence。safe repair 仍需 Git/manifest/backup/blob/anchor/fingerprint 证据，成功后只设置 `gateway.restart_required`，不自动重启 Gateway。
+
+restart/manual-review fence 会原子写入私有 state dir，修复前 runtime 只保存 domain-separated hash；V4.1.1 fence 还以脱敏 hash 绑定 Hermes target/integrity plan，并由跨进程锁与 snapshot CAS 保护。重启 sidecar 不会清除 fence，旧 runtime 的 hello/heartbeat 与新 runtime 的 heartbeat也不能绕过。bound non-empty hash 的 `integrity acknowledge-review` 只清除 manual-review 位，restart fence 与 hash 继续等待不同 runtime id 且 generation/package 匹配的 `runtime.hello`。V4.1.0 unbound empty-hash fence 只在精确已知形态、两次 plan/pidfile/health 检查均稳定时允许显式迁移；其他 unbound fence拒绝。随后必须人工重启 sidecar 与 Gateway，并以新 hello 恢复 ready。
+
+setup/install 通过 Hermes runtime venv 安装，以 `python -I` 验证 package 来自该 venv `site-packages`；若 `/health` 的 package version 或 Python identity 与目标不一致，才受管重启 sidecar。已验证 canonical Hermes root 会显式传入 runner，不能被 selected env 重定向。V4.1.1 detached 子进程在读取配置和监听前先核对父进程写入的精确 PID/token 管理记录；写入失败由子进程自行退出。受管进程以 loopback process-token 请求自停，管理端不向数字 PID/PGID 发 TERM/KILL。具体 non-loopback 地址会配套同地址族的 loopback 管理监听，wildcard 不重复绑定。legacy `0644` pidfile 迁移限定在 owned `0700` state dir 内，并将目录与已打开 fd identity 绑定后收紧权限；pidfile-less、缺少自停接口或自停超时的进程不自动接管/kill，要求人工停止旧服务后重跑。
 
 ## 初始卡片可靠投递
 

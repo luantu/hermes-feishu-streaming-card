@@ -2,6 +2,37 @@
 
 自动化测试不能完全证明 Feishu/Lark 客户端体验。涉及卡片 UX、topic、系统提示、命令卡片的版本，发布前需要真实飞书 smoke。
 
+## V4.1.1 升级恢复与 V4.1 安全控制验收
+
+- heartbeat fence：verified `installed` plan 在 startup grace 内外等待首次 heartbeat，均不得出现持久化 fence 或 repair mutation；matching `runtime.hello` 到达后再进入正常 ready 判断。
+- review acknowledgement：只有双重 installed/integrity plan、sidecar health 不可达、无 pidfile、target binding 与 snapshot CAS 均匹配才允许命令成功；V4.1.0 unbound empty hash 只迁移精确已知形态，unbound non-empty 拒绝，bound non-empty 保留 restart/hash。命令后人工重启 sidecar 与 Gateway。
+- legacy process：私有 owned `0700` state dir 内的精确 `0644` legacy pidfile 可经同 inode/fd identity 收紧到 `0600`；非私有目录、symlink、未知 shape、identity race 全部拒绝。detached child 必须在读取配置/监听前验证父进程写入的精确 PID/token 管理记录；detached stop 需 loopback token 自停并确认 health 消失，不得向数字 PID/PGID 发 TERM/KILL。具体 non-loopback 地址需同时验证同地址族 loopback 管理监听，wildcard 不重复绑定；pidfile-less、旧接口或超时进程保持运行，先人工停旧服务再重跑。
+- setup identity：以 `python -I` 复检 Hermes venv `site-packages`；构造 package version/Python identity 匹配与不匹配两条 `/health` 分支，确认仅后者触发 sidecar 受管自停/重启；start/status/stop 的 selected env 必须一致，之后人工重启 Gateway。
+- 以上为 V4.1.1 发布前待验收项；未实际完成自动化、Linux/macOS、远端升级与真实飞书前不得标记通过。
+
+## V4.1.0 安全控制验收
+
+- card → native → card：先让普通会话完成一张卡，执行 `chats use-native` 后从下一条新消息观察 Hermes 原生投递，再执行 `chats use-card` 恢复；正在运行的 turn 不能中途变轨，三步均不得重复正文。
+- native 工具与反馈：在 native chat 中完成一轮带工具回答，并分别验证普通命令、system notice、approval/clarify 与 picker 按 Hermes 原生路径可见；`/hfc status` / `/hfc doctor` 仍必须是卡片。
+- 表格：发送包含 7 张真实 Markdown 表格和一段 fenced fake table 的回答；默认 `compact` 只把前 5 张渲染为 table，其余字段列表保留全部行、单元格和后续正文。显式 `truncate` 单独做自动化兼容，不把数据丢失模式作为默认真实验收。
+- 预算 handoff：在默认 profile 让无附件/媒体的最终序列化 card JSON 超过 28,000 byte。运行中只保留小型等待卡；完成后已有卡显示短 handoff，完整答案走 Hermes 原生消息。重复 terminal、Gateway ledger recovery、terminal 响应丢失后的 recovery lookup 与 ACK retry 在一小时窗口内复用相同分片 UUID；窗口外 exact descriptor 必须失效、sidecar 记录 `uncertain`。若 Hermes 随后执行有界 native recovery，消息必须带可见 `RECOVERED_MARKER`、使用普通随机 UUID，不能伪装成 exact retry；不宣称永久 exactly-once。再用 secondary profile 与带真实附件/媒体的回合确认它们继续走原生 best-effort，不广告 ACK capability。
+- integrity：先验证 `notify` 只报告；在严格 Git provenance fixture 中执行 `integrity migrate-safe`，确认 `sidecar.restart_required: true`、`gateway.restart_required: false`。safe repair 后确认 readiness 显示 `gateway.restart_required: true`，Gateway 未被自动重启；重启 sidecar 后该 fence 仍在，旧 runtime heartbeat/hello 和新 runtime heartbeat 均不能清除；手动重启 Gateway 后，只有不同且 generation/package 匹配的新 `runtime.hello` 恢复 ready。持久化文件不得包含 runtime id 原文。
+- service/Docker：Linux 覆盖 `auto`、`systemd-user`、`systemd-system`、`detached`，确认 `auto` 不调用 sudo/系统总线；Docker Compose 以普通 setup/sidecar/Gateway 容器运行，不使用 privileged 或 systemd。
+- 全程只记录脱敏计数、状态和 release version，不记录真实 chat/message/user id、secret、transport proof、本机路径、回答正文或 recovery fingerprint。真实验收、Linux/Docker smoke 和 public tag/install 未完成前，不得写成已经通过。
+
+## V4.0.21 内容完整性与媒体/notice 组合验收
+
+- Issue #155：按 `tool -> answer -> completed` 走一轮，完成卡必须保留完整用户可见答案；只有在明确 `answer -> tool` 边界后，前一段答案才能进入时间线。
+- Issue #147：同一图片回合须有一张完成卡和一条 native image；匹配的原生媒体文本只能抑制一次，后续无关原生文本不得被抑制。
+- 让已接管卡片的 `system.notice` 返回 accepted，确认不出现 uncertain-delivery warning；保留既有 `MEDIA:` 清理、附件和 fail-open 分支。
+- 不改变卡片 UI 或配置；不要在验收记录中写入真实 chat/message/user 标识符、凭据、token、图片内容或本机路径。
+
+2026-07-28 真实验收结果：图片回合产生 1 条带标记、非“生成中”的 interactive completion card 与 1 条 native image，没有 uncertain-delivery warning。正常工具回合的两段答案保留在同一张卡，bot 原生标记重复为 0。
+
+sidecar 最终 metrics：`events_received/events_applied=23/23`，1 次发送成功、16 次更新成功；event rejected、auth rejection、send/update failures、notice uncertain warnings、notice update failures 均为 0。Gateway 日志确认 Feishu WebSocket 已连接，Hermes venv site-packages 中的候选 runtime 为 4.0.21。
+
+本记录不宣称截图或桌面/移动端视觉 QA，也不宣称真实故障注入。公开 tagged installer 与 Release assets 仍待 post-tag 验证；验收记录不包含真实标识符、marker 文本、本机路径、凭据或测试图片内容。
+
 ## V4.0.20 notice 异步 ACK 语义
 
 - 已有卡片收到 `system.notice` 时，`/events` 只在事件已应用且 PATCH 任务已排队后返回 `delivery.outcome=accepted`；hook 不再发送“投递结果无法确认”的灰色误报。

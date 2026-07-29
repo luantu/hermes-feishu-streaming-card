@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.1.1 — 2026-07-28
+
+See also: [docs/release-notes-v4.1.1.md](docs/release-notes-v4.1.1.md)
+
+### Fixed
+- `setup/install` now probes the detected Hermes runtime venv with isolated Python, verifies that the package comes from that venv's `site-packages`, and compares the package/Python identity reported by `/health`. Plain `start` also requires an isolated matching import; `start/status/stop` now share the selected env source.
+- Waiting for the first authenticated runtime heartbeat no longer creates a persistent restart/manual-review fence when the on-disk install is already verified.
+- Added `integrity acknowledge-review`, which works only with a twice-verified `installed` plan, a stopped sidecar, no pidfile, a matching target-bound fence, and an unchanged CAS snapshot. The known V4.1.0 unbound fence migrates only in its exact empty-hash form; non-empty legacy fences stay fail-closed.
+- A legacy `0644` pidfile is accepted only inside a private, owned `0700` state directory and is tightened through an open-file identity binding. A running pidfile-less sidecar is never silently adopted or killed.
+- Detached sidecars stop through a loopback-only, process-token-authenticated self-shutdown request. HFC no longer sends TERM/KILL to a numeric detached PID/PGID; unsupported legacy processes and shutdown timeouts remain running for manual handling.
+- Recovery instructions now require an operator to stop and review first, acknowledge only when eligible, then manually restart sidecar and Hermes Gateway. Automated, package, Linux/Docker, and real Feishu acceptance remain release gates rather than pre-declared results.
+
+## V4.1.0 — 2026-07-28
+
+See also: [docs/release-notes-v4.1.0.md](docs/release-notes-v4.1.0.md)
+
+### Added
+- Exact, profile-scoped `bindings.native_chats` policy plus masked `chats use-native`, `chats use-card`, and `chats list` commands. Hook and sidecar enforce the policy independently through domain-separated, replay-resistant authentication.
+- Authenticated `runtime.hello` / `runtime.heartbeat` readiness monitoring and strict, evidence-bound `integrity.mode: safe` repair. Existing configs without the section remain `notify`; HFC never restarts Hermes Gateway automatically.
+- Explicit `service.manager` values `auto`, `systemd-user`, `systemd-system`, and `detached`. `auto` probes only user systemd and never crosses into system privileges.
+
+### Changed
+- `card.table_overflow_mode: compact` preserves table six onward as ordered field lists. `truncate` remains available explicitly, and fenced code no longer counts as tables.
+- The shared card serializer enforces five tables, 200 tagged elements, and a 28,000-byte JSON budget. Terminal overflow hands the complete answer back to Hermes native delivery instead of sending a partial card.
+- On the exact Hermes 0.19 final-answer path, terminal overflow now returns a stable descriptor bound to the Base delivery ledger's obligation, content hash, delivery-plan fingerprint, and canonical route. Per-chunk Feishu UUIDs, ledger-first `delivered`, and signed ACK keep retries bounded without claiming forever exactly-once semantics. Cron, direct-command, and incomplete-binding paths remain ordinary native fail-open and do not claim this ACK contract.
+- Multi-bot groups that depend on bot-to-bot mentions can opt into native creation through `native_chats`; the target app still needs Feishu's include-bot mention permission.
+- Docker Compose remains an ordinary unprivileged runtime flow and explicitly selects `detached` rather than systemd. The setup container runs `install-docker.sh` as root to prepare the shared volumes; the sidecar, Gateway, and probe run as non-root while CI exercises the patched Gateway, signed readiness, and signed event path.
+
+### Compatibility and safety
+- Hermes 0.19.0 / `v2026.7.20` remains compatible through AST-owned `gateway/run.py` and `gateway/platforms/base.py` hooks. V4.1 `manifest_version: 2` manages run, required Base, and optional Cron as one verified transaction; runtime monitoring and strict repair replace broader import-time patching.
+- Credits: @shutdown-awa (#157), @Jasonsun77 (#158), @Redeemer-w (#159), @zyq2552899783-lgtm (#162), @Cyber-Yichen (#156), and @wholegale39 (#160). The release retains their requirements and environment evidence without adopting implicit privilege escalation or an import-hook monkey patch.
+
+## V4.0.21 — 2026-07-28
+
+See also: [docs/release-notes-v4.0.21.md](docs/release-notes-v4.0.21.md)
+
+### Fixed
+- Fixed Issue #155: completion reconciliation archives streamed text only after an explicit `answer -> tool` boundary. A prior tool no longer causes a later `tool -> answer -> completed` final answer to move into the reasoning timeline.
+- Locked the Issue #147 image/notice combination with an automated regression: an accepted completed card suppresses matching native media text once, retains the native image delivery, and an accepted queued notice does not produce an uncertain-delivery warning.
+
+### Compatibility
+- This narrow hotfix does not change the card UI or configuration. Existing media handoff, notice acknowledgement, fail-open behavior, and Issue #96 completion-suffix compatibility remain in place.
+
+### Verification
+- Task 1 focused ordering coverage passed `74 passed`; Task 2 image/notice combination coverage passed `277 passed` without requiring a production runtime change.
+- Real Feishu acceptance on 2026-07-28 confirmed the image and answer-ordering paths with zero matching native duplicates or uncertain-delivery warnings; this is not a screenshot or desktop/mobile visual-QA claim.
+- The candidate runtime was observed in Hermes venv `site-packages` as `4.0.21`. Public tagged-installer and Release-asset verification remain pending post-tag.
+- Final local release gate passed: full pytest reported `1526 passed, 4 skipped in 53.56s`; `uv build` produced `hermes_feishu_streaming_card-4.0.21.tar.gz` and `hermes_feishu_streaming_card-4.0.21-py3-none-any.whl`.
+- A clean Python 3.12 venv installed the wheel with imports resolving from `site-packages`; package and distribution versions were both `4.0.21`, `hermes-feishu-card = hermes_feishu_card.cli:main` was present, and CLI `--help` exit 0.
+
 ## V4.0.20 — 2026-07-22
 
 See also: [docs/release-notes-v4.0.20.md](docs/release-notes-v4.0.20.md)

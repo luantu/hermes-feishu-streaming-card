@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from .card_timeline import CardTimeline, TERMINAL_TOOL_STATUSES
 from .events import SidecarEvent
+from .native_handoff import NativeHandoffRecord
 from .status import StatusConfig, resolve_display_status
 from .text import StreamingTextNormalizer, normalize_stream_text
 
@@ -89,8 +90,13 @@ class CardSession:
     started_at: float = field(default_factory=time.monotonic)
     notice_title: str = ""
     notice_level: str = "info"
+    terminal_disposition: str = ""
+    terminal_limit_reason: str = ""
+    terminal_handoff_record: NativeHandoffRecord | None = field(
+        default=None,
+        repr=False,
+    )
     _tool_call_count: int = field(default=0)
-    _has_seen_tool_event: bool = False
     _answer_archive_index: int | None = None
     timeline: CardTimeline = field(default_factory=CardTimeline)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
@@ -192,7 +198,6 @@ class CardSession:
                 return True
             if self.answer_text and self._answer_archive_index is None:
                 self._answer_archive_index = self.timeline.entry_count
-            self._has_seen_tool_event = True
             name = event.data.get("name")
             status = event.data.get("status")
             resolved_name = name if isinstance(name, str) else tool_id
@@ -358,22 +363,6 @@ class CardSession:
                 return final
             self._archive_current_answer_to_reasoning()
             return stripped
-
-        if self._has_seen_tool_event and final.startswith(preface):
-            stripped = _strip_preface_prefix(final, preface)
-            # Only archive the preface when the remaining stripped content is
-            # substantial — i.e. the preface was a short intro and the real
-            # answer follows.  If stripped is tiny relative to final, the
-            # "preface" IS the answer and should not be archived.  (#96)
-            if stripped != final and _has_substantial_completed_suffix(
-                final, stripped
-            ):
-                self._archive_current_answer_to_reasoning()
-                return stripped
-            return final
-
-        if self._has_seen_tool_event:
-            self._archive_current_answer_to_reasoning()
 
         return final
 

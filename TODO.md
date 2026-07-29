@@ -2,9 +2,38 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4.0 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20
+## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
+
+### V4.1.1：升级恢复安全热修（发布候选）
+
+- [x] verified `installed` plan 等待首次 heartbeat 时不再写 restart/manual-review fence。
+- [x] sidecar package version、隔离 Python identity、Hermes venv 与受管重启决策保持一致。
+- [x] legacy `0644` pidfile 仅在 owned `0700` state dir 内收紧；pidfile-less 进程不自动接管或 kill。
+- [x] detached sidecar 改为 token 认证的本机自停路径，停止流程不再向可复用数字 PID/PGID 强制发信号。
+- [x] `integrity acknowledge-review` 受 installed plan、stopped sidecar、无 pidfile、target binding 与 fence CAS 约束。
+- [x] 独立审查通过；候选提交 `20b7b06` 完整 pytest `2194 passed, 4 skipped`，`git diff --check`、wheel/sdist 构建、隔离 `site-packages` provenance 与真实进程测试均通过。
+- [ ] CI、exact merge SHA、public tag/install、Linux/Docker、本机与远端升级、真实飞书 smoke 和 Release assets。
+
+### V4.1.0：投递策略与运行安全（已发布）
+
+- [x] exact/profile-scoped `bindings.native_chats`、signed policy query 与 hook/server 双重 enforcement。
+- [x] 默认无损 table compact、共享 serializer 限额与 terminal native handoff。
+- [x] runtime hello/heartbeat、safe/notify/off integrity 与 strict repair，不自动重启 Gateway。
+- [x] `auto` / `systemd-user` / `systemd-system` / `detached` 明确进程管理，Docker 不使用 systemd/privilege。
+- [x] 双语 README、安装/迁移/安全/架构/协议/wiki/release notes 与版本元数据准备。
+- [x] exact merge SHA、完整自动化、upgrade simulation、Linux/Docker、public tag/install 与 Release assets 已完成；V4.1.1 继续修复真实升级发现的 recovery/process 问题。
+
+### V4.0.21：内容完整性与图片/notice 组合热修（发布候选）
+
+- [x] Issue #155：仅显式 `answer -> tool` 边界归档答案，`tool -> answer -> completed` 保留完整用户可见终态答案。
+- [x] Issue #147：图片/notice 自动化组合回归覆盖原生图片投递、一次性媒体文本抑制和 accepted notice 无 uncertain-delivery warning。
+- [x] 包元数据、当前安装入口、Docker Compose 默认、双语用户指南和发布门禁统一到 `v4.0.21`，不改变 UI 或配置。
+- [x] 真实飞书图片验收已通过（2026-07-28）：图片回合观测到 1 条带标记、非“生成中”的 completion card + 1 条 native image，无 uncertain-delivery warning；正常工具回合两段答案保留在同一卡，bot 原生标记重复为 0。
+- [x] sidecar `events_received/events_applied=23/23`、1 次发送成功、16 次更新成功；event/auth rejection、send/update failures、notice uncertain warnings、notice update failures 均为 0，Gateway Feishu WebSocket 已连接，Hermes venv site-packages 为 4.0.21。
+- [x] 最终本地发布门禁已通过：完整 pytest `1526 passed, 4 skipped in 53.56s`；`uv build` 生成 `hermes_feishu_streaming_card-4.0.21.tar.gz` 与 `hermes_feishu_streaming_card-4.0.21-py3-none-any.whl`；干净 Python 3.12 venv wheel 安装后的 import 位于 `site-packages`，package/distribution version 为 `4.0.21`，`hermes-feishu-card = hermes_feishu_card.cli:main` 存在，CLI `--help` exit 0。
+- [ ] 公开 tagged installer 与 Release assets 的 post-tag 验证仍待完成；验收不宣称截图或桌面/移动端视觉 QA。
 
 ### V4.0.20：notice 异步 ACK 语义热修（发布候选）
 

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.0.20`. It fixes Issue #153's asynchronous acknowledgement semantics for notices on existing cards and adds redacted observability for real PATCH failures. V3.9.1 was released on 2026-07-11, and V4.0.19 and earlier releases are public.
+Current release candidate: `4.1.1`. On top of V4.1.0 per-chat native policy, lossless table compaction, authenticated runtime integrity, and explicit sidecar service managers, it fixes upgrade recovery, heartbeat fences, operator review acknowledgement, legacy pidfile/process handling, and setup runtime identity. V3.9.1 was released on 2026-07-11; V4.1.0 and earlier releases remain historical records. V4.1.1 automation, real Feishu, Linux/Docker, public tag/install, and exact-merge-SHA gates are marked passed only after completion.
 
 ## Ready
 
@@ -144,6 +144,32 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.1.1 Release Gates
+
+- A verified `installed` plan neither repairs nor writes a restart/manual-review fence while the first heartbeat is waiting/missing, and resumes normal evaluation after a matching `runtime.hello`: **candidate focused and full regressions passed**.
+- `integrity acknowledge-review` requires installed + unreachable sidecar health + no pidfile; empty hash can clear an unresolvable fence while a non-empty hash keeps the restart fence until a different-runtime-id matching hello: **CLI, persistence, and restart simulation passed**.
+- A legacy `0644` pidfile is tightened only inside a private owned `0700` state directory through fd identity binding; a pidfile-less process is never silently adopted/killed and requires the operator to stop the old service before rerunning: **real macOS process tests passed; Linux CI remains pending**.
+- Setup installs/rechecks through the Hermes runtime venv and uses `/health` package version plus Python identity to decide whether to restart sidecar; sidecar and Gateway are then restarted manually: **local and remote upgrade acceptance pending**.
+- Candidate `20b7b06`: full pytest **`2194 passed, 4 skipped`**, `git diff --check`, wheel/sdist build, isolated `site-packages` provenance, and wheel real-process tests **`8 passed`**; **CI, exact merge SHA, public tagged install, Release assets, Linux/Docker, and real Feishu remain pending release gates**.
+
+## V4.1.0 Release Gates
+
+- Exact/profile-scoped `bindings.native_chats`, two-stage hook/sidecar enforcement, fail-open direct-card paths, and card-based `/hfc`: **focused matrix and real card → native → card acceptance pending**.
+- Default `table_overflow_mode=compact`, fenced fake-table exclusion, and a text-only terminal native handoff above 28,000 bytes using a V2 descriptor, stable UUIDs, the Hermes ledger, and delivered-then-ACK order; outside the window the exact descriptor expires while visible-marker bounded upstream recovery remains ordinary fail-open: **real seven-table and oversized-handoff acceptance pending**.
+- `integrity.mode` safe/notify/off, signed `runtime.hello` / `runtime.heartbeat`, strict repair, `sidecar.restart_required`, and no automatic Gateway restart: **upgrade simulation pending**.
+- All four `service.manager` modes, non-escalating `auto`, and ordinary Docker containers: **Linux manager and Docker Compose smoke pending**.
+- Full pytest, `git diff --check`, build/isolated `site-packages`, exact merge SHA, public tagged install, and Release assets: **release workflow pending**.
+
+## V4.0.21 Release Gates
+
+- Issue #155: only an explicit `answer -> tool` boundary can archive an answer; `tool -> answer -> completed` must retain the full user-visible terminal answer: **passed focused ordering coverage (`74 passed`)**.
+- Issue #147: after the completed card accepts the event, matching native media text is suppressed once, the native image still delivers, and an accepted queued notice emits no uncertain-delivery warning: **passed hook-runtime combination coverage (`277 passed`)**.
+- Current README, install guidance, Docker Compose, and bilingual user guides pin `v4.0.21`; UI and configuration remain unchanged: **passed documentation gate**.
+- Real Feishu image acceptance: **passed (2026-07-28)**. Observed one marker-bearing, non-running completion card plus one native image with no uncertain-delivery warning; a normal tool turn retained two answer segments in one card, with zero bot native marker duplicates.
+- Final sidecar metrics were `events_received/events_applied=23/23`, 1 send success and 16 update successes; event/auth rejection, send/update failures, notice uncertain warnings, and notice update failures were all zero. Gateway Feishu WebSocket was connected, and Hermes venv site-packages was 4.0.21.
+- Final local release gate: full pytest reported `1526 passed, 4 skipped in 53.56s`; `uv build` produced `hermes_feishu_streaming_card-4.0.21.tar.gz` and `hermes_feishu_streaming_card-4.0.21-py3-none-any.whl`. A clean Python 3.12 venv installed from the wheel with imports in `site-packages`, package/distribution versions both `4.0.21`, `hermes-feishu-card = hermes_feishu_card.cli:main` present, and CLI --help exit 0.
+- This acceptance does not claim screenshot or desktop/mobile visual QA and does not replace real fault injection; public tagged installer and Release-asset post-tag verification remain pending.
 
 ## V4.0.20 Release Gates
 
