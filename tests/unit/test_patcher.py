@@ -1,8 +1,14 @@
 import ast
+from pathlib import Path
 
 import pytest
 
 from hermes_feishu_card.install import patcher
+
+
+TURN_RUNNER_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "hermes_turn_runner.py"
+)
 
 
 def test_apply_patch_accepts_explicit_legacy_strategy():
@@ -814,6 +820,110 @@ def test_apply_patch_inserts_streaming_callback_hooks():
     assert patcher.remove_patch(patched) == content
 
 
+def test_answer_delta_hook_targets_native_text_stream_when_tts_fallback_exists():
+    content = (
+        "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "    return await self._run_agent(event_message_id=event.message_id)\n"
+        "\n"
+        "async def _run_agent(self, source, event_message_id=None):\n"
+        "    _loop_for_step = asyncio.get_running_loop()\n"
+        "    session_key = 'sess-1'\n"
+        "    _status_chat_id = source.chat_id\n"
+        "    _approval_session_key = session_key\n"
+        "    def _run_still_current():\n"
+        "        return True\n"
+        "\n"
+        "    if _want_stream_deltas or _want_interim_consumer:\n"
+        "        try:\n"
+        "            if _adapter:\n"
+        "                if _want_stream_deltas:\n"
+        "                    def _stream_delta_cb(text: str) -> None:\n"
+        "                        if _run_still_current():\n"
+        "                            _stream_consumer.on_delta(text)\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "\n"
+        "    if _stream_delta_cb is None and _stts_consumer_ref is not None:\n"
+        "        def _stream_delta_cb(text: str) -> None:\n"
+        "            if _run_still_current():\n"
+        "                _stts_consumer_ref.on_delta(text)\n"
+        "\n"
+        "    def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:\n"
+        "        status_queue.put(text)\n"
+    )
+
+    patched = patcher.apply_patch(content)
+
+    native_stream_index = patched.index("_stream_consumer.on_delta(text)")
+    tts_fallback_index = patched.index("_stts_consumer_ref.on_delta(text)")
+    answer_hook_index = patched.index(patcher.ANSWER_DELTA_PATCH_BEGIN)
+    assert answer_hook_index < native_stream_index < tts_fallback_index
+    assert patched.count(patcher.ANSWER_DELTA_PATCH_BEGIN) == 1
+    assert patcher.remove_patch(patched) == content
+
+    patched_lines = patched.splitlines(keepends=True)
+    begin = next(
+        index
+        for index, line in enumerate(patched_lines)
+        if patcher.ANSWER_DELTA_PATCH_BEGIN in line
+    )
+    end = next(
+        index
+        for index, line in enumerate(patched_lines[begin:], start=begin)
+        if patcher.ANSWER_DELTA_PATCH_END in line
+    )
+    stale = "".join(patched_lines[:begin] + patched_lines[end + 1 :])
+    fallback_body = (
+        "            if _run_still_current():\n"
+        "                _stts_consumer_ref.on_delta(text)\n"
+    )
+    stale = stale.replace(
+        fallback_body,
+        "".join(patcher._render_answer_delta_hook_block("            ", "\n"))
+        + fallback_body,
+        1,
+    )
+
+    upgraded = patcher.apply_patch(stale)
+
+    assert upgraded.index(patcher.ANSWER_DELTA_PATCH_BEGIN) < upgraded.index(
+        "_stream_consumer.on_delta(text)"
+    )
+    assert upgraded.count(patcher.ANSWER_DELTA_PATCH_BEGIN) == 1
+    assert patcher.remove_patch(upgraded) == content
+
+
+def test_apply_patch_restores_hooks_after_turn_runner_refactor():
+    content = TURN_RUNNER_FIXTURE.read_text(encoding="utf-8")
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    for marker in (
+        patcher.STABLE_TOOL_PATCH_BEGIN,
+        patcher.ANSWER_DELTA_PATCH_BEGIN,
+        patcher.THINKING_DELTA_PATCH_BEGIN,
+        patcher.CLARIFY_PATCH_BEGIN,
+        patcher.APPROVAL_PATCH_BEGIN,
+        patcher.STATUS_PATCH_BEGIN,
+    ):
+        assert marker in patched
+    assert 'event_name="tool.updated"' in patched
+    assert 'event_name="answer.delta"' in patched
+    assert 'event_name="thinking.delta"' in patched
+    assert "_hfc_turn_ctx = ctx" in patched
+    assert '"source": _hfc_turn_ctx.source' in patched
+    assert '"message_id": _hfc_turn_ctx.event_message_id' in patched
+    assert '"_hfc_loop": _hfc_turn_ctx._loop_for_step' in patched
+    assert '"chat_id": _hfc_turn_ctx._status_chat_id' in patched
+    status_method = patched.index("def _status_callback_sync")
+    status_context = patched.index("ctx = self._ctx", status_method)
+    status_hook = patched.index(patcher.STATUS_PATCH_BEGIN, status_method)
+    assert status_context < status_hook
+    ast.parse(patched)
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
 def test_apply_patch_uses_stable_tool_call_ids_when_gateway_exposes_callbacks():
     content = (
         "async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
@@ -838,6 +948,26 @@ def test_apply_patch_uses_stable_tool_call_ids_when_gateway_exposes_callbacks():
     assert "agent.tool_start_callback = _hfc_tool_start_callback" in patched
     assert "agent.tool_complete_callback = _hfc_tool_complete_callback" in patched
     assert "_hfc_pending_tool_previews" in patched
+    assert 'kwargs.get("_hfc_force_tool_progress_fallback")' in patched
+    assert (
+        'getattr(agent.tool_start_callback, "_hfc_stable_wrapper", False)'
+        in patched
+    )
+    assert (
+        'getattr(agent.tool_complete_callback, "_hfc_stable_wrapper", False)'
+        in patched
+    )
+    assert "_hfc_original_tool_progress_callback = getattr(" in patched
+    assert "def _hfc_tool_progress_callback(" in patched
+    assert "agent.tool_progress_callback = _hfc_tool_progress_callback" in patched
+    assert "_hfc_tool_progress_callback._hfc_stable_wrapper = True" in patched
+    assert (
+        "_hfc_original_tool_progress_callback("
+        '"tool.started", tool_name, _hfc_tool_preview, args,'
+        in patched
+    )
+    assert patched.count("_hfc_force_tool_progress_fallback=True") == 2
+    ast.parse(patched)
     assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
     assert patcher.remove_patch(patched) == content
 
