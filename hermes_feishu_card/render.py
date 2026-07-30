@@ -101,7 +101,7 @@ def render_card(
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
     show_reasoning: bool = True,
-    timeline_expanded: bool = False,
+    timeline_expanded: bool | None = None,
     max_timeline_items: int = 12,
     max_reasoning_chars: int = 1200,
     max_tool_result_chars: int = 600,
@@ -133,7 +133,7 @@ def render_card_result(
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
     show_reasoning: bool = True,
-    timeline_expanded: bool = False,
+    timeline_expanded: bool | None = None,
     max_timeline_items: int = 12,
     max_reasoning_chars: int = 1200,
     max_tool_result_chars: int = 600,
@@ -193,7 +193,7 @@ def _render_card_unchecked(
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
     show_reasoning: bool = True,
-    timeline_expanded: bool = False,
+    timeline_expanded: bool | None = None,
     max_timeline_items: int = 12,
     max_reasoning_chars: int = 1200,
     max_tool_result_chars: int = 600,
@@ -202,6 +202,8 @@ def _render_card_unchecked(
     table_overflow_mode: str = "compact",
     loading_gif_img_key: str | None = None,
 ) -> Dict[str, Any]:
+    if timeline_expanded is None:
+        timeline_expanded = session.status not in {"completed", "failed"}
     used_text_size_roles: set[str] = set()
     status = _render_status(session, status_config=status_config)
     display_status = resolve_display_status(
@@ -361,7 +363,7 @@ def render_cards(
     title: str = DEFAULT_TITLE,
     interaction_mode: str = "callback",
     show_reasoning: bool = True,
-    timeline_expanded: bool = False,
+    timeline_expanded: bool | None = None,
     max_timeline_items: int = 12,
     max_reasoning_chars: int = 1200,
     max_tool_result_chars: int = 600,
@@ -369,6 +371,8 @@ def render_cards(
     status_config: Optional[StatusConfig] = None,
     text_sizes: Mapping[str, Any] | None = None,
 ) -> list[Dict[str, Any]]:
+    if timeline_expanded is None:
+        timeline_expanded = session.status not in {"completed", "failed"}
     main_text = normalize_stream_text(session.visible_main_text)
     content_parts = _split_content_by_tables(main_text)
     if len(content_parts) <= 1:
