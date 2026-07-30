@@ -4316,7 +4316,7 @@ def _render_session_card_result_for_app(
         interaction_mode=interaction_mode,
         loading_gif_img_key=loading_gif_img_key,
         show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
-        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), session.status not in {"completed", "failed"}),
+        timeline_expanded=_resolve_timeline_expanded(card_config),
         max_timeline_items=_safe_positive_int(
             card_config.get("max_timeline_items"), 12
         ),
@@ -4353,7 +4353,7 @@ def _render_session_cards(request: web.Request, session: CardSession) -> list[di
         session, footer_fields=footer_fields, title=title,
         interaction_mode=interaction_mode, loading_gif_img_key=loading_gif_img_key,
         show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
-        timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), session.status not in {"completed", "failed"}),
+        timeline_expanded=_resolve_timeline_expanded(card_config),
         max_timeline_items=_safe_positive_int(card_config.get("max_timeline_items"), 12),
         max_reasoning_chars=_safe_positive_int(card_config.get("max_reasoning_chars"), 1200),
         max_tool_result_chars=_safe_positive_int(card_config.get("max_tool_result_chars"), 600),
@@ -4401,6 +4401,10 @@ def _native_disposition_response(
         payload["native_handoff"] = descriptor
     return web.json_response(payload)
 
+
+def _resolve_timeline_expanded(card_config: dict[str, Any]) -> bool | None:
+    raw = card_config.get("timeline_expanded")
+    return raw if isinstance(raw, bool) else None
 
 def _footer_fields_for_session(
     app: web.Application, session: CardSession
