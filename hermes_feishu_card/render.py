@@ -220,6 +220,7 @@ def _render_card_unchecked(
             "schema": "2.0",
             "config": {
                 "update_multi": True,
+                "wide_screen_mode": True,
                 "summary": {"content": ""},
             },
             "header": {
@@ -338,6 +339,7 @@ def _render_card_unchecked(
         "schema": "2.0",
         "config": {
             "update_multi": True,
+            "wide_screen_mode": True,
             "summary": {"content": status.get("summary", status["subtitle"])},
         },
         "body": {
@@ -456,6 +458,7 @@ def _render_limit_handoff_card(*, title: str, terminal: bool) -> Dict[str, Any]:
         "schema": "2.0",
         "config": {
             "update_multi": True,
+            "wide_screen_mode": True,
             "summary": {"content": summary},
         },
         "header": {
