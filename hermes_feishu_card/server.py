@@ -4260,7 +4260,7 @@ def _is_emoji_only(text: str) -> bool:
     if not text:
         return False
     # Strip invisible chars: control, space, and combining marks
-    visible = "".join(ch for ch in text if unicodedata.category(ch)[0] not in "CZMS")
+    visible = "".join(ch for ch in text if unicodedata.category(ch)[0] not in "CZM")
     if not visible:
         return False
     return len(visible) <= 3 and all(unicodedata.category(ch)[0] == "S" for ch in visible)
