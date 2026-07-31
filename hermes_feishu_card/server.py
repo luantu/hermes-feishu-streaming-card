@@ -3487,18 +3487,7 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 chat_id=event.chat_id,
             )
             sessions[session_key] = session
-    applied = session.apply(event)
-    if applied and event.event == "message.completed" and feishu_message_id is not None:
-        answer = str(event.data.get("answer") or "").strip() if isinstance(event.data, dict) else ""
-        if len(answer) == 1 and unicodedata.category(answer) == "So":
-            bot_id = message_bot_ids.get(session_key)
-            try:
-                await _client_for_bot(request.app, bot_id).delete_message(feishu_message_id)
-            except Exception:
-                pass
-            feishu_message_ids.pop(session_key, None)
-            metrics.events_applied += 1
-            return web.json_response({"ok": True, "applied": True}), None
+            applied = session.apply(event)
             if applied:
                 _register_session_aliases(request.app, incoming_event, session_key)
             if applied:
@@ -3682,6 +3671,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         copy.deepcopy(session) if event_is_terminal else None
     )
     applied = session.apply(event)
+    if applied and event.event == "message.completed" and feishu_message_id is not None:
+        answer = str(event.data.get("answer") or "").strip() if isinstance(event.data, dict) else ""
+        if len(answer) == 1 and unicodedata.category(answer) == "So":
+            bot_id = message_bot_ids.get(session_key)
+            try:
+                await _client_for_bot(request.app, bot_id).delete_message(feishu_message_id)
+            except Exception:
+                pass
+            feishu_message_ids.pop(session_key, None)
+            metrics.events_applied += 1
+            return web.json_response({"ok": True, "applied": False}), None
     if applied:
         _refresh_session_display_status(request, session)
         _register_session_aliases(request.app, incoming_event, session_key)
