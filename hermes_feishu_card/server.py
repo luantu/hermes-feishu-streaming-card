@@ -3399,76 +3399,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         applied = session.apply(event)
         if applied:
             _register_session_aliases(request.app, incoming_event, session_key)
-        if applied and session_key not in feishu_message_ids:
-            route = _resolve_route(request, event)
-            if route is None:
-                _cleanup_failed_session_state(request.app, session_key, session)
-                metrics.events_rejected += 1
-                delivery = CardDeliveryResult(
-                    message_id=None,
-                    outcome="not_sent",
-                    error_kind="RouteResolutionError",
-                )
-                return web.json_response(
-                    {
-                        "ok": False,
-                        "error": "bot route failed",
-                        "delivery": _delivery_payload(delivery),
-                    },
-                    status=502,
-                ), None
-            session_card_config = _resolve_session_card_config(
-                request.app, route.bot_id, event
-            )
-            request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
-            _refresh_session_display_status(request, session)
-            delivery = await _send_card(
-                request,
-                event.chat_id,
-                _render_session_card(request, session),
-                route.bot_id,
-                thread_id=_thread_id_for_event(event),
-                reply_to_message_id=_reply_to_message_id_for_event(event),
-                delivery_key=session_key,
-                delivery_kind=_delivery_kind(event) or "chat",
-            )
-            if not delivery.delivered:
-                _cleanup_failed_session_state(
-                    request.app,
-                    session_key,
-                    session,
-                    session_card_config,
-                )
-                _record_notice_delivery_decision(metrics, event, delivery)
-                metrics.events_rejected += 1
-                return web.json_response(
-                    {
-                        "ok": False,
-                        "error": "feishu send failed",
-                        "delivery": _delivery_payload(delivery),
-                    },
-                    status=502,
-                ), None
-            feishu_message_ids[session_key] = delivery.message_id
-            message_bot_ids[session_key] = route.bot_id
-            _ensure_card_animation(
-                request.app,
-                session_key=session_key,
-                session=session,
-                feishu_message_id=str(delivery.message_id),
-                bot_id=route.bot_id,
-            )
         if applied:
             metrics.events_applied += 1
         else:
             metrics.events_ignored += 1
-        return web.json_response(
-            {
-                "ok": True,
-                "applied": applied,
-                "delivery": _delivery_payload(delivery),
-            }
-        ), None
+        return web.json_response({"ok": True, "applied": applied}), None
 
     if session is None:
         if event.event in SESSION_CREATING_EVENTS or _is_compaction_session_start(event):
@@ -3661,27 +3596,35 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
     feishu_message_id = feishu_message_ids.get(session_key)
     if _would_apply(session, event) and feishu_message_id is None:
-        metrics.events_rejected += 1
-        return web.json_response(
-            {"ok": False, "error": "feishu_message_id missing"},
-            status=409,
-        ), None
+        if event.event == "message.completed":
+            answer = str(event.data.get("answer") or "").strip() if isinstance(event.data, dict) else ""
+            if len(answer) == 1 and unicodedata.category(answer) == "So":
+                session.apply(event)
+                metrics.events_ignored += 1
+                return web.json_response({"ok": True, "applied": False}), None
+        route = _resolve_route(request, event)
+        if route is None:
+            metrics.events_rejected += 1
+            return web.json_response({"ok": False, "error": "bot route failed"}, status=502), None
+        session_card_config = _resolve_session_card_config(request.app, route.bot_id, event)
+        request.app[SESSION_CARD_CONFIGS_KEY][session_key] = session_card_config
+        delivery = await _send_card(
+            request, event.chat_id, _render_session_card(request, session),
+            route.bot_id, thread_id=_thread_id_for_event(event),
+            reply_to_message_id=_reply_to_message_id_for_event(event),
+            delivery_key=session_key, delivery_kind=_delivery_kind(event) or "chat",
+        )
+        if not delivery.delivered:
+            metrics.events_rejected += 1
+            return web.json_response({"ok": False, "error": "feishu send failed"}, status=502), None
+        feishu_message_ids[session_key] = delivery.message_id
+        message_bot_ids[session_key] = route.bot_id
+        feishu_message_id = delivery.message_id
 
     terminal_session_snapshot = (
         copy.deepcopy(session) if event_is_terminal else None
     )
     applied = session.apply(event)
-    if applied and event.event == "message.completed" and feishu_message_id is not None:
-        answer = str(event.data.get("answer") or "").strip() if isinstance(event.data, dict) else ""
-        if len(answer) == 1 and unicodedata.category(answer) == "So":
-            bot_id = message_bot_ids.get(session_key)
-            try:
-                await _client_for_bot(request.app, bot_id).delete_message(feishu_message_id)
-            except Exception:
-                pass
-            feishu_message_ids.pop(session_key, None)
-            metrics.events_applied += 1
-            return web.json_response({"ok": True, "applied": False}), None
     if applied:
         _refresh_session_display_status(request, session)
         _register_session_aliases(request.app, incoming_event, session_key)
