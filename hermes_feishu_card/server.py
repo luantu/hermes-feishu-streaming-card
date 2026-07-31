@@ -4259,11 +4259,11 @@ def _safe_non_negative_int(value: Any, default: int) -> int:
 def _is_emoji_only(text: str) -> bool:
     if not text:
         return False
-    # Strip invisible chars (ZWJ, variation selectors, etc.)
-    visible = "".join(ch for ch in text if unicodedata.category(ch)[0] not in "CZ")
+    # Strip invisible chars: control, space, and combining marks
+    visible = "".join(ch for ch in text if unicodedata.category(ch)[0] not in "CZMS")
     if not visible:
         return False
-    return len(visible) <= 3 and all(unicodedata.category(ch) in {"So", "Sk"} for ch in visible)
+    return len(visible) <= 3 and all(unicodedata.category(ch)[0] == "S" for ch in visible)
 
 
 def _safe_bool(value: Any, default: bool) -> bool:
