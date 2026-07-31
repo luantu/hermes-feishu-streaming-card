@@ -1172,6 +1172,8 @@ async def emit_from_hermes_locals_async(
             payload = build_event(event_name, event_locals)
             if payload is None:
                 return False
+            if event_name == "message.completed" and _is_emoji_only_answer(payload):
+                return False
             result = await _post_json_ordered_response(
                 config.event_url,
                 payload,
@@ -1337,8 +1339,31 @@ def _exact_base_has_attachments(local_vars: dict[str, Any]) -> bool:
             if bool(local_vars.get(field)):
                 return True
         except Exception:
-            return True
+            pass
     return False
+
+
+def _is_emoji_only_answer(payload: dict[str, Any]) -> bool:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False
+    answer = str(data.get("answer") or "").strip()
+    if not answer:
+        return False
+    return _SINGLE_EMOJI_RE.fullmatch(answer) is not None
+
+
+_SINGLE_EMOJI_RE = re.compile(
+    r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
+    r"\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
+    r"\U00002600-\U000026FF\U00002702-\U000027B0"
+    r"\U0001F900-\U0001F9FF\U0001FAD0-\U0001FAFF"
+    r"\U0001FA00-\U0001FA6F\U0001F7E0-\U0001F7FF"
+    r"\U00002300-\U000023FF\U0001F780-\U0001F7FF"
+    r"\U00002B50\U0001F004\U0001F0CF\U0001F18E"
+    r"\U0001F191-\U0001F19A\U0001F201-\U0001F251"
+    r"]+"
+)
 
 
 def _exact_stage_allows_ack(stage: dict[str, Any]) -> bool:
