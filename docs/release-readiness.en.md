@@ -2,7 +2,9 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.1.2`. On top of the V4.1.1 upgrade-recovery safety boundary, it fixes a race where the stale-heartbeat window during a normal Gateway restart could persist a second restart fence and removes duplicate recording of one tool call by the stable callback and legacy progress paths. V3.9.1 was released on 2026-07-11; V4.1.2 automation, real Feishu, local/remote upgrades, public tag/install, Release assets, and exact-merge-SHA gates are marked passed only after completion.
+Current release candidate: `4.2.2`. It fixes Feishu private-chat `/update` actions that changed durable state without asynchronously PATCHing the original confirmation card: cancel must show a terminal state without starting the updater, while confirm must show locking/preparation before maintenance starts. The callback still ACKs quickly, and existing identity, chat, expiry, preflight, drain, and fail-closed boundaries remain unchanged. Full automation, build, CI, real private-chat acceptance, exact merge SHA, public tag/install, and Release assets are marked passed only after completion.
+
+V3.9.0 was released on 2026-07-11, and V3.9.1 was released on 2026-07-11. The V4.0.13 all-command lifecycle remains intact; V4.2.0 narrows only a private-chat bare `/update` into the stricter dedicated maintenance card.
 
 ## Ready
 
@@ -38,7 +40,7 @@ Current release candidate: `4.1.2`. On top of the V4.1.1 upgrade-recovery safety
 - Feishu/Lark WebSocket long-connection deployments dynamically gain native `send_slash_confirm(...)` and `send_model_picker(...)` card support; button clicks route through `_on_card_action_trigger` back into Hermes' original handlers.
 - When WebSocket-native cards are available, the sidecar `interaction.requested` pre-card is skipped so the same slash command does not show both a sidecar choice card and a native button card.
 - No-argument `/model` selection can use a Feishu-only `send_model_picker(...)` card, call Hermes's callback, and update the same command card with the result.
-- `/update` remains Hermes' background upgrade command and does not render an interactive command card; Hermes native text fallback remains available when the sidecar or final command-card update fails.
+- V4.2.0 intercepts only a bare `/update` in a Feishu private chat: after read-only inspection it shows a 120-second maintenance confirmation, then an independent runtime runs `hermes update --yes`, reinstalls the same HFC version, and restores the hook, sidecar, and Gateway. Group, non-Feishu, alias, and parameterized commands retain Hermes' original path. Run `maintenance status` first.
 - Terminal events ACK Hermes quickly while slow Feishu PATCH calls complete in the background, preventing duplicate native replies after interrupts or update backlogs.
 - `load_config()` reads a `.env` file next to the selected config file while preserving real process environment variables as the highest-precedence source.
 - `install.sh` imports only Feishu/sidecar variables from `.env`, avoiding execution of unrelated values such as paths with spaces.
@@ -144,6 +146,42 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.2.2 Release Gates
+
+- The native card action must return its empty acknowledgement first, then let the sidecar asynchronously PATCH the original confirmation card; Feishu API latency must stay outside the callback deadline: **focused regression passed**.
+- Cancel must persist `cancelled`, render the terminal cancellation card, and never schedule the updater; confirm must attempt the locking/preparing card transition before independent maintenance is scheduled: **related operations/server/hook-runtime matrix passed (`378 passed`)**.
+- Full pytest reports **`2307 passed, 5 skipped`** on both Python 3.9 and 3.12; `git diff --check`, wheel/sdist, clean Python 3.12 `site-packages` package/distribution/CLI provenance, and an independent V4.2.2 maintenance runtime: **local candidate gate passed**. PR CI, exact merge SHA, public tag/install, Release assets, and real Feishu cancellation acceptance: **pending release-flow verification**.
+
+## V4.2.1 Release Gates
+
+- Startup adapter installation must register the live Gateway runner before runtime control starts, and the first heartbeat must carry complete `_active_work_count()` aggregate evidence: **focused regression passed**.
+- Missing, failing, negative, or non-integer aggregates remain refused and are never downgraded to zero work: **safety boundary retained**.
+- Full pytest reported **`2306 passed, 4 skipped`** on both Python 3.9 and 3.12; `git diff --check`, wheel/sdist, clean `site-packages`, and the maintenance runtime: **local candidate gate passed**. PR CI, exact merge SHA, public tag/install, and Release assets: **verified during release**.
+
+## V4.2.0 Release Gates
+
+- Read-only inspection, 120-second confirmation binding, cancel/expiry/replay/cross-operator rejection, and the dedicated maintenance card for a bare private-chat `/update`: **automated coverage passed**.
+- Exact-wheel provisioning, durable job/journal/lock, official `hermes update --yes`, same-version HFC reinstall, hook/service restoration, and `maintenance status/resume`: **automated coverage passed**.
+- Unrelated tracked changes, incomplete Git state, artifact/version drift, and failed final verification stop; untracked files remain and no custom Git rollback runs: **automated coverage passed**.
+- Full pytest reported **`2304 passed, 4 skipped`** on Python 3.9 and **`2303 passed, 5 skipped`** on Python 3.12; `git diff --check`, wheel/sdist, clean Python 3.12 `site-packages` package/distribution/CLI provenance, and real `maintenance provision/status` independent-runtime and runner-import checks: **local candidate gate passed**.
+- PR CI, real Feishu private-chat card acceptance, exact merge SHA, public tag/install, and Release assets: **verified during release**.
+
+## V4.1.4 Release Gates
+
+- Remove the manifest from regular Gateway, Hermes v0.19.0 required exact Base, and optional Cron states produced by the public v4.0.14 package imported from `site-packages`; V4.1.4 official install must print `manifest: rebuilt` / `install ok` and doctor must return to `installed`: **passed isolated local reproduction**.
+- Unicode comments plus all-CRLF source, native Windows relative paths, and the no-directory-fd portable install path must pass without being mislabeled as the root cause: **isolated old-package fixtures and the equivalent branch passed; reporter's real Windows confirmation pending**.
+- Migration is allowed only when lenient legacy Gateway block removal exactly matches the clean backup and strict Cron/Base removal independently matches each backup; `--no-repair`, missing targets, outside-block edits, and concurrent edits before write/rollback must preserve evidence and refuse: **safety-boundary regression passed**.
+- Full pytest **`2221 passed, 5 skipped`**, `git diff --check`, wheel/sdist, and isolated Python 3.12 `site-packages` package/distribution/CLI provenance: **passed locally**; PR CI, Issue #171 official Windows-flow retest, exact merge SHA, public tag/install, and Release assets: **pending**.
+
+## V4.1.3 Release Gates
+
+- An old plan binding for the same target can transition only after two current recovery/integrity-plan checks report installed, two checks confirm the sidecar stopped, and the fence CAS snapshot remains unchanged: **focused regression passed**.
+- A different target, state drift, remaining pidfile/health, unknown legacy fence, or unverifiable plan remains fail-closed; a non-empty restart/hash fence is preserved: **safety-boundary regression passed**.
+- `doctor --explain` must print complete `integrity migrate-safe` and `integrity acknowledge-review` commands without exposing paths, fingerprints, or private state evidence: **diagnostic regression passed**.
+- PR #168 must select only the native text callback that calls `_stream_consumer.on_delta` and relocate an older hook: **independent review, full automation, and real Hermes source injection passed; merged with contributor authorship preserved**.
+- Hermes `1a3a9de` TurnRunner source must restore 14 managed hook blocks, one of each of the six moved hooks, place status after ctx binding, remain idempotent and byte-for-byte removable, and report `supported/full`; unknown shapes must be `not safely patchable`: **regression, real-source verification, and PR #170 CI passed**.
+- Combined-candidate full pytest **`2207 passed, 4 skipped`**, `git diff --check`, wheel/sdist, and isolated Python 3.12 `site-packages` package/distribution/CLI entry-point provenance: **passed locally**; Issue #158 official Ubuntu retest, Issue #169 latest-Hermes real Feishu retest, candidate CI, exact merge SHA, public tagged install, and Release assets: **pending**.
 
 ## V4.1.2 Release Gates
 

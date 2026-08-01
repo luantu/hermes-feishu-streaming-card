@@ -2,7 +2,9 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.1.2`。它在 V4.1.1 升级恢复安全边界之上，修复 Gateway 正常重启时 heartbeat stale 窗口误写持久化 restart fence 的竞态，并消除稳定 tool callback 与旧 progress path 对同一次调用的重复记录。V3.9.1 已于 2026-07-11 发布；V4.1.2 的自动化、真实飞书、本机/远端升级、public tag/install、Release assets 和 exact merge SHA 门禁只有完成后才会标记通过。
+当前发布候选为 `4.2.2`。它修复飞书私聊 `/update` 按钮在 durable state 已变化后未异步 PATCH 原确认卡的问题：取消必须显示“已取消更新”终态且不启动 updater，确认必须先显示 locking/准备态再启动维护任务。回调仍快速 ACK，现有身份、会话、过期、预检、drain 与 fail-closed 边界不变。完整自动化、构建、CI、真实飞书私聊验收、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。
+
+V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 
 ## 已具备
 
@@ -38,7 +40,7 @@
 - Feishu/Lark WebSocket 长连接部署会动态获得原生 `send_slash_confirm(...)` 和 `send_model_picker(...)` 卡片能力；按钮点击经 `_on_card_action_trigger` 回到 Hermes 原 handler。
 - WebSocket 原生卡片可用时跳过 sidecar `interaction.requested` 预交互，避免同一 slash 命令同时出现 sidecar 选项卡和原生按钮卡。
 - `/model` 无参数选择可通过 Feishu-only `send_model_picker(...)` 卡片呈现；选择后回调 Hermes 并更新同一张命令卡片。
-- `/update` 保持 Hermes 后台升级命令语义，重启前反馈进入命令卡，重启后状态继续由 `system.notice` 承载；命令卡 create/PATCH 失败时，对应反馈逐条退回 Hermes 原生文本路径。
+- V4.2.0 仅接管飞书私聊中的裸 `/update`：只读预检后显示 120 秒维护确认卡，确认后由独立 runtime 运行 `hermes update --yes`、重装同版本 HFC 并恢复 hook/sidecar/Gateway；群聊、非飞书、别名与参数化命令继续使用 Hermes 原路径。使用前运行 `maintenance status`。
 - terminal 事件会快速 ACK Hermes，慢 Feishu PATCH 在后台完成，避免中断或更新堆积后触发重复原生答复。
 - `load_config()` 会读取 config 同目录 `.env`，真实环境变量仍保持最高优先级。
 - `install.sh` 白名单读取 `.env` 中的飞书/sidecar 变量，不会执行带空格路径等无关配置。
@@ -144,6 +146,42 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - tag 后验证 macOS、Linux、Windows 与 checksums 四个 assets。
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
+
+## V4.2.2 发布门禁
+
+- native card action 必须先快速空 ACK，再由 sidecar 异步 PATCH 原确认卡；Feishu API 延迟不得阻塞 callback deadline：**聚焦回归通过**。
+- 取消必须写入 durable `cancelled` 后显示“已取消更新”终态，且不得调度 updater；确认必须先尝试发布 locking/准备态，再调度独立维护任务：**相关 operations/server/hook-runtime 矩阵 `378 passed`**。
+- Python 3.9 / 3.12 全量均为 **`2307 passed, 5 skipped`**；`git diff --check`、wheel/sdist、干净 Python 3.12 `site-packages` package/distribution/CLI provenance 与独立 maintenance runtime 4.2.2：**本地候选门禁通过**。PR CI、exact merge SHA、public tag/install、Release assets 与真实飞书取消终态：**待发布流程验证**。
+
+## V4.2.1 发布门禁
+
+- startup adapter 安装必须先登记 live Gateway runner，再启动 runtime control；首个 heartbeat 的 `_active_work_count()` 聚合证据必须完整：**聚焦回归通过**。
+- 缺失、异常、负数或非整数聚合仍拒绝，不回退为“零任务”：**安全边界保持**。
+- Python 3.9 与 3.12 完整 pytest 均为 **`2306 passed, 4 skipped`**；`git diff --check`、wheel/sdist、干净 `site-packages` 与 maintenance runtime：**本地候选门禁通过**。PR CI、exact merge SHA、public tag/install 与 Release assets：**发布流程中验证**。
+
+## V4.2.0 发布门禁
+
+- 私聊裸 `/update` 的只读预检、120 秒确认绑定、取消/过期/重复/跨用户拒绝和专用维护卡：**自动化通过**。
+- 独立 runtime 的 exact-wheel provision、durable job/journal/lock、官方 `hermes update --yes`、同版本 HFC 重装、hook 与服务恢复、`maintenance status/resume`：**自动化通过**。
+- 非 HFC tracked 改动、Git 未完成状态、artifact/version 漂移和最终验证失败均停止；untracked 文件保留，不执行自定义 Git 回滚：**自动化通过**。
+- 完整 pytest：Python 3.9 为 **`2304 passed, 4 skipped`**，Python 3.12 为 **`2303 passed, 5 skipped`**；`git diff --check`、wheel/sdist、干净 Python 3.12 `site-packages` package/distribution/CLI provenance，以及真实 `maintenance provision/status` 独立 runtime 与 runner import：**本地候选门禁通过**。
+- PR CI、真实飞书私聊卡片、exact merge SHA、public tag/install 与 Release assets：**发布流程中验证**。
+
+## V4.1.4 发布门禁
+
+- 从公开 v4.0.14 `site-packages` 生成的普通 Gateway、Hermes v0.19.0 required exact Base 与 optional Cron 三类状态中移走 manifest，V4.1.4 官方 install 必须输出 `manifest: rebuilt` / `install ok`，doctor 回到 `installed`：**本地隔离复现通过**。
+- Unicode 注释 + 全 CRLF 源码、Windows 原生相对路径与无 directory-fd 的 portable install 路径必须通过；不把这些因素误写为根因：**隔离旧包样本与等价分支通过，真实 Windows 待报告者确认**。
+- 只有 legacy owned blocks lenient removal 与干净 Gateway backup 逐字一致、Cron/Base 严格 removal 分别与 backup 一致时才能迁移；`--no-repair`、目标缺失、owned block 外用户改动和写入/rollback 前并发编辑必须保持现场并拒绝：**安全边界回归通过**。
+- 完整 pytest **`2221 passed, 5 skipped`**、`git diff --check`、wheel/sdist、隔离 Python 3.12 `site-packages` package/distribution/CLI provenance：**本地通过**；PR CI、Issue #171 Windows 官方流程复测、exact merge SHA、public tag/install 与 Release assets：**待完成**。
+
+## V4.1.3 发布门禁
+
+- 同一 target 的旧 plan binding 只有在当前 recovery/integrity plan 连续两次为 installed、sidecar 连续两次确认停止且 fence CAS 未漂移时才能迁移：**聚焦回归通过**。
+- 不同 target、状态漂移、残留 pidfile/health、unknown legacy fence 与不可验证 plan 继续 fail-closed；非空 restart/hash fence 必须保留：**安全边界回归通过**。
+- `doctor --explain` 必须分别给出完整 `integrity migrate-safe` 与 `integrity acknowledge-review` 命令，且不泄露路径、fingerprint 或私密状态证据：**诊断回归通过**。
+- PR #168 必须只选择调用 `_stream_consumer.on_delta` 的原生文本流 callback，并可迁移旧 hook：**独立审查、完整自动化与真实 Hermes 源码注入验证通过，已保留贡献者署名合并**。
+- Hermes `1a3a9de` 的 TurnRunner 源码必须恢复 14 个受管 hook block，6 个迁移 hook 各一次，status 在 ctx 绑定后执行，重复 patch 幂等、卸载逐字还原、doctor 为 `supported/full`；不可识别结构必须 `not safely patchable`：**回归、真实源码与 PR #170 CI 通过**。
+- 合并候选完整 pytest **`2207 passed, 4 skipped`**、`git diff --check`、wheel/sdist 与隔离 Python 3.12 `site-packages` 包版本/distribution/CLI entry point provenance：**本地通过**；Issue #158 Ubuntu 官方流程复测、Issue #169 最新 Hermes 真实 Feishu 复测、候选 CI、exact merge SHA、public tagged install 与 Release assets：**待完成**。
 
 ## V4.1.2 发布门禁
 

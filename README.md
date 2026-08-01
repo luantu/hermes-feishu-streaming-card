@@ -140,7 +140,7 @@ Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x/0
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.1.2
+export HFC_VERSION=v4.2.2
 bash install-docker.sh
 ```
 
@@ -181,8 +181,12 @@ bash install-docker.sh
 ![飞书话题内卡片连续更新与思考工具 timeline 展示](docs/assets/feishu-topic-card-showcase-v389.png)
 | 版本 | 重点 |
 |---|---|
-| [v4.1.2](docs/release-notes-v4.1.2.md) | 修复 Gateway 重启时 stale heartbeat 写入二次 restart fence 的竞态，并消除稳定 tool callback 与旧 progress path 对同一次工具调用的重复记录；延续 [v4.1.1](docs/release-notes-v4.1.1.md) 的安全边界 |
-| [v4.1.0](docs/release-notes-v4.1.0.md) | 按会话精确选择原生/卡片投递；第 6 张及后续表格默认无损 compact；认证 runtime 完整性监控与 strict repair；四种显式 sidecar manager，`auto` 不提权 |
+| [v4.2.2](docs/release-notes-v4.2.2.md) | 修复 `/update` 确认卡按钮回调只更新服务端状态、未 PATCH 原卡片的问题；取消会进入“已取消更新”终态且绝不启动 updater，确认会先显示准备更新再启动维护任务 |
+| [v4.2.1](docs/release-notes-v4.2.1.md) | 修复 Gateway 重启后首个 heartbeat 未绑定 live runner，确保第一条私聊裸 `/update` 即可获得完整任务计数证据；缺失计数仍 fail-closed |
+| [v4.2.0](docs/release-notes-v4.2.0.md) | 飞书私聊裸 `/update` 经 120 秒确认后，使用独立维护进程运行官方 Hermes updater，并自动恢复同版本 HFC、钩子、sidecar 与 Gateway；群聊和参数化命令保持 Hermes 原行为 |
+| [v4.1.4](docs/release-notes-v4.1.4.md) | 修复 Issue #171：Windows 上旧版 owned hook 与 backup 存在、manifest 缺失时，官方 install/setup 可在逐字验证 gateway、cron 与 exact Base 证据后安全重建 manifest；块外改动继续 fail-closed |
+| [v4.1.3](docs/release-notes-v4.1.3.md) | 修复 Issue #158 的同 target fence binding 收敛；合入 PR #168 的原生 delta 回调选择；修复 Issue #169 中 Hermes `TurnRunner` 重构造成的 tool/streaming/interaction hook 丢失与 doctor 误报 |
+| [v4.1.0](docs/release-notes-v4.1.0.md) | 按会话精确选择原生/卡片投递；第 6 张及后续表格默认无损 compact；认证 runtime 完整性监控与 strict repair；四种显式 sidecar manager，`auto` 不提权；后续修复见 [v4.1.1](docs/release-notes-v4.1.1.md) 和 [v4.1.2](docs/release-notes-v4.1.2.md) |
 | [v4.0.21](docs/release-notes-v4.0.21.md) | Issue #155：仅显式 `answer -> tool` 边界归档答案，避免 post-tool 最终答案被移入 timeline；Issue #147 真实飞书验收已观测到 completion card + native image、无匹配原生重复或 uncertain-delivery warning，UI 与配置不变 |
 | [v4.0.20](docs/release-notes-v4.0.20.md) | 修复 Issue #153：已有卡片的 notice 异步更新返回 `accepted`，不再误报投递未知；真实 PATCH 失败保留脱敏指标和错误码 |
 | [v4.0.19](docs/release-notes-v4.0.19.md) | 修复 one-line installer 在 Hermes venv 中误用 `pip --user`、并确保 pip 失败时立即停止，避免“显示升级但仍运行旧版本” |
@@ -195,14 +199,12 @@ bash install-docker.sh
 | [v4.0.12](docs/release-notes-v4.0.12.md) | Issue #133：上下文压缩阶段可见、正文/思考/工具/提示/footer 字号可配置；Issue #136：selected env 凭据加载与显式 degraded Noop 诊断 |
 | [v4.0.11](docs/release-notes-v4.0.11.md) | 修复 Issue #135：初始卡片使用稳定 UUID 有界重试，并按 `delivered/not_sent/unknown` 安全选择抑制、原文回退或通用提示 |
 | [v4.0.10](docs/release-notes-v4.0.10.md) | 收紧 sidecar 事件传输边界：非回环监听必须显式授权并启用 HMAC-SHA256 防伪与防重放，本机回环安装保持兼容 |
-| [v4.0.9](docs/release-notes-v4.0.9.md) | 修复 Issue #130：不再替换已连接 Lark WebSocket 的 live event handler，只在 WS 线程更新卡片回调，避免断连与 Gateway 重启循环 |
-| [v4.0.8](docs/release-notes-v4.0.8.md) | 修复 Issue #127：cron 卡片接管正文后继续使用 Hermes 原生链路上传附件，不再只显示文件名 |
+| [v4.0.9](docs/release-notes-v4.0.9.md) / [v4.0.8](docs/release-notes-v4.0.8.md) | 修复 Issue #130 的 live WebSocket handler 身份与 Issue #127 的 cron 原生附件投递 |
 | [v4.0.7](docs/release-notes-v4.0.7.md) | Linux/systemd sidecar 使用独立可重启 user service，升级时优先选择 Hermes venv Python；合入 PR #124 修复自我改进通知误占下一轮卡片 |
 | [v4.0.6](docs/release-notes-v4.0.6.md) | 修复 Hermes 0.18.x 完成 hook、队列完成 hook，以及无灰色原生输出且可正确收束的 background 通知卡片；新增显式且 fail-closed 的 Hermes 升级恢复 |
 | [v4.0.5](docs/release-notes-v4.0.5.md) | 修复升级后 Gateway venv 仍加载旧插件的问题；安装器会比较 runtime 版本、自动同步并在安装后复核版本与路径 |
 | [v4.0.4](docs/release-notes-v4.0.4.md) | 修复 Markdown `MEDIA:` 字面量、SDK 预绑定旧 callback 的交互转发，以及 Codex 只返回单个限额窗口时的错误 `5h` 标签 |
 | [v4.0.3](docs/release-notes-v4.0.3.md) | 修复仅升级包并重启、但仍保留 V4.0.0 completion hook 时的媒体回答灰色正文重复；匹配正文只抑制一次，原生图片/文件继续发送 |
-| [v4.0.2](docs/release-notes-v4.0.2.md) | 修复 manifest 与 backup 均可信时，合法旧 owned hook 仍被拒绝升级的问题；保留 v4.0.1 的媒体正文去重修复 |
 | [v4.0.0](docs/release-notes-v4.0.0.md) | 运行态 Header 实时显示 Hermes 工具 preview，正文独立流式显示公开阶段输出；等待、失败、完成状态自然衔接并保持现有 Footer/引用边界 |
 | [v3.10.0](docs/release-notes-v3.10.0.md) | 裸 `/resume` 使用原生会话下拉卡并沿用 Hermes 安全恢复路径；模型 footer 增加转义后的轻量语义色，不改变布局和字段顺序 |
 | [v3.9.1](docs/release-notes-v3.9.1.md) | 可靠性热修：完成答案不截断、打断任务终态串行化、模型选择回调异步化，以及可验证的 marker-only 安装损坏恢复；普通流式卡 footer/layout 保持不变 |
@@ -271,9 +273,7 @@ Hermes Gateway
 - [ShakuOvO](https://github.com/ShakuOvO) / [blakejia](https://github.com/blakejia) - [Issue #106](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/106) 与 [#111](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/111) 图片回答灰色正文重复的报告、复测与截图（V4.0.1–V4.0.3）；另感谢 [blakejia](https://github.com/blakejia) 在 [#115](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/115) 提供 Gateway venv 旧版本证据、完整升级步骤与复测指标（V4.0.5）；感谢 [nasvip](https://github.com/nasvip) / [hzy](https://github.com/hzy) / [lRoccoon](https://github.com/lRoccoon) 贡献 V4.0.6 的 Hermes 升级恢复复现、background 通知卡片实现，以及 Hermes 0.18.x completion hook 生产诊断与修复；V4.0.7 继续感谢 [nasvip](https://github.com/nasvip) 的 [Issue #125](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/125) systemd/Python 环境完整证据，以及 [hzy](https://github.com/hzy) 的 [PR #124](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/124) 自我改进通知卡片实现与回归测试；V4.0.8 感谢 [zyq2552899783-lgtm](https://github.com/zyq2552899783-lgtm) 报告 [Issue #127](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/127) 的 cron 附件只显示文件名问题；V4.0.9 感谢 [Jasonsun77](https://github.com/Jasonsun77) 在 [Issue #130](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/130) 提供 Linux crash-loop A/B、完整时间线、SDK 版本与上游 reconnect 关联证据
 
 ## 安全说明
-默认 `127.0.0.1` 采用本机进程互信；不要把 sidecar 未鉴权暴露到网络。非 loopback 只有显式设置 `server.allow_non_loopback: true` 才能启动，并强制使用私有 state directory 的 HMAC 事件鉴权；它不替代 TLS。不要把 App Secret、tenant token、真实 chat_id、未脱敏截图提交到仓库，生产凭据应保存在本机配置或环境变量中。
-
-Windows non-loopback 在无法验证 state directory 的 ACL 私有性时会拒绝启动；Windows loopback 仍可使用本机进程互信，但不会宣称 ACL 私有性已经验证。
+默认 `127.0.0.1` 采用本机进程互信；不要把 sidecar 未鉴权暴露到网络。非 loopback 只有显式设置 `server.allow_non_loopback: true` 才能启动，并强制使用私有 state directory 的 HMAC 事件鉴权；它不替代 TLS。不要把 App Secret、tenant token、真实 chat_id、未脱敏截图提交到仓库，生产凭据应保存在本机配置或环境变量中。Windows non-loopback 在无法验证 state directory 的 ACL 私有性时会拒绝启动；Windows loopback 仍可使用本机进程互信，但不会宣称 ACL 私有性已经验证。
 
 ## License
 

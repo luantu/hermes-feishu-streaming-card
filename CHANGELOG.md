@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.2.2 — 2026-08-01
+
+See also: [docs/release-notes-v4.2.2.md](docs/release-notes-v4.2.2.md)
+
+### Fixed
+- Feishu/Lark WebSocket `/update` confirmation actions now asynchronously PATCH the original confirmation card after the callback has been acknowledged.
+- Cancel now renders the durable terminal `已取消更新` state on the original card instead of leaving an apparently clickable confirmation card behind.
+- Confirm publishes the locking/preparing transition before the independent maintenance updater starts, keeping the visible card aligned with the durable operation state.
+
+### Safety
+- The native card-action callback still returns its empty acknowledgement immediately; Feishu API work stays outside the callback deadline.
+- Cancel never schedules the updater, and confirm schedules it only after the transition-card update attempt. Existing initiator, chat, profile, expiry, preflight, drain, and fail-closed checks are unchanged.
+
+## V4.2.1 — 2026-07-31
+
+See also: [docs/release-notes-v4.2.1.md](docs/release-notes-v4.2.1.md)
+
+### Fixed
+- Gateway startup now registers the live runner before runtime control starts, so the first authenticated heartbeat can prove the complete `_active_work_count()` aggregate immediately.
+- The first bare private-chat `/update` after a Gateway restart no longer needs an unrelated warm-up message before its maintenance preflight can accept complete active-work evidence.
+
+### Safety
+- Complete active-work evidence still comes from one `_active_work_count()` sample. Missing, invalid, or failing aggregates remain fail-closed and are never treated as zero work.
+
+## V4.2.0 — 2026-07-31
+
+See also: [docs/release-notes-v4.2.0.md](docs/release-notes-v4.2.0.md)
+
+### Added
+- A bare `/update` in a Feishu private chat now opens an evidence-bound confirmation card instead of immediately mutating Hermes.
+- A private, independent maintenance runtime caches the exact HFC wheel, journals each phase, runs only `hermes update --yes`, reinstalls the same HFC version, restores hooks and services, and verifies the final runtime.
+- `maintenance provision`, `maintenance status`, `maintenance run`, and `maintenance resume` expose the recovery boundary locally.
+
+### Safety
+- Confirmation is bound to the exact initiator, chat, profile, target evidence, and 120-second window. Group, non-Feishu, alias, and parameterized update commands retain Hermes' original behavior.
+- Unrelated tracked changes, incomplete Git operations, missing maintenance evidence, version drift, CI-independent runtime drift, and verification failure stop before unsafe mutation. Untracked files are preserved and no custom Git rollback is used.
+
+## V4.1.4 — 2026-07-31
+
+See also: [docs/release-notes-v4.1.4.md](docs/release-notes-v4.1.4.md)
+
+### Fixed
+- Official `install` / `setup` can migrate a manifestless legacy owned Gateway hook when lenient removal restores the clean backup byte-for-byte, including the portable install path used on Windows (Issue #171).
+- Optional Cron and required exact Base evidence are validated independently; a missing legacy Base hook is added through the current manifest-v2 install transaction.
+- User edits outside owned blocks, mismatched backups, symlinks, missing targets, and invalid source remain fail-closed.
+
+## V4.1.3 — 2026-07-30
+
+See also: [docs/release-notes-v4.1.3.md](docs/release-notes-v4.1.3.md)
+
+### Fixed
+- `integrity acknowledge-review` can now atomically move a bound manual-review fence to the current verified integrity plan after an official Hermes upgrade, but only when the old and current bindings identify the same Hermes target, the fence CAS snapshot is unchanged, the installed plan is verified twice, and the sidecar is confirmed stopped twice.
+- A different target identity, stale fence snapshot, running sidecar, unsafe legacy fence, or unverifiable current plan still fails closed. An independent restart fence and its pre-repair runtime hash remain intact.
+- `doctor --explain` now points integrity migration to `integrity migrate-safe` and prints the complete explicit `integrity acknowledge-review` command for other manual-review fences.
+- The answer-delta hook now selects the native `_stream_consumer.on_delta` callback when Hermes also defines a same-name streaming-TTS fallback, and relocates an older managed hook during upgrade (PR #168, thanks @dake6767).
+- Hermes' `TurnRunner` refactor no longer drops stable tool, answer, thinking, clarify, approval, or status hooks. Managed blocks use the verified `TurnContext` seam, remain idempotent and removable, and compatibility detection now fails closed when named TurnRunner callbacks cannot actually be patched (Issue #169).
+
 ## V4.1.2 — 2026-07-29
 
 See also: [docs/release-notes-v4.1.2.md](docs/release-notes-v4.1.2.md)

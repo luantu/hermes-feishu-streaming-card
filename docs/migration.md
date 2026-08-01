@@ -82,6 +82,27 @@ hermes-feishu-card integrity acknowledge-review \
 
 旧版 `0644` pidfile 只有位于当前用户拥有的私有 `0700` state dir、形状与 identity 均严格匹配时才能原 inode 收紧为 `0600`；其他情况 fail-closed。
 
+## 从 V4.1.3 升级到 V4.1.4
+
+V4.1.4 修复 Issue #171 的 Windows 旧版安装迁移缺口。若 `.hermes_feishu_card_manifest` 缺失，但旧版 owned Gateway hook 与 `.hermes_feishu_card.bak` 仍在，重新运行官方 `install` / `setup`。安装器只在旧 hook 去除 owned blocks 后与 backup 逐字一致、backup 是可解析干净源码、Cron/Base 证据也分别一致时重建 manifest 并升级 hook。
+
+不要手工创建 manifest，不要直接调用内部 `apply_patch()`。Unicode 注释、CRLF 与 Windows 原生路径分隔符不是该问题的已复现根因。owned marker 外存在用户改动、backup 不一致、symlink 或源码不可解析时仍会 fail-closed，应先保留文件并人工审查。
+
+```bash
+hermes-feishu-card doctor --config CONFIG --hermes-dir HERMES_DIR --explain
+hermes-feishu-card install --hermes-dir HERMES_DIR --yes
+```
+
+Windows PowerShell 按官方 `install.ps1` / `setup` 流程安装 V4.1.4。看到 `manifest: rebuilt` 与 `install ok` 后，重启 Hermes Gateway，再确认 doctor 的 install state 为 `installed`。
+
+## 从 V4.1.2 升级到 V4.1.3
+
+V4.1.3 修复 Issue #158 中真实 Hermes upstream 更新后的恢复收敛问题：官方 `install` 重新注入 hook 后，当前 integrity plan fingerprint 会变化，而旧 manual-review fence 仍绑定升级前 plan。`integrity acknowledge-review` 现在可在双重验证当前 installed plan、双重确认 sidecar 已停止、旧新 binding 指向同一 Hermes target 且 fence CAS 未变化时，原子更新 plan binding 并解除 manual-review。不同 target、残留 pidfile/health、dirty 或不可验证 plan、未知 legacy fence 仍拒绝；已有非空 restart hash 继续保留，直到新 matching `runtime.hello` 自行解除 restart fence。
+
+该版本也合入 PR #168 的同名 answer-delta callback 选择，并修复 Issue #169：Hermes `1a3a9de` 将 callbacks 移入 `TurnRunner` 后，官方 patcher 会通过 `TurnContext` 恢复 stable tool、answer、thinking、clarify、approval 与 status hook。doctor 以实际 patchability 为准；无法安全识别的新 TurnRunner 结构会停止安装并报告 `not safely patchable`，不能靠手工修改 `gateway/run.py` 绕过。
+
+不要手工编辑 `runtime-integrity-fence.json` 或调用内部 Python 函数。若 `doctor --explain` 报告 `integrity_migration_required`，按输出运行 `integrity migrate-safe`；其他已验证 manual review 先停止 sidecar，再运行 doctor 给出的完整 `integrity acknowledge-review --config CONFIG --hermes-dir PATH --state-dir STATE --yes`，最后人工重启 sidecar 与 Hermes Gateway。
+
 ## 从 V4.1.1 升级到 V4.1.2
 
 V4.1.2 修复 Gateway 正常重启期间 heartbeat 短暂 stale 被误写为持久化 restart fence 的竞态。按官方 `setup` 升级并只重启 Gateway 一次；在新 matching `runtime.hello` 到达后，readiness 应直接恢复 `runtime_ready`。如果仍显示 restart required，不要反复重启，先用 `doctor --explain` 检查 generation/package、control auth 与既有 fence。

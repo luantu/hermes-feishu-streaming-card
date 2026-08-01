@@ -2,13 +2,22 @@
 
 自动化测试不能完全证明 Feishu/Lark 客户端体验。涉及卡片 UX、topic、系统提示、命令卡片的版本，发布前需要真实飞书 smoke。
 
-## V4.1.2 升级恢复与 V4.1 安全控制验收
+## V4.1.4 Windows 旧版安装迁移验收
+
+- 在 Windows 10 / Hermes v0.19.0 上保留 Issue #171 的原始 `gateway/run.py`、`.hermes_feishu_card.bak` 与 optional Cron，不再手工创建 manifest 或调用内部 `apply_patch()`。
+- 通过官方 PowerShell `install.ps1` / `setup` 安装候选；必须看到 `manifest: rebuilt` 与 `install ok`，required exact Base backup/hook 和 `manifest_version: 2` 同步建立。
+- 重启 Hermes Gateway 后运行 doctor，install state 必须为 `installed`；sidecar/Gateway runtime package 必须来自 Hermes venv 的 `site-packages` 且版本为 4.1.4。
+- 发送一轮普通流式回答和一轮工具调用，确认卡片进入完成态、工具只出现一次、无匹配原生灰字重复。该真实飞书复测由 Issue #171 报告者确认前，不标记为已通过。
+- 另用 owned marker 外增加无敏感信息测试行的隔离副本确认安装拒绝且文件不变；不要在真实 Hermes 工作树制造用户改动。
+
+## V4.1.3 升级恢复、TurnRunner 与 V4.1 安全控制验收
 
 - heartbeat fence：verified `installed` plan 在 startup grace 内外等待首次 heartbeat，或 Gateway 正常重启造成 heartbeat stale，均不得出现持久化 fence 或 repair mutation；新 matching `runtime.hello` 到达后应一次恢复 ready。
-- review acknowledgement：只有双重 installed/integrity plan、sidecar health 不可达、无 pidfile、target binding 与 snapshot CAS 均匹配才允许命令成功；V4.1.0 unbound empty hash 只迁移精确已知形态，unbound non-empty 拒绝，bound non-empty 保留 restart/hash。命令后人工重启 sidecar 与 Gateway。
+- review acknowledgement：只有双重 installed/integrity plan、sidecar health 不可达、无 pidfile、snapshot CAS 未变化且旧新 binding 指向同一 target identity 才允许迁移 plan fingerprint；不同 target 拒绝。V4.1.0 unbound empty hash 只迁移精确已知形态，unbound non-empty 拒绝，bound non-empty 保留 restart/hash。命令后人工重启 sidecar 与 Gateway。
 - legacy process：私有 owned `0700` state dir 内的精确 `0644` legacy pidfile 可经同 inode/fd identity 收紧到 `0600`；非私有目录、symlink、未知 shape、identity race 全部拒绝。detached child 必须在读取配置/监听前验证父进程写入的精确 PID/token 管理记录；detached stop 需 loopback token 自停并确认 health 消失，不得向数字 PID/PGID 发 TERM/KILL。具体 non-loopback 地址需同时验证同地址族 loopback 管理监听，wildcard 不重复绑定；pidfile-less、旧接口或超时进程保持运行，先人工停旧服务再重跑。
 - setup identity：以 `python -I` 复检 Hermes venv `site-packages`；构造 package version/Python identity 匹配与不匹配两条 `/health` 分支，确认仅后者触发 sidecar 受管自停/重启；start/status/stop 的 selected env 必须一致，之后人工重启 Gateway。
-- 以上为 V4.1.2 发布前待验收项；未实际完成自动化、macOS 本机/远端升级与真实飞书前不得标记通过。
+- TurnRunner：在包含 Hermes `1a3a9de` 或更新重构的源码上走官方 install/setup，doctor 必须为 `supported/full`；一轮真实工具调用只出现一个 tool summary/terminal/duration，流式 answer/thinking、clarify、approval、status 均进入同一卡片且无原生灰字重复。回滚/卸载必须逐字恢复 Hermes 源码。
+- Issue #158 还需在 Ubuntu 24.04 / Hermes 实际 upstream update 后走完整官方命令复测；Issue #169 报告者还需在最新 Hermes 上复测上述 TurnRunner 路径。不得手工修改 fence、`gateway/run.py` 或调用内部函数。以上为 V4.1.3 发布前待验收项，未实际完成自动化、候选安装与真实环境复测前不得标记通过。
 
 ## V4.1.0 安全控制验收
 
@@ -92,7 +101,7 @@ sidecar 最终 metrics：`events_received/events_applied=23/23`，1 次发送成
 - 手动 `/compress`：先显示蓝色“正在压缩上下文”，完成后原位显示 Hermes 的 messages/tokens 统计；no-op 和 aborted warning 也更新原卡。
 - `/model`、裸 `/resume`、`/new` confirmation：继续使用已有交互卡，选择/确认后原卡更新，不出现第二张结果卡。
 - `/learn` 或 `/blueprint`：即时确认使用命令卡，后续 Agent reasoning/answer 使用普通流式卡，不串到命令卡。
-- `/update`：重启前反馈使用命令卡；重启后状态允许由独立 `system.notice` 卡继续，不要求跨进程 PATCH 内存中的旧卡。
+- V4.0.13 当时的 `/update`：重启前反馈使用通用命令卡；该边界已由 V4.2.0 的私聊裸命令专用维护卡替代，群聊和参数化命令仍保留 Hermes 原路径。
 - 受控让 command card create/PATCH 失败：对应 Hermes 原始反馈必须通过 native fail-open 可见，不能静默丢失。
 - 媒体/附件命令继续投递原生文件；文本卡片不能吞掉附件。
 
@@ -337,3 +346,17 @@ V3.8.9 notice suppress smoke: please run terminal command date, then reply exact
 ```
 
 截图入库前需要遮挡私人头像、姓名、chat id、群名和不适合公开的上下文。
+# Private `/update` acceptance
+
+- Verify `maintenance status` is ready before opening Feishu.
+- A private bare `/update` produces one confirmation card; a group command or
+  `/update --yes` remains native Hermes behavior.
+- A different operator cannot confirm, an expired or repeated click is
+  rejected, and cancel performs no mutation.
+- With active work, the card shows draining before mutation. The same card then
+  shows hook restoration, Hermes update, exact HFC reinstall, service startup,
+  verification, and success.
+- After success, `doctor --explain` must report the expected HFC version,
+  `site-packages` import origin, installed hooks, and ready sidecar/Gateway.
+- Any tracked non-HFC edit or incomplete Git operation must show unavailable
+  and leave Hermes unchanged. Untracked user files must remain intact.

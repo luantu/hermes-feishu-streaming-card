@@ -33,9 +33,31 @@ timeline. Completed cards strip already archived intermediate prefaces, and the
 timeline renders reasoning and tool details with separate compact hierarchy.
 
 From V3.8.3, independent slash-command prompts such as `/new`, `/reset`,
-`/undo`, and `/model` can render as standalone Feishu command cards. `/update`
-remains Hermes' background upgrade command and does not use an interactive
-command card.
+`/undo`, and `/model` can render as standalone Feishu command cards. In the
+V3.8.x line, `/update` remained Hermes' native background upgrade command.
+
+From V4.2.0, an exact bare `/update` in a verified Feishu private chat uses a
+120-second maintenance confirmation card. After confirmation, an independent
+runtime runs only the official `hermes update --yes`, reinstalls the exact HFC
+wheel cached by setup, restores the managed hook and services, and verifies the
+result. Confirmation authorizes the official updater to fetch the latest
+`origin/main` at execution time; a post-confirmation remote advance is reported
+after services are safely restored. The card flow refuses secondary/custom
+`HERMES_HOME` layouts unless the Gateway proves the drain marker directory
+matches the checkout. Group, non-Feishu, alias, and parameterized update commands retain
+Hermes' original behavior. Run `hermes-feishu-card maintenance status` before
+using the card flow.
+
+V4.2.1 registers the live Gateway runner before runtime control starts. The
+first authenticated heartbeat after a restart can therefore prove the complete
+turn/cron/API aggregate immediately, and the first bare private-chat `/update`
+does not require an unrelated warm-up message. Missing aggregate evidence still
+fails closed.
+
+V4.2.2 keeps the native card-action callback fast while asynchronously PATCHing
+the original `/update` confirmation card. Cancel now becomes a visible terminal
+`已取消更新` state and never launches the updater; confirm first shows the
+locking/preparing transition, then schedules the independent maintenance job.
 
 From V3.8.4, those standalone command cards also work in Feishu/Lark WebSocket
 long-connection deployments by patching the Feishu adapter's native interactive
@@ -252,7 +274,7 @@ a privileged container, or mount host system-service directories.
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.1.2
+export HFC_VERSION=v4.2.2
 bash install-docker.sh
 ```
 
