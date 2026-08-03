@@ -59,6 +59,21 @@ the original `/update` confirmation card. Cancel now becomes a visible terminal
 `已取消更新` state and never launches the updater; confirm first shows the
 locking/preparing transition, then schedules the independent maintenance job.
 
+V4.2.3 forwards the update evidence fingerprint through the Feishu/Lark
+WebSocket hook to the sidecar. Confirm and cancel therefore reach the existing
+evidence-bound transition logic; missing or mismatched evidence remains
+fail-closed.
+
+V4.2.5 hardens quoted-turn identity and the maintenance updater, limits doctor
+to executable integrity actions, and makes installer `latest` resolve to one
+pinned stable release tag or stop before package/setup mutation. Release assets
+now require an exact tested annotated tag.
+
+V4.2.4 gives every new Feishu/Lark topic reply its real incoming message ID.
+Consecutive replies quoting the same message therefore open independent cards
+instead of overwriting the first card; in-turn stream events still resolve
+through the reply alias.
+
 From V3.8.4, those standalone command cards also work in Feishu/Lark WebSocket
 long-connection deployments by patching the Feishu adapter's native interactive
 card action path; local/private sidecars no longer have to fall back to gray
@@ -274,7 +289,7 @@ a privileged container, or mount host system-service directories.
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.2.2
+export HFC_VERSION=v4.2.5
 bash install-docker.sh
 ```
 
@@ -318,3 +333,7 @@ python3 -m hermes_feishu_card.cli doctor --config ~/.hermes/config.yaml --hermes
 
 The installer stores missing Feishu credentials in a local `.env` file next to
 the selected config path. Do not commit this file.
+
+### Installer version resolution
+
+`latest` resolves once through the GitHub latest stable release API and installs the pinned `vX.Y.Z` Git ref. If lookup, JSON parsing, or tag validation fails, the installer stops before pip, setup, doctor, credentials, or Docker state mutation. An explicit release tag stays pinned and bypasses the release API; `--version main` (PowerShell: `-Version main`) is the only opt-in moving development branch.

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.2.2`。它修复飞书私聊 `/update` 按钮在 durable state 已变化后未异步 PATCH 原确认卡的问题：取消必须显示“已取消更新”终态且不启动 updater，确认必须先显示 locking/准备态再启动维护任务。回调仍快速 ACK，现有身份、会话、过期、预检、drain 与 fail-closed 边界不变。完整自动化、构建、CI、真实飞书私聊验收、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。
+当前发布候选为 `4.2.5`。本轮审查覆盖 canonical turn 隔离、maintenance 重入/checkout/drain 恢复、doctor 可执行建议、三端 installer 的 stable-tag 解析、公开模板版本一致性和 exact tested annotated-tag Release Assets gate。完整自动化、构建、真实验收、CI、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。
 
 V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 
@@ -147,11 +147,38 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
 
+## V4.2.5 发布门禁
+
+Accepted runtime SHA: `7f87beed8a37a365c10483f3d638092fd422782e`
+
+- 候选验收记录：**2026-08-02 11:31:18 CST（Asia/Shanghai）**；平台为 **macOS arm64**；Hermes checkout 版本为 `v2026.7.30-15-gce6dd1a65-dirty`（仅只读用于验收，未由本次流程修改）；隔离运行的 HFC package/runtime 均为 `4.2.5`。
+- 真实飞书 topic 验收：**通过**。在最近仍有效的既有测试群 topic 中严格只创建两张 A/B 卡；sidecar 报告 `events_applied=4/4`、`feishu_send_successes=2/2`、`events_rejected=0`、send/update failure 均为 `0`。首次 A 已成功创建后，验收夹具因错误依赖 hook 布尔返回提前停止；恢复流程复用同一张 A，没有重发第三张卡。A 的首段与 B started 后的迟到标记均 PATCH 成功，B 的首段与 terminal 由候选 hook/sidecar 完成，B summary 已索引且不含 A/late 标记，两张卡 ID 不同。
+- 飞书历史消息接口对已 PATCH 卡片返回初始正文快照，因此不把该正文快照当作 A 的当前内容证据；A 以两次 PATCH 成功、`updated=true`、`update_time` 前进和零 update failure 证明状态转换。B 以 sidecar summary 与事件/发送/更新计数证明。该限制不影响“两张卡、无跨写”的通过结论，但保留为验收证据边界。
+- accepted runtime 自动化：runtime focused `938 passed`；maintenance focused `223 passed`；installer/release focused `159 passed, 3 skipped`；disposable maintenance smoke `6 passed`；完整 pytest **`2400 passed, 5 skipped`**。沙箱内首次 runtime focused 运行因禁止绑定 `127.0.0.1` 临时端口失败，按项目授权在沙箱外原样重跑后全部通过。
+- 九个审查 ID 均有命名回归，覆盖 quoted turn、maintenance ownership/binding/drain、doctor action、installer pin 与 config marker。
+- `latest` 解析失败必须在 pip/setup/doctor 和 Docker state mutation 前退出；显式 `main` 是唯一 moving ref。
+- Release Assets 必须按 `resolve-release -> reusable exact-commit tests -> package` 执行，并在 build 前和 upload 前 full reverify annotated tag。
+- 候选完整 pytest、compileall、package provenance、disposable maintenance smoke、真实验收、PR CI、exact merge、public tag/install 与四个 assets：**发布流程中逐项记录**。
+
+## V4.2.4 发布门禁
+
+- `message.started` 必须使用真实入站 message ID，每条引用回复创建独立卡片；仅在 ID 缺失时回退 reply anchor：**patcher 单元回归通过**。
+- sidecar 必须只对新 turn 跳过 reply alias；后续 `answer.delta` 等流式事件仍更新本轮新卡：**真实 HTTP `/events` 集成回归通过**。
+- 完整 pytest：**`2311 passed, 5 skipped`**；`git diff --check`、sdist/wheel 与干净隔离 Python `site-packages` 包/distribution/CLI provenance：**本地候选门禁通过**。PR CI、exact merge SHA、public tag/install 与 Release assets：**发布流程中验证**。
+- PR #177 贡献者报告真实飞书话题连续引用场景通过；正式 tag 后的运行环境复测保留为用户侧验收，不用它替代自动化与精确 SHA 门禁。
+
+## V4.2.3 发布门禁
+
+- WebSocket hook 必须将 card value 中的 `update_evidence_fingerprint` 原样转发给 sidecar；缺失字段的回归测试先红后绿：**通过**。
+- 相关 hook/runtime/server/Feishu SDK 矩阵：**`670 passed, 1 skipped`**。完整 pytest：**`2309 passed, 5 skipped`**；`git diff --check`、sdist/wheel、干净 Python 3.12 `site-packages` provenance、PR CI、exact merge SHA、public tag/install 与 Release assets：**发布链路通过**。
+- 真实验收必须观察 sidecar update attempt、原卡状态转换，并证明取消不会启动 updater；不得只以按钮被点击或 Gateway 收到 action 作为通过依据。
+- 本机候选真实飞书取消验收：**通过（2026-08-01）**。新卡显示 HFC 4.2.3，原卡进入“已取消更新 / 未执行 Hermes 更新”；sidecar 为 `feishu_update_attempts=1`、`successes=1`、`failures=0`，Hermes HEAD 未变化，`update.log` 仍停在 2026-07-31 15:01:52，且无 updater/maintenance run 进程。正式 tag 安装后仍需复验。
+
 ## V4.2.2 发布门禁
 
 - native card action 必须先快速空 ACK，再由 sidecar 异步 PATCH 原确认卡；Feishu API 延迟不得阻塞 callback deadline：**聚焦回归通过**。
 - 取消必须写入 durable `cancelled` 后显示“已取消更新”终态，且不得调度 updater；确认必须先尝试发布 locking/准备态，再调度独立维护任务：**相关 operations/server/hook-runtime 矩阵 `378 passed`**。
-- Python 3.9 / 3.12 全量均为 **`2307 passed, 5 skipped`**；`git diff --check`、wheel/sdist、干净 Python 3.12 `site-packages` package/distribution/CLI provenance 与独立 maintenance runtime 4.2.2：**本地候选门禁通过**。PR CI、exact merge SHA、public tag/install、Release assets 与真实飞书取消终态：**待发布流程验证**。
+- Python 3.9 / 3.12 全量均为 **`2307 passed, 5 skipped`**；`git diff --check`、wheel/sdist、干净 Python 3.12 `site-packages` package/distribution/CLI provenance、PR CI、exact merge SHA、public tag/install 与 Release assets：**发布链路通过**。真实飞书点击随后暴露 WebSocket hook 遗漏证据指纹，取消终态未完成，已由 V4.2.3 候选接续修复。
 
 ## V4.2.1 发布门禁
 

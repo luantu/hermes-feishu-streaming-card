@@ -30,12 +30,13 @@
 
 - 字段名必须贴合 Hermes 变量：`source`、`event`、`response`、`agent_result`、`event_message_id` 等。
 - Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`。
+- `message.started` 必须从真实入站 `event.message_id` 绑定 `turn_id`；同一 `source` 的 stream/tool/terminal 回调复用这个 immutable identity。显式 `turn_id` 是 canonical turn hard fence，不能被 `message_id` 或 `reply_to_message_id` alias 覆盖；无法在 `source` 绑定私有属性时保持 legacy fail-open。
 - stable tool lifecycle 与 legacy progress callback 不能同时投递同一调用；wrapper 检测必须读取 agent 当前实际 callback，显式 fallback 标记仅用于卡片路径未接受时恢复原生进度。
 - 已识别 `system.notice` 必须按 sidecar 结果分流：已有卡片异步更新的 `accepted` 与独立卡首次投递的 `delivered` 抑制原生文本，`not_sent` 回退原始通知文本，`unknown` 只尝试固定通用提示且不重复原始通知文本；`accepted` 必须同时带有 `applied=true`，不可解析响应一律视为 `unknown`。
 - 上下文压缩只从 `_status_callback_sync` 的固定 `Compacting context` 标记产生 `context-compaction`；不得用静默 watchdog、普通 compression 文本或虚构百分比推断。
 - cron completion hook 必须位于 `extract_media` / `media_files` 过滤之后：`native_delivery=required` 时清空原生正文但继续文件上传，不能在媒体提取前提前返回。
 - 不得恢复固定 command allowlist；built-in、alias、plugin/quick、unknown feedback 都必须经过统一 command context。V4.2.0 的飞书私聊裸 `/update` 必须优先进入专用维护流；群聊、非飞书、别名和带参数更新仍使用 Hermes 原 handler。
-- `/update` 确认必须在 ACK 前创建 durable job，再持久化 HFC drain lease，并用 Hermes 原生 external drain marker 关闭 turn/cron/API 准入；维护进程必须看到 schema v2 的 `_active_work_count()` 聚合计数、external drain 生效与连续 heartbeat，不能把缺失计数解释为零。V4.2.1 要求 startup adapter 在启动 runtime control 前登记 live runner，确保首个 heartbeat 即携带完整聚合证据。V4.2.2 要求 native action 快速 ACK 后由 sidecar 异步 PATCH 同一个 message：取消必须写入 terminal card 且绝不调度 updater；确认必须先尝试发布 locking/准备态，再启动维护任务。
+- `/update` 确认必须在 ACK 前创建 durable job，再持久化 HFC drain lease，并用 Hermes 原生 external drain marker 关闭 turn/cron/API 准入；维护进程必须看到 schema v2 的 `_active_work_count()` 聚合计数、external drain 生效与连续 heartbeat，不能把缺失计数解释为零。V4.2.1 要求 startup adapter 在启动 runtime control 前登记 live runner，确保首个 heartbeat 即携带完整聚合证据。V4.2.2 要求 native action 快速 ACK 后由 sidecar 异步 PATCH 同一个 message：取消必须写入 terminal card 且绝不调度 updater；确认必须先尝试发布 locking/准备态，再启动维护任务。V4.2.3 要求 WebSocket hook 将 `update_evidence_fingerprint` 原样转发给 sidecar；缺失或不匹配证据仍必须 fail-closed。V4.2.4 要求 `message.started` 优先使用真实入站 message ID，并且新 turn 不得通过 reply alias 复用旧 session；同一轮后续 stream/tool 事件仍可通过 alias 关联当前卡片。
 - updater 前显式 fetch 并展示当前 `origin/main` 快照，不能把 fork 的 `upstream/main` 摘要当作 apply 目标；确认语义必须透明说明官方 updater 会再次 fetch 最新 `origin/main`。若 HEAD 相对快照漂移，必须先恢复 HFC/hook/services，再以失败终态报告。Gateway 任务数与聚合计数能力必须来自同一次 `_active_work_count()` 采样，且 runtime 必须证明实际 `HERMES_HOME` 与 checkout 的 marker 目录一致。完成态还必须证明新 sidecar PID、新 runtime identity、fresh heartbeat、目标 Python identity、版本、`site-packages` 导入和 owned hook。
 - command context 只能接管非空文本；Agent turn、专用交互卡和媒体路径保持原边界。只有 create/PATCH 成功才抑制对应原生文本。
 - 已连接 Lark WebSocket 的 live `EventDispatcherHandler` identity 不得被重建或替换；只可通过 `_ws_thread_loop.call_soon_threadsafe(...)` 更新现有 `p2.card.action.trigger` processor callback，不兼容内部结构必须 fail-open。
@@ -48,14 +49,14 @@
 职责：
 
 - 管理 `CardSession`。
-- 根据 `message_id`、`reply_to_message_id` 和 profile/bot 信息路由到卡片。
+- 根据 `turn_id`（若存在）、`message_id`、`reply_to_message_id` 和 profile/bot 信息路由到卡片。
 - 合并高频 delta，安排 Feishu PATCH。
 - 处理 terminal drain、终态优先更新、metrics 和 `/health`。
 - 在创建 `CardSession`、alias、动画或 Feishu client state 前再次检查 delivery policy，并接收认证 runtime events 维护 readiness。
 
 高风险点：
 
-- topic 后续事件使用不同内部 `message_id` 时，必须先查 reply anchor。
+- 显式 `turn_id` 必须作为 canonical turn hard fence，直接决定 session ownership、ordering 和 native handoff，绝不查 reply alias；只有缺少 `turn_id` 的 legacy topic 后续事件使用不同内部 `message_id` 时，才查 `reply_to_message_id` anchor。
 - terminal 事件前要 flush pending delta，避免尾部文本丢失。
 - 卡片已完成时不能让 Hermes 原生 resend 泄漏成灰色消息。
 - 初始 create/reply 只能在 Feishu API 边界用稳定 `delivery_uuid` 重试，最多 3 次；不重试 `/events`，也不把这套策略套到 PATCH。
