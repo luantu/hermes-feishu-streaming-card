@@ -3,11 +3,11 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.0.4 合并后
+> 最后更新：V4.2.5 合并后
 
 ---
 
-## 一、render.py（15 项）
+## 一、render.py（16 项）
 
 ### 1.1 GIF 动画 footer
 - `render_card()` 接受 `loading_gif_img_key: str | None = None` 参数
@@ -45,6 +45,17 @@
 ### 1.8 完成状态 subtitle 显示正文摘要
 - `_render_status()`：completed 时 subtitle 不再固定 "已完成"，而是 `session.answer_text`
 - 飞书客户端渲染为 1 行 + 省略号
+
+### 1.9 模型名称归一化与颜色标签
+- 新增 `hermes_feishu_card/model_names.py` 独立模块，零侵入 render.py
+- `normalize_model_name()` 函数：自动剥离 provider 前缀（`origin-`, `ali-`, `tx-`, `rjds-` 等）、`-maxthink` 后缀、日期尾号（6/8 位）、API 路径后缀（`/chat`, `/coder`）
+- 智能矫正版本号：`v3-1` → `V3.1`，`4-5` → `4.5`
+- 保留官方子型号：Pro/Flash/Lite/Turbo 等不变
+- 保留已有大小写（`MiniMax` → `MiniMax`，不破坏为 `Minimax`）
+- HTML/脚本等异常字符串直通不处理
+- `MODEL_COLOR_PREFIXES` 增加 `gpt `, `claude `, `deepseek `, `kimi `, `glm ` 等空格后缀匹配、以及 `qwq`, `qwen`(grey)、`gemini`(blue)
+- `_colored_model_label()` 内部调用 `normalize_model_name()` 归一化显示名，原始名用于颜色匹配
+- render.py 仅需 `from .model_names import normalize_model_name` 一行导入
 
 ---
 
@@ -148,6 +159,11 @@
 - `feishu_delete_attempts/successes/failures`
 - `feishu_resend_attempts/successes/failures/fallbacks`
 
+### 6.5 model_names.py（新增文件）
+- `normalize_model_name()`：模型名称归一化（详见 1.9）
+- `_MODEL_FAMILIES`、`_VARIANTS`、`_DISPLAY_NAMES` 等配置字典
+- 自动 provider 前缀剥离、日期尾号清理、版本号矫正
+
 ---
 
 ## 七、静态资源
@@ -167,6 +183,8 @@
 | `render.py` | `render_cards(` | 多表格分卡 |
 | `render.py` | `_generate_summary_subtitle` | 完成状态 subtitle |
 | `render.py` | `_render_thinking_footer_gif` | GIF footer 渲染 |
+| `render.py` | `from .model_names import normalize_model_name` | 模型名归一化导入 |
+| `model_names.py` | `normalize_model_name(` | 模型名归一化（新文件） |
 | `server.py` | `UPLOADED_GIF_IMG_KEYS_KEY` | GIF 上传支持 |
 | `server.py` | `_ensure_logger` | 日志初始化 |
 | `server.py` | `return None` (thread_id) | 话题禁用 |

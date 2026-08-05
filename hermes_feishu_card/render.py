@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any, Dict, Literal, Optional
 
 from .card_limits import CardLimitInspection, inspect_card_limits
+from .model_names import normalize_model_name
 from .session import CardSession
 from .status import StatusConfig, resolve_display_status
 from .text import (
@@ -32,12 +33,14 @@ DEFAULT_TITLE = "Hermes Agent"
 RUNTIME_HEADER_MAX_CHARS = 120
 TEXT_SIZE_ROLE_ORDER = ("body", "reasoning", "tool", "notice", "footer")
 MODEL_COLOR_PREFIXES = (
-    (("gpt-", "o1", "o3"), "blue"),
-    (("claude-",), "orange"),
-    (("deepseek-", "deepseek/"), "indigo"),
-    (("kimi-", "kimi/", "moonshot-"), "purple"),
-    (("glm-",), "green"),
-    (("hy3", "tencent/", "hunyuan"), "teal"),
+    (("gpt-", "gpt/", "gpt ", "o1", "o3"), "blue"),
+    (("claude-", "claude/", "claude "), "orange"),
+    (("deepseek-", "deepseek/", "deepseek "), "indigo"),
+    (("kimi-", "kimi/", "kimi ", "moonshot-"), "purple"),
+    (("glm-", "glm/", "glm "), "green"),
+    (("hunyuan", "hy3"), "teal"),
+    (("qwq", "qwen"), "grey"),
+    (("gemini",), "blue"),
 )
 
 _SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -1020,7 +1023,8 @@ def _render_footer(
 
 def _colored_model_label(model: str) -> str:
     text = str(model or "")
-    safe = html.escape(text, quote=True)
+    display = normalize_model_name(text) or text
+    safe = html.escape(display, quote=True)
     normalized = text.lower()
     for prefixes, color in MODEL_COLOR_PREFIXES:
         if any(prefix in normalized for prefix in prefixes):
