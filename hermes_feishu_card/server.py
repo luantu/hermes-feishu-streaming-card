@@ -4342,9 +4342,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         return web.json_response({"ok": True, "applied": True}), None
     if terminal_already_handled:
         applied = True
+        if event.event in {"message.completed", "message.failed"}:
+            session.apply_terminal_metadata(event)
     render_result: CardRenderResult | None = None
     handoff_record: NativeHandoffRecord | None = None
-    if applied and not terminal_already_handled:
+    if applied:
         render_result = _render_session_card_result_for_app(request.app, session)
         if event_is_terminal and render_result.disposition == "native":
             handoff_record, handoff_created = _begin_native_handoff(

@@ -340,6 +340,39 @@ class CardSession:
         self.refresh_display_status_source()
         return True
 
+    def apply_terminal_metadata(self, event: SidecarEvent) -> bool:
+        """Update footer metadata from a terminal event on an already-completed session."""
+        if self.status not in {"completed", "failed"}:
+            return False
+        if event.event == "message.completed":
+            completed_answer = normalize_stream_text(str(event.data.get("answer") or ""))
+            if completed_answer.strip():
+                completed_answer = self._prepare_completed_answer(completed_answer)
+            if completed_answer.strip():
+                self.answer_text = completed_answer
+            data = event.data if isinstance(event.data, dict) else {}
+            tokens = data.get("tokens", {})
+            self.tokens = dict(tokens) if isinstance(tokens, dict) else {}
+            model = data.get("model")
+            self.model = model if isinstance(model, str) and model.strip() else ""
+            context = data.get("context", {})
+            self.context = dict(context) if isinstance(context, dict) else {}
+            try:
+                self.duration = float(data.get("duration", 0.0))
+            except (TypeError, ValueError):
+                self.duration = 0.0
+            self.updated_at = time.time()
+            self.refresh_display_status_source()
+            return True
+        if event.event == "message.failed":
+            error = event.data.get("error")
+            if isinstance(error, str) and error.strip():
+                self.answer_text = error
+                self.updated_at = time.time()
+                self.refresh_display_status_source()
+                return True
+        return False
+
     def _archive_current_answer_to_reasoning(self, final_answer: str = "") -> None:
         preface = normalize_stream_text(self.answer_text).strip()
         if not preface:
