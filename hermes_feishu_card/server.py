@@ -218,6 +218,7 @@ RESTART_CALLBACK_GRACE_SECONDS = 0.25
 _STABLE_PROFILE_SOURCES = PROFILE_SOURCES
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
 TURN_REOPENING_EVENTS = {"thinking.delta", "tool.updated", "answer.delta"}
+TURN_REOPEN_TOLERANCE_S = 1.0
 SESSION_CREATING_EVENTS = {
     "thinking.delta",
     "tool.updated",
@@ -3729,6 +3730,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 event.event in TURN_REOPENING_EVENTS
                 and incoming_event.data.get("policy_new_turn") is True
             )
+            or (
+                event.event in TURN_REOPENING_EVENTS
+                and session.completed_at is not None
+                and incoming_event.created_at > (session.completed_at + TURN_REOPEN_TOLERANCE_S)
+            )
         )
     )
 
@@ -5471,6 +5477,7 @@ async def _abandon_stale_sessions_for_chat(
             continue
         sess.timeline.complete()
         sess.status = "completed"
+        sess.completed_at = time.time()
         sess.updated_at = time.time()
         card_config = app[SESSION_CARD_CONFIGS_KEY].get(
             key, app[BASE_CARD_CONFIG_KEY]

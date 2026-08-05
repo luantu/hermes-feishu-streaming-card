@@ -101,6 +101,7 @@ class CardSession:
     timeline: CardTimeline = field(default_factory=CardTimeline)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
+    completed_at: float | None = None
 
     @property
     def elapsed(self) -> float:
@@ -285,6 +286,8 @@ class CardSession:
                     if _notice_is_terminal(event.data.get("notice_terminal"))
                     else "running"
                 )
+                if self.status == "completed":
+                    self.completed_at = time.time()
                 self.updated_at = time.time()
                 self.refresh_display_status_source()
                 return True
@@ -296,6 +299,7 @@ class CardSession:
                 completed_answer = self._prepare_completed_answer(completed_answer)
             self.timeline.complete()
             self.status = "completed"
+            self.completed_at = time.time()
             self.latest_tool_preview = ""
             if completed_answer.strip():
                 self.answer_text = completed_answer
@@ -326,6 +330,7 @@ class CardSession:
             self._archive_current_answer_to_reasoning()
             self.timeline.complete()
             self.status = "failed"
+            self.completed_at = time.time()
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"
         self.updated_at = time.time()
