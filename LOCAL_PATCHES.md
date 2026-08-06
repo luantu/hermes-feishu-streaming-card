@@ -59,7 +59,7 @@
 
 ---
 
-## 二、server.py（12 项）
+## 二、server.py（13 项）
 
 ### 2.1 GIF 上传支持
 - `UPLOADED_GIF_IMG_KEYS_KEY` AppKey
@@ -72,6 +72,7 @@
 ### 2.2 话题消息禁用
 - `_thread_id_for_event()` → `return None`
 - `_reply_to_message_id_for_event()`：只返回显式 `reply_to_message_id`（`om_` 开头），不自动推导
+- 系统通知卡片构造 `conversation_id=chat_id`（原 1323 行，不再用 `thread_id or chat_id`）
 
 ### 2.3 sidecar 日志
 - `_ensure_logger()` 函数：`StreamHandler` + `INFO` 级别
@@ -96,7 +97,7 @@
 
 ---
 
-## 三、hook_runtime.py（5 项）
+## 三、hook_runtime.py（6 项）
 
 ### 3.1 队列完成抑制修复
 - `_event_was_delivered()` 函数：终态事件 `applied=False` 时仍视为已投递
@@ -109,6 +110,15 @@
 
 ### 3.3 日志
 - 所有 emit 失败路径、`should_suppress_native_response` 决策、`_build_event` 返回 None 原因都有 `print(file=sys.stderr)` 日志
+
+### 3.4 禁用话题群路由（引用回复不再进话题）
+- 所有 `"conversation_id": thread_id or chat_id` 改为 `"conversation_id": chat_id`（3 处）：
+  - `_hfc_feishu_command_event_locals()`（原 3823 行）
+  - HFC direct policy locals（原 3973 行）
+  - poll/通知构造（原 4278 行）
+- `_exact_native_route()` 保持 `thread-create` 判断不变（sidecar 侧 `_thread_id_for_event()` 已返回 None）
+- cron 任务完成事件 `"conversation_id": chat_id`（原 7851 行）
+- 效果：用户引用消息回复时，会话始终路由到主群（`chat_id`），不再进入话题群
 
 ---
 
@@ -194,6 +204,7 @@
 | `hook_runtime.py` | `_event_was_delivered` | 队列抑制修复 |
 | `hook_runtime.py` | `return None` (heartbeat/self-improvement) | notice 过滤 |
 | `hook_runtime.py` | `gateway shutting` | shutdown notice |
+| `hook_runtime.py` | `"conversation_id": chat_id` | 禁用话题群路由 |
 | `session.py` | `model: str = ""` | model 空值 |
 | `session.py` | `reply_to_message_id` fallback removed | 回复 ID 修复 |
 | `feishu_client.py` | `certifi.where()` | SSL 修复 |

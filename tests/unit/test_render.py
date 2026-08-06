@@ -380,18 +380,18 @@ def test_v3818_normal_failed_card_keeps_element_order_and_footer():
 
 
 @pytest.mark.parametrize(
-    ("model", "color"),
+    ("model", "color", "display"),
     [
-        ("GPT-5.5", "blue"),
-        ("claude-opus-4", "orange"),
-        ("DeepSeek-V4", "indigo"),
-        ("KIMI-K2", "purple"),
-        ("GLM-5", "green"),
-        ("Tencent/hunyuan", "teal"),
+        ("GPT-5.5", "blue", "GPT 5.5"),
+        ("claude-opus-4", "orange", "Claude Opus 4"),
+        ("DeepSeek-V4", "indigo", "DeepSeek V4"),
+        ("KIMI-K2", "purple", "Kimi K2"),
+        ("GLM-5", "green", "GLM 5"),
+        ("Tencent/hunyuan", "teal", "Tencent Hunyuan"),
     ],
 )
-def test_model_footer_uses_sanitized_semantic_color(model, color):
-    assert _colored_model_label(model) == f'<font color="{color}">{model}</font>'
+def test_model_footer_uses_sanitized_semantic_color(model, color, display):
+    assert _colored_model_label(model) == f'<font color="{color}">{display}</font>'
 
 
 def test_model_footer_escapes_unknown_and_malicious_model_names():

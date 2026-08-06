@@ -218,7 +218,6 @@ RESTART_CALLBACK_GRACE_SECONDS = 0.25
 _STABLE_PROFILE_SOURCES = PROFILE_SOURCES
 TERMINAL_EVENTS = {"message.completed", "message.failed"}
 TURN_REOPENING_EVENTS = {"thinking.delta", "tool.updated", "answer.delta"}
-TURN_REOPEN_TOLERANCE_S = 1.0
 SESSION_CREATING_EVENTS = {
     "thinking.delta",
     "tool.updated",
@@ -245,6 +244,96 @@ def _ensure_logger() -> None:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     _log_handler_configured = True
+
+
+_lifecycle_logger = logging.getLogger("hfc.cardlife")
+_lifecycle_configured = False
+
+
+def _ensure_lifecycle_logger() -> None:
+    """Configure the dedicated card-lifecycle log file.
+
+    Writes to ~/.hermes/logs/feishu-card.lifecycle.log by default. Override the
+    path with HERMES_FEISHU_CARD_LIFECYCLE_LOG. Fail-open: never raise from
+    logging setup.
+    """
+    global _lifecycle_configured
+    if _lifecycle_configured:
+        return
+    _lifecycle_configured = True
+    try:
+        raw = os.environ.get("HERMES_FEISHU_CARD_LIFECYCLE_LOG")
+        if raw:
+            target = Path(raw).expanduser()
+        else:
+            target = Path.home() / ".hermes" / "logs" / "feishu-card.lifecycle.log"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(str(target), encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        handler.setLevel(logging.INFO)
+        _lifecycle_logger.addHandler(handler)
+        _lifecycle_logger.setLevel(logging.INFO)
+        _lifecycle_logger.propagate = False
+    except Exception:
+        pass
+
+
+def _card_log(level: int, kind: str, **fields: Any) -> None:
+    """Emit one structured card-lifecycle line to the dedicated logger.
+
+    kind is an uppercase token (CREATE/RESOLVE/APPLY/BIND/PATCH/TERMINAL/
+    ABANDON/RESET/PROMOTE/DELETE/LOCK/ROUTE). fields are key=value pairs;
+    empty/None values are dropped. Never raises.
+    """
+    _ensure_lifecycle_logger()
+    try:
+        parts: list[str] = [kind]
+        for key in (
+            "card",
+            "card_id",
+            "old_card",
+            "turn",
+            "msg",
+            "chat",
+            "conv",
+            "seq",
+            "bot",
+            "event",
+            "outcome",
+            "reason",
+            "detail",
+            "content",
+        ):
+            value = fields.get(key)
+            if value is None or value == "":
+                continue
+            parts.append(f"{key}={value}")
+        _lifecycle_logger.log(level, " | ".join(parts))
+    except Exception:
+        pass
+
+
+def _content_prefix(session: Any, max_chars: int = 48) -> str:
+    """Single-line prefix of the card's visible main text for log correlation.
+
+    Lets a user paste the opening words of a Feishu card and have the lifecycle
+    log matched by the same prefix. Never raises.
+    """
+    try:
+        text = ""
+        if session is not None:
+            text = getattr(session, "visible_main_text", "") or ""
+            if not text:
+                text = getattr(session, "answer_text", "") or ""
+        text = " ".join(str(text).split()).strip()
+        if not text:
+            return ""
+        return text[:max_chars]
+    except Exception:
+        return ""
 
 
 @dataclass(frozen=True)
@@ -1231,7 +1320,7 @@ async def _commands(request: web.Request) -> web.Response:
     event = SidecarEvent(
         schema_version="1",
         event="message.started",
-        conversation_id=thread_id or chat_id,
+        conversation_id=chat_id,
         message_id=message_id,
         chat_id=chat_id,
         thread_id=thread_id,
@@ -2871,6 +2960,16 @@ async def _events(request: web.Request) -> web.Response:
     lock_key = _session_key(event)
     lock = message_locks.setdefault(lock_key, asyncio.Lock())
     lock_users[lock_key] = lock_users.get(lock_key, 0) + 1
+    _card_log(
+        logging.INFO,
+        "LOCK",
+        card=lock_key,
+        event=event.event,
+        seq=event.sequence,
+        turn=event.turn_id,
+        chat=event.chat_id,
+        detail=f"users={lock_users[lock_key]} wait={lock.locked()}",
+    )
     try:
         async with lock:
             response, post_lock_task = await _apply_event_locked(request, event)
@@ -3714,8 +3813,38 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     incoming_event = event
     session_key = _resolve_session_key(request.app, incoming_event)
     session = sessions.get(session_key)
+    _card_log(
+        logging.INFO,
+        "RESOLVE",
+        card=session_key,
+        turn=incoming_event.turn_id,
+        msg=incoming_event.message_id,
+        chat=incoming_event.chat_id,
+        conv=incoming_event.conversation_id,
+        event=incoming_event.event,
+        seq=incoming_event.sequence,
+        outcome=("hit" if session is not None else "miss"),
+        detail=(
+            f"session_status={session.status}"
+            if session is not None
+            else "new"
+        ),
+    )
     if session is not None:
-        event = _event_for_session(incoming_event, session)
+        rewritten = _event_for_session(incoming_event, session)
+        if rewritten is not incoming_event:
+            _card_log(
+                logging.INFO,
+                "ROUTE",
+                card=session_key,
+                turn=incoming_event.turn_id,
+                msg=incoming_event.message_id,
+                event=incoming_event.event,
+                seq=incoming_event.sequence,
+                reason="message_id_rewrite",
+                detail=f"to_conv={rewritten.conversation_id} to_msg={rewritten.message_id}",
+            )
+        event = rewritten
     event_is_terminal = _event_is_terminal(event)
     handoff_identity = _native_handoff_identity(incoming_event)
     handoff_metadata = _native_handoff_metadata(incoming_event)
@@ -3730,13 +3859,20 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                 event.event in TURN_REOPENING_EVENTS
                 and incoming_event.data.get("policy_new_turn") is True
             )
-            or (
-                event.event in TURN_REOPENING_EVENTS
-                and session.completed_at is not None
-                and incoming_event.created_at > (session.completed_at + TURN_REOPEN_TOLERANCE_S)
-            )
         )
     )
+    if reopens_completed_session:
+        _card_log(
+            logging.WARNING,
+            "RESET",
+            card=session_key,
+            turn=incoming_event.turn_id,
+            msg=incoming_event.message_id,
+            event=incoming_event.event,
+            seq=incoming_event.sequence,
+            reason="reopen_completed",
+            detail=f"old_status={session.status}",
+        )
 
     # A signed new-hook lifecycle token is a durable turn fence.  Record it
     # before the per-chat policy bypass so a native started event cannot leave
@@ -4022,6 +4158,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
     if event.event == "message.started":
         if session is not None:
+            _card_log(
+                logging.WARNING,
+                "RESOLVE",
+                card=session_key,
+                turn=incoming_event.turn_id,
+                msg=incoming_event.message_id,
+                chat=incoming_event.chat_id,
+                conv=incoming_event.conversation_id,
+                event=event.event,
+                seq=incoming_event.sequence,
+                outcome="duplicate_started",
+                detail=f"existing_status={session.status}",
+            )
             metrics.events_ignored += 1
             return web.json_response({"ok": True, "applied": False}), None
     if event.event == "message.started" and session is None:
@@ -4041,6 +4190,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         if applied:
             _register_session_aliases(request.app, incoming_event, session_key)
         if applied and session_key not in feishu_message_ids:
+            _card_log(
+                logging.INFO,
+                "CREATE",
+                card=session_key,
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                chat=event.chat_id,
+                conv=event.conversation_id,
+                event="message.started",
+                seq=incoming_event.sequence,
+                outcome="sending_first_card",
+                content=_content_prefix(session),
+            )
             route = _resolve_route(request, event)
             if route is None:
                 _cleanup_failed_session_state(request.app, session_key, session)
@@ -4091,6 +4253,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     status=502,
                 ), None
             feishu_message_ids[session_key] = delivery.message_id
+            _card_log(
+                logging.INFO,
+                "BIND",
+                card=session_key,
+                card_id=str(delivery.message_id),
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                chat=event.chat_id,
+                event="message.started",
+                outcome="first_card",
+                detail=f"old_card= send_delivery={delivery.outcome} retries={delivery.retry_count}",
+                content=_content_prefix(session),
+            )
             message_bot_ids[session_key] = route.bot_id
             _ensure_card_animation(
                 request.app,
@@ -4134,6 +4309,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             if applied:
                 is_cron_completed = (
                     event.event == "message.completed" and _delivery_kind(event) == "cron"
+                )
+                _card_log(
+                    logging.INFO,
+                    "CREATE",
+                    card=session_key,
+                    turn=incoming_event.turn_id,
+                    msg=event.message_id,
+                    chat=event.chat_id,
+                    conv=event.conversation_id,
+                    event=event.event,
+                    seq=incoming_event.sequence,
+                    outcome="first_event_creates_session",
+                    content=_content_prefix(session),
                 )
                 route = _resolve_route(request, event)
                 if route is None:
@@ -4263,6 +4451,19 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     ), None
                 message_id = str(delivery.message_id)
                 feishu_message_ids[session_key] = message_id
+                _card_log(
+                    logging.INFO,
+                    "BIND",
+                    card=session_key,
+                    card_id=message_id,
+                    turn=incoming_event.turn_id,
+                    msg=event.message_id,
+                    chat=event.chat_id,
+                    event=event.event,
+                    outcome="first_card",
+                    detail=f"old_card= send_delivery={delivery.outcome} retries={delivery.retry_count}",
+                    content=_content_prefix(session),
+                )
                 message_bot_ids[session_key] = route.bot_id
                 _ensure_card_animation(
                     request.app,
@@ -4302,6 +4503,18 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
     feishu_message_id = feishu_message_ids.get(session_key)
     if _would_apply(session, event) and feishu_message_id is None:
+        _card_log(
+            logging.WARNING,
+            "WARN",
+            card=session_key,
+            turn=incoming_event.turn_id,
+            msg=event.message_id,
+            chat=event.chat_id,
+            event=event.event,
+            seq=incoming_event.sequence,
+            reason="feishu_message_id_missing",
+            detail="would_apply but no card bound -> 409",
+        )
         metrics.events_rejected += 1
         return web.json_response(
             {"ok": False, "error": "feishu_message_id missing"},
@@ -4314,9 +4527,39 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         else None
     )
     applied = session.apply(event)
+    _card_log(
+        logging.INFO,
+        "APPLY",
+        card=session_key,
+        card_id=feishu_message_id or "",
+        turn=incoming_event.turn_id,
+        msg=event.message_id,
+        chat=event.chat_id,
+        event=event.event,
+        seq=incoming_event.sequence,
+        outcome=("applied" if applied else "ignored"),
+        detail=(
+            f"status={session.status} seq={event.sequence}"
+            if session is not None
+            else ""
+        ),
+        content=_content_prefix(session),
+    )
     if applied and event.event == "message.completed" and feishu_message_id is not None:
         answer = str(event.data.get("answer") or "").strip() if isinstance(event.data, dict) else ""
         if _is_emoji_only(answer):
+            _card_log(
+                logging.WARNING,
+                "DELETE",
+                card=session_key,
+                card_id=feishu_message_id,
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                chat=event.chat_id,
+                event="message.completed",
+                seq=incoming_event.sequence,
+                reason="emoji_only_answer",
+            )
             bot_id = message_bot_ids.get(session_key)
             try:
                 await _client_for_bot(request.app, bot_id).delete_message(feishu_message_id)
@@ -4337,6 +4580,25 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         and event_is_terminal
         and session.status in {"completed", "failed"}
     )
+    if terminal_already_handled:
+        _card_log(
+            logging.WARNING,
+            "TERMINAL",
+            card=session_key,
+            card_id=feishu_message_id or "",
+            turn=incoming_event.turn_id,
+            msg=event.message_id,
+            chat=event.chat_id,
+            event=event.event,
+            seq=incoming_event.sequence,
+            outcome="already_handled",
+            detail=(
+                f"terminal_disposition={session.terminal_disposition}"
+                if session is not None
+                else ""
+            ),
+            content=_content_prefix(session),
+        )
     if terminal_already_handled and session.terminal_disposition == "native":
         metrics.events_applied += 1
         return web.json_response({"ok": True, "applied": True}), None
@@ -4398,6 +4660,20 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             _record_card_render_decision(metrics, render_result)
             session.terminal_disposition = "native"
             session.terminal_limit_reason = render_result.limit_reason
+            _card_log(
+                logging.WARNING,
+                "TERMINAL",
+                card=session_key,
+                card_id=feishu_message_id or "",
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                chat=event.chat_id,
+                event=event.event,
+                seq=incoming_event.sequence,
+                outcome="native_disposition",
+                detail=f"limit_reason={render_result.limit_reason}",
+                content=_content_prefix(session),
+            )
             if _delivery_kind(event) == "cron":
                 metrics.cron_fallbacks += 1
         else:
@@ -4443,6 +4719,20 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
         promoted_message_id = str(delivery.message_id)
         feishu_message_ids[session_key] = promoted_message_id
+        _card_log(
+            logging.INFO,
+            "PROMOTE",
+            card=session_key,
+            card_id=promoted_message_id,
+            old_card=feishu_message_id or "",
+            turn=incoming_event.turn_id,
+            msg=event.message_id,
+            chat=event.chat_id,
+            event="interaction.requested",
+            seq=incoming_event.sequence,
+            outcome="new_interaction_card",
+            detail=f"interaction={interaction_id}",
+        )
         animation_task = request.app[CARD_ANIMATION_TASKS_KEY].pop(
             session_key, None
         )
@@ -4506,6 +4796,16 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         async def _render_and_update() -> bool:
             latest_session = sessions.get(session_key)
             if latest_session is None:
+                _card_log(
+                    logging.WARNING,
+                    "PATCH",
+                    card=session_key,
+                    card_id=feishu_message_id or "",
+                    event=event.event,
+                    seq=incoming_event.sequence,
+                    outcome="skipped",
+                    reason="session_gone",
+                )
                 return False
             latest_card = render_result.card
             if is_terminal and render_result.disposition == "card":
@@ -4525,9 +4825,23 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     )
                     if bounded_result.disposition == "card":
                         latest_card = bounded_result.card
+            bound_now = feishu_message_ids.get(session_key)
+            patch_target = feishu_message_id
+            if bound_now is not None and bound_now != feishu_message_id:
+                _card_log(
+                    logging.WARNING,
+                    "PATCH",
+                    card=session_key,
+                    card_id=feishu_message_id or "",
+                    event=event.event,
+                    seq=incoming_event.sequence,
+                    outcome="stale_target",
+                    reason="card_rebound_after_schedule",
+                    detail=f"bound_now={bound_now}",
+                )
             updated = await _update_card_for_app(
                 request.app,
-                feishu_message_id,
+                patch_target,
                 latest_card,
                 bot_id,
                 notice_update=event.event == "system.notice",
@@ -4535,10 +4849,28 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             if not updated and is_terminal:
                 updated = await _retry_terminal_update(
                     request.app,
-                    feishu_message_id,
+                    patch_target,
                     latest_card,
                     bot_id,
                 )
+            _card_log(
+                logging.INFO,
+                "PATCH",
+                card=session_key,
+                card_id=patch_target or "",
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                chat=event.chat_id,
+                event=event.event,
+                seq=incoming_event.sequence,
+                outcome=("ok" if updated else "failed"),
+                detail=(
+                    f"terminal={int(is_terminal)} disposition={render_result.disposition}"
+                    if render_result is not None
+                    else f"terminal={int(is_terminal)}"
+                ),
+                content=_content_prefix(latest_session),
+            )
             if updated and is_terminal:
                 cards = _render_session_cards(request, latest_session)
                 if len(cards) > 1:
@@ -4561,6 +4893,18 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
 
         if is_terminal:
             await controller.drain(_final_drain_timeout_seconds(request.app, session_key))
+            _card_log(
+                logging.INFO,
+                "TERMINAL",
+                card=session_key,
+                card_id=feishu_message_id or "",
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                event=event.event,
+                seq=incoming_event.sequence,
+                outcome="schedule_terminal_patch",
+                detail=f"disposition={render_result.disposition if render_result else 'none'}",
+            )
             current_task = controller.schedule(_render_and_update, terminal=True)
             controller.close()
             current_task.add_done_callback(
@@ -4578,6 +4922,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
                     current_task,
                 )
         else:
+            _card_log(
+                logging.INFO,
+                "SCHEDULE",
+                card=session_key,
+                card_id=feishu_message_id or "",
+                turn=incoming_event.turn_id,
+                msg=event.message_id,
+                event=event.event,
+                seq=incoming_event.sequence,
+                outcome="non_terminal_patch_queued",
+            )
             current_task = controller.schedule(_render_and_update, terminal=False)
         post_lock_task = current_task
     if applied:
@@ -5453,6 +5808,17 @@ async def _delete_and_resend(
     metrics.feishu_resend_successes += 1
     feishu_message_ids: Dict[str, str] = request.app[FEISHU_MESSAGE_IDS_KEY]
     session_key = _session_key_for_session(request.app, session)
+    _card_log(
+        logging.WARNING,
+        "BIND",
+        card=session_key,
+        card_id=str(new_message_id),
+        old_card=str(old_message_id),
+        chat=session.chat_id,
+        event="resend",
+        content=_content_prefix(session),
+        outcome="delete_and_resend",
+    )
     feishu_message_ids[session_key] = new_message_id
     return True
 
@@ -5495,6 +5861,13 @@ def _reset_session_for_new_turn(app: web.Application, session_key: str) -> None:
     animation_task = app[CARD_ANIMATION_TASKS_KEY].pop(session_key, None)
     if animation_task is not None:
         animation_task.cancel()
+    _card_log(
+        logging.WARNING,
+        "RESET",
+        card=session_key,
+        outcome="session_discarded",
+        detail="all per-key bookkeeping cleared",
+    )
 
 
 async def _abandon_stale_sessions_for_chat(
@@ -5546,7 +5919,6 @@ async def _abandon_stale_sessions_for_chat(
             continue
         sess.timeline.complete()
         sess.status = "completed"
-        sess.completed_at = time.time()
         sess.updated_at = time.time()
         card_config = app[SESSION_CARD_CONFIGS_KEY].get(
             key, app[BASE_CARD_CONFIG_KEY]
@@ -5564,6 +5936,16 @@ async def _abandon_stale_sessions_for_chat(
         )
         feishu_msg_id = feishu_message_ids.get(key)
         bot_id = message_bot_ids.get(key)
+        _card_log(
+            logging.WARNING,
+            "ABANDON",
+            card=key,
+            card_id=feishu_msg_id or "",
+            chat=chat_id,
+            event=event.event,
+            outcome="stale_session_completed",
+            detail=f"by_new_card={new_session_key} answer_chars={len(sess.answer_text)}",
+        )
         if feishu_msg_id is not None:
             await _schedule_abandoned_session_terminal_update(
                 app,

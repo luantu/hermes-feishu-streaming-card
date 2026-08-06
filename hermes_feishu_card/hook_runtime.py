@@ -140,6 +140,7 @@ SUPPORTED_RUNTIME_EVENTS = {
 }
 
 _CANONICAL_TURN_ATTR = "_hfc_turn_id"
+_CANONICAL_TURN_MESSAGE_ATTR = "_hfc_turn_message_id"
 
 
 @dataclass(frozen=True)
@@ -1339,6 +1340,13 @@ async def emit_from_hermes_locals_async(
             if event_name == "message.completed":
                 _register_native_handoff_descriptor(payload, result)
             applied = _event_was_delivered(result, event_name)
+            if event_name in {"message.completed", "message.failed"}:
+                _hfc_info(
+                    "terminal emit result: "
+                    f"event={event_name} applied={int(applied)} "
+                    f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r} "
+                    f"delivery_kind={str((payload.get('data') or {}).get('delivery_kind') or '')!r}"
+                )
             if event_name == "message.completed":
                 _register_native_media_text_suppression(payload, applied=applied)
             return applied
@@ -3639,6 +3647,10 @@ def _hfc_info(message: str) -> None:
         logger.info("[hermes-feishu-card] %s", message)
     except Exception:
         pass
+    try:
+        print(f"[hermes-feishu-card] {message}", file=sys.stderr)
+    except Exception:
+        pass
 
 
 def _hfc_slash_confirm_detail(message: str) -> str:
@@ -3808,7 +3820,7 @@ def _hfc_delivery_context_from_event(event: Any) -> dict[str, Any] | None:
         "profile_id": profile_id,
         "profile_invalid": profile_source.startswith("sanitized_"),
         "message_id": message_id,
-        "conversation_id": thread_id or chat_id,
+        "conversation_id": chat_id,
         "thread_id": thread_id,
     }
 
@@ -3958,7 +3970,7 @@ def _hfc_notice_context_from_source(
     return {
         "chat_id": chat_id,
         "message_id": message_id,
-        "conversation_id": thread_id or chat_id,
+        "conversation_id": chat_id,
         "thread_id": thread_id,
         "profile_id": profile_id,
     }
@@ -4263,7 +4275,7 @@ def _hfc_build_system_notice_payload(
         context.get("thread_id") or _metadata_thread_id(metadata) or ""
     ).strip()
     conversation_id = str(
-        context.get("conversation_id") or thread_id or chat_id
+        context.get("conversation_id") or chat_id
     ).strip() or chat_id
     source = SimpleNamespace(platform="feishu", chat_id=chat_id, thread_id=thread_id)
     local_vars: dict[str, Any] = {
@@ -7348,6 +7360,27 @@ def should_suppress_native_response(
     attachments: Any = None,
     native_delivery: Any = None,
 ) -> bool:
+    suppressed = _should_suppress_native_response(
+        platform, delivered, attachments, native_delivery
+    )
+    try:
+        _hfc_info(
+            "native suppression decision: "
+            f"suppress={int(suppressed)} platform={str(platform)!r} "
+            f"delivered={int(delivered)} attachments={int(bool(attachments))} "
+            f"native_delivery={str(native_delivery or '').strip()!r}"
+        )
+    except Exception:
+        pass
+    return suppressed
+
+
+def _should_suppress_native_response(
+    platform: str,
+    delivered: bool,
+    attachments: Any = None,
+    native_delivery: Any = None,
+) -> bool:
     if not delivered:
         return False
     if str(platform or "").lower() != "feishu":
@@ -7815,7 +7848,7 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "schema_version": "1",
         "event": "message.completed",
-        "conversation_id": thread_id or str(job.get("id") or chat_id),
+        "conversation_id": chat_id,
         "message_id": message_id,
         "chat_id": chat_id,
         "thread_id": thread_id,
@@ -8384,6 +8417,33 @@ def _first_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:
     return None
 
 
+def _bind_source_turn(source_obj: Any, turn_id: str, message_id: str) -> bool:
+    try:
+        setattr(source_obj, _CANONICAL_TURN_ATTR, turn_id)
+        setattr(source_obj, _CANONICAL_TURN_MESSAGE_ATTR, message_id)
+    except Exception:
+        return False
+    return True
+
+
+def _read_source_turn(source_obj: Any) -> tuple[str | None, str | None]:
+    try:
+        bound = getattr(source_obj, _CANONICAL_TURN_ATTR, None)
+    except Exception:
+        bound = None
+    try:
+        bound_message = getattr(source_obj, _CANONICAL_TURN_MESSAGE_ATTR, None)
+    except Exception:
+        bound_message = None
+    bound = bound.strip() if isinstance(bound, str) and bound.strip() else None
+    bound_message = (
+        bound_message.strip()
+        if isinstance(bound_message, str) and bound_message.strip()
+        else None
+    )
+    return bound, bound_message
+
+
 def _turn_id_for_runtime_event(
     event_name: str,
     local_vars: dict[str, Any],
@@ -8401,19 +8461,36 @@ def _turn_id_for_runtime_event(
     candidate = explicit or handler_message_id
     if candidate is not None:
         if event_name == "message.started" and source_obj is not None:
-            try:
-                setattr(source_obj, _CANONICAL_TURN_ATTR, candidate)
-            except Exception:
-                pass
+            _bind_source_turn(
+                source_obj,
+                candidate,
+                _message_id_from_local_vars(local_vars) or candidate,
+            )
         return candidate
 
     if source_obj is None:
         return None
-    try:
-        bound = getattr(source_obj, _CANONICAL_TURN_ATTR, None)
-    except Exception:
+    bound, _bound_message = _read_source_turn(source_obj)
+    if not bound:
+        # A stream without any message.started on this source is a new inbound
+        # message that Hermes did not surface as a lifecycle start (e.g. a
+        # consecutive quoted reply to the same message). Bind a fresh turn
+        # identity from the current inbound message id so the sidecar opens its
+        # own card session (hard fence) instead of reply-alias routing these
+        # events into the previous turn's card and overwriting it.
+        current_message = _message_id_from_local_vars(local_vars)
+        if not current_message:
+            return None
+        if _bind_source_turn(source_obj, current_message, current_message):
+            _hfc_info(
+                f"turn lazy-bind for {event_name}: no bound turn on source, "
+                f"binding turn_id={current_message!r}"
+            )
+            return current_message
+        # Source rejects binding: keep the legacy no-turn identity so this
+        # stream and the sidecar stay consistent (message_id based).
         return None
-    return bound.strip() if isinstance(bound, str) and bound.strip() else None
+    return bound
 
 
 def _first_raw_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:

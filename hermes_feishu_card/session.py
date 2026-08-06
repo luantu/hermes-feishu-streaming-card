@@ -90,7 +90,6 @@ class CardSession:
     active_interaction: InteractionState | None = None
     delivery_kind: str = "chat"
     reply_to_message_id: str = ""
-    started_at: float = field(default_factory=time.monotonic)
     notice_title: str = ""
     notice_level: str = "info"
     terminal_disposition: str = ""
@@ -104,11 +103,6 @@ class CardSession:
     timeline: CardTimeline = field(default_factory=CardTimeline)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
-    completed_at: float | None = None
-
-    @property
-    def elapsed(self) -> float:
-        return time.monotonic() - self.started_at
 
     @property
     def tool_count(self) -> int:
@@ -289,8 +283,6 @@ class CardSession:
                     if _notice_is_terminal(event.data.get("notice_terminal"))
                     else "running"
                 )
-                if self.status == "completed":
-                    self.completed_at = time.time()
                 self.updated_at = time.time()
                 self.refresh_display_status_source()
                 return True
@@ -302,7 +294,6 @@ class CardSession:
                 completed_answer = self._prepare_completed_answer(completed_answer)
             self.timeline.complete()
             self.status = "completed"
-            self.completed_at = time.time()
             self.latest_tool_preview = ""
             if completed_answer.strip():
                 self.answer_text = completed_answer
@@ -333,7 +324,6 @@ class CardSession:
             self._archive_current_answer_to_reasoning()
             self.timeline.complete()
             self.status = "failed"
-            self.completed_at = time.time()
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"
         self.updated_at = time.time()
