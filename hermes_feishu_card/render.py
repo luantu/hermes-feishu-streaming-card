@@ -249,7 +249,7 @@ def _render_card_unchecked(
         display_status=display_status,
         loading_gif_img_key=loading_gif_img_key,
     )
-    if native_reply_completed:
+    if native_reply_completed and footer:
         footer = f"已完成 · {footer}"
     if session.delivery_kind == "notice" and session.notice_title:
         configured_title = session.notice_title
@@ -297,12 +297,19 @@ def _render_card_unchecked(
                 "content": attachment_summary,
             }
         )
-    elements.append({"tag": "hr", "element_id": "main_divider"})
-    if not timeline_elements and show_tool_summary:
+    tool_summary_content = (
+        _render_tool_summary(session)
+        if not timeline_elements and show_tool_summary
+        else ""
+    )
+    show_footer_divider = bool(footer) or bool(tool_summary_content)
+    if show_footer_divider:
+        elements.append({"tag": "hr", "element_id": "main_divider"})
+    if tool_summary_content:
         tool_summary = {
             "tag": "markdown",
             "element_id": "tool_summary",
-            "content": _render_tool_summary(session),
+            "content": tool_summary_content,
         }
         _set_text_size(
             tool_summary,
@@ -314,21 +321,22 @@ def _render_card_unchecked(
             ),
         )
         elements.append(tool_summary)
-    if isinstance(footer, list):
-        elements.extend(footer)
-    else:
-        footer_element = {
-            "tag": "markdown",
-            "element_id": "footer",
-            "content": footer,
-            "text_size": _role_text_size(
-                text_sizes,
-                "footer",
-                default="x-small",
-                used_roles=used_text_size_roles,
-            ),
-        }
-        elements.append(footer_element)
+    if footer:
+        if isinstance(footer, list):
+            elements.extend(footer)
+        else:
+            footer_element = {
+                "tag": "markdown",
+                "element_id": "footer",
+                "content": footer,
+                "text_size": _role_text_size(
+                    text_sizes,
+                    "footer",
+                    default="x-small",
+                    used_roles=used_text_size_roles,
+                ),
+            }
+            elements.append(footer_element)
     header = {
         "template": status["template"],
         "title": {"tag": "plain_text", "content": header_title},
@@ -676,7 +684,7 @@ def _button_type(style: str) -> str:
 
 def _render_tool_summary(session: CardSession) -> str:
     if not session.tools:
-        return "工具调用 0 次"
+        return ""
     lines = [f"工具调用 {session.tool_count} 次"]
     for tool in session.tools.values():
         lines.append(f"- `{tool.name}`: {tool.status}")
@@ -1010,6 +1018,17 @@ def _render_footer(
         ),
         "subscription_usage": session.subscription_usage,
     }
+    meaningful = bool(
+        model
+        or input_tokens
+        or output_tokens
+        or used_context
+        or max_context
+        or session.subscription_usage
+        or duration > 0
+    )
+    if not meaningful:
+        return ""
     selected = []
     fields = DEFAULT_FOOTER_FIELDS if footer_fields is None else footer_fields
     for field in fields:

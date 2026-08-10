@@ -1195,6 +1195,7 @@ def emit_from_hermes_locals(
         payload = build_event(event_name, event_locals)
         if payload is None:
             return False
+        _log_terminal_emit(event_name, payload)
         asyncio.get_running_loop()
         asyncio.create_task(
             _send_fail_open_ordered(
@@ -1243,6 +1244,7 @@ def emit_from_hermes_locals_threadsafe(
         payload = build_event(event_name, event_locals)
         if payload is None:
             return False
+        _log_terminal_emit(event_name, payload)
         if "_hfc_loop" in event_locals:
             coroutine = _send_fail_open_ordered(
                 config.event_url,
@@ -3649,6 +3651,22 @@ def _hfc_info(message: str) -> None:
         pass
     try:
         print(f"[hermes-feishu-card] {message}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def _log_terminal_emit(event_name: str, payload: dict[str, Any] | None) -> None:
+    if event_name not in {"message.completed", "message.failed"}:
+        return
+    if not isinstance(payload, dict):
+        return
+    try:
+        _hfc_info(
+            "terminal emit: "
+            f"event={event_name} "
+            f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r} "
+            f"delivery_kind={str((payload.get('data') or {}).get('delivery_kind') or '')!r}"
+        )
     except Exception:
         pass
 

@@ -207,6 +207,10 @@ UPDATE_MIN_INTERVAL_SECONDS = 0.2
 CARD_ANIMATION_INTERVAL_SECONDS = 0.8
 CARD_ANIMATION_MAX_UPDATES = 15
 _CARD_ANIMATION_SLEEP = asyncio.sleep
+# When a terminal event arrives for a conversation, sibling cards in the same
+# conversation that are still streaming (orphaned because Hermes folded several
+# replies into one turn) are finalized after this silence window.
+CONV_FINALIZE_SILENCE_SECONDS = 3.0
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60.0
 RUNTIME_INTEGRITY_STARTUP_GRACE_SECONDS = 30.0
 RUNTIME_INTEGRITY_CHECK_INTERVAL_SECONDS = 15.0
@@ -334,6 +338,46 @@ def _content_prefix(session: Any, max_chars: int = 48) -> str:
         return text[:max_chars]
     except Exception:
         return ""
+
+
+def _terminal_metadata_from_event(event: SidecarEvent) -> dict[str, Any]:
+    """Extract footer metadata (model / tokens / context / duration) from a terminal event."""
+    data = event.data if isinstance(event.data, dict) else {}
+    tokens = data.get("tokens", {})
+    context = data.get("context", {})
+    metadata: dict[str, Any] = {
+        "tokens": dict(tokens) if isinstance(tokens, dict) else {},
+        "model": str(data.get("model") or "").strip(),
+        "context": dict(context) if isinstance(context, dict) else {},
+        "duration": 0.0,
+        "reply_to_message_id": str(data.get("reply_to_message_id") or "").strip(),
+    }
+    try:
+        metadata["duration"] = float(data.get("duration", 0.0))
+    except (TypeError, ValueError):
+        metadata["duration"] = 0.0
+    return metadata
+
+
+def _apply_terminal_metadata_to_session(
+    session: CardSession, metadata: dict[str, Any]
+) -> None:
+    """Apply footer metadata to a session without touching answer_text."""
+    tokens = metadata.get("tokens")
+    session.tokens = dict(tokens) if isinstance(tokens, dict) else {}
+    model = metadata.get("model")
+    session.model = model if isinstance(model, str) and model.strip() else ""
+    context = metadata.get("context")
+    session.context = dict(context) if isinstance(context, dict) else {}
+    try:
+        session.duration = float(metadata.get("duration", 0.0))
+    except (TypeError, ValueError):
+        session.duration = 0.0
+    reply_to_message_id = metadata.get("reply_to_message_id")
+    if isinstance(reply_to_message_id, str) and reply_to_message_id:
+        session.reply_to_message_id = reply_to_message_id
+    session.updated_at = time.time()
+    session.refresh_display_status_source()
 
 
 @dataclass(frozen=True)
@@ -4602,10 +4646,15 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
     if terminal_already_handled and session.terminal_disposition == "native":
         metrics.events_applied += 1
         return web.json_response({"ok": True, "applied": True}), None
+    terminal_metadata: dict[str, Any] = {}
     if terminal_already_handled:
         applied = True
+        # Apply the terminal footer metadata to this card AND pass it to the
+        # conversation sibling finalize so every card in the same conversation
+        # shows the same footer.
         if event.event in {"message.completed", "message.failed"}:
-            session.apply_terminal_metadata(event)
+            terminal_metadata = _terminal_metadata_from_event(event)
+            _apply_terminal_metadata_to_session(session, terminal_metadata)
     render_result: CardRenderResult | None = None
     handoff_record: NativeHandoffRecord | None = None
     if applied:
@@ -4777,7 +4826,6 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         }
     if terminal_already_handled:
         metrics.events_applied += 1
-        return web.json_response({"ok": True, "applied": True}), None
     post_lock_task = None
     if applied and feishu_message_id is not None and render_result is not None:
         if event_is_terminal:
@@ -4935,6 +4983,17 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
             )
             current_task = controller.schedule(_render_and_update, terminal=False)
         post_lock_task = current_task
+    if event_is_terminal and session is not None:
+        # Hermes may fold several quoted replies into one turn and emit a single
+        # terminal event. After a silence window, finalize sibling cards in the
+        # same conversation so they don't stay stuck at 生成中 forever, and apply
+        # the terminal footer metadata to the conversation's LAST card.
+        _schedule_conv_sibling_finalize(
+            request.app,
+            terminal_session_key=session_key,
+            terminal_session=session,
+            terminal_metadata=terminal_metadata,
+        )
     if applied:
         metrics.events_applied += 1
     else:
@@ -4948,6 +5007,11 @@ async def _apply_event_locked(request: web.Request, event: SidecarEvent) -> tupl
         "ok": True,
         "applied": applied and not native_disposition,
     }
+    if terminal_already_handled:
+        # A terminal event for an already-terminal session is still handled:
+        # report applied=true so the hook suppresses the native text, even if
+        # the metadata refresh happened to re-render as a native disposition.
+        response_payload["applied"] = True
     if native_disposition:
         response_payload["disposition"] = "native"
         descriptor = (
@@ -5963,7 +6027,7 @@ async def _schedule_abandoned_session_terminal_update(
     session: CardSession,
     feishu_message_id: str,
     bot_id: str | None,
-) -> None:
+) -> asyncio.Task[None] | None:
     controller = _flush_controller_for_session(app, session_key)
     await controller.drain(_final_drain_timeout_seconds(app, session_key))
 
@@ -5987,6 +6051,142 @@ async def _schedule_abandoned_session_terminal_update(
             completed,
         )
     )
+    return task
+
+
+def _release_finalized_session(app: web.Application, session_key: str) -> None:
+    """Drop a session that has already been rendered to its final card state.
+
+    Used after the conversation-level finalize PATCHes a sibling card: the card
+    is static in Feishu, so the in-memory session and its bookkeeping no longer
+    need to wait for the 1-hour retention sweep.
+    """
+    if session_key not in app[SESSIONS_KEY]:
+        return
+    _card_log(
+        logging.WARNING,
+        "CONV_RELEASE",
+        card=session_key,
+        card_id=app[FEISHU_MESSAGE_IDS_KEY].get(session_key) or "",
+        outcome="conv_finalized_released",
+    )
+    _reset_session_for_new_turn(app, session_key)
+
+
+async def _finalize_conv_sibling_sessions(
+    app: web.Application,
+    *,
+    terminal_session_key: str,
+    terminal_session: CardSession,
+    terminal_metadata: dict[str, Any] | None = None,
+) -> None:
+    """Finalize sibling cards in the same conversation after a terminal event.
+
+    Hermes folds several quoted replies to the same message into a single turn
+    and emits only one terminal event (delivered under the first reply's id).
+    The sibling card that streamed the merged answer never receives its own
+    terminal and stays stuck at 生成中. Render and PATCH it to the completed
+    state, applying the terminal footer metadata to the conversation's LAST card.
+
+    Only touches cards in the same conversation AND chat AND profile that are
+    still streaming, and only when the conversation id is a real context id (not
+    the bare chat id), so a group-chat terminal cannot finalize unrelated cards.
+    """
+    try:
+        conv = terminal_session.conversation_id
+        chat_id = terminal_session.chat_id
+        if not conv or not chat_id or conv == chat_id:
+            return
+        terminal_profile = (
+            terminal_session_key.split(":", 1)[0]
+            if ":" in terminal_session_key
+            else ""
+        )
+        sessions: Dict[str, CardSession] = app[SESSIONS_KEY]
+        feishu_message_ids: Dict[str, str] = app[FEISHU_MESSAGE_IDS_KEY]
+        message_bot_ids: Dict[str, str] = app[MESSAGE_BOT_IDS_KEY]
+        card_configs: Dict[str, dict[str, Any]] = app[SESSION_CARD_CONFIGS_KEY]
+        for key, sess in list(sessions.items()):
+            if key == terminal_session_key:
+                continue
+            if sess.chat_id != chat_id:
+                continue
+            if sess.conversation_id != conv:
+                continue
+            if sess.status in {"completed", "failed"}:
+                continue
+            if sess.delivery_kind == "notice":
+                continue
+            key_profile = key.split(":", 1)[0] if ":" in key else ""
+            if key_profile != terminal_profile:
+                continue
+            if terminal_metadata:
+                _apply_terminal_metadata_to_session(sess, terminal_metadata)
+            sess.timeline.complete()
+            sess.status = "completed"
+            sess.updated_at = time.time()
+            card_config = card_configs.get(key, app[BASE_CARD_CONFIG_KEY])
+            sess.refresh_display_status_source(
+                StatusConfig.from_mapping(card_config.get("status"))
+            )
+            feishu_msg_id = feishu_message_ids.get(key)
+            _card_log(
+                logging.WARNING,
+                "CONV_FINALIZE",
+                card=key,
+                card_id=feishu_msg_id or "",
+                chat=chat_id,
+                conv=conv,
+                outcome="conv_terminal_finalize",
+                detail=f"by_terminal={terminal_session_key}",
+                content=_content_prefix(sess),
+            )
+            if feishu_msg_id is not None:
+                task = await _schedule_abandoned_session_terminal_update(
+                    app,
+                    session_key=key,
+                    session=sess,
+                    feishu_message_id=feishu_msg_id,
+                    bot_id=message_bot_ids.get(key),
+                )
+                if task is not None:
+                    task.add_done_callback(
+                        lambda _completed, released_key=key: _release_finalized_session(
+                            app, released_key
+                        )
+                    )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("conversation sibling finalize failed", exc_info=True)
+
+
+def _schedule_conv_sibling_finalize(
+    app: web.Application,
+    *,
+    terminal_session_key: str,
+    terminal_session: CardSession,
+    terminal_metadata: dict[str, Any] | None = None,
+) -> None:
+    """Defer _finalize_conv_sibling_sessions without sleeping in the terminal path."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        loop.call_later(
+            CONV_FINALIZE_SILENCE_SECONDS,
+            lambda: asyncio.ensure_future(
+                _finalize_conv_sibling_sessions(
+                    app,
+                    terminal_session_key=terminal_session_key,
+                    terminal_session=terminal_session,
+                    terminal_metadata=terminal_metadata,
+                )
+            ),
+        )
+    except Exception:
+        pass
 
 
 def _flush_controller_for_session(

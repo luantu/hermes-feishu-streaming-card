@@ -616,6 +616,9 @@ def test_render_completed_card_places_attachment_summary_before_tools():
     session.status = "completed"
     session.answer_text = "正文"
     session.attachments = [{"kind": "file", "name": "report.pdf", "summary": "report.pdf"}]
+    session.tools = {
+        "t1": ToolState("t1", "read_file", "completed", "pytest")
+    }
 
     card = render_card(session)
 
@@ -676,6 +679,7 @@ def test_render_card_default_json_has_no_style_or_explicit_body_text_size():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.status = "completed"
     session.answer_text = "正文"
+    session.model = "gpt-4o"
 
     card = render_card(session)
     main = next(
@@ -740,6 +744,7 @@ def test_render_scalar_text_sizes_apply_to_each_role_and_body_chunks():
         )
     )
     session.attachments = [{"name": "report.txt"}]
+    session.model = "gpt-4o"
 
     card = render_card(
         session,
@@ -803,6 +808,7 @@ def test_render_device_text_size_emits_footer_alias():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.status = "completed"
     session.answer_text = "正文"
+    session.model = "gpt-4o"
 
     card = render_card(
         session,
@@ -832,6 +838,7 @@ def test_render_text_size_aliases_use_deterministic_role_order():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.status = "completed"
     session.answer_text = "正文"
+    session.model = "gpt-4o"
     mapping = {"default": "normal", "pc": "large", "mobile": "small"}
 
     card = render_card(
@@ -1019,8 +1026,9 @@ def test_render_completed_card_handles_missing_token_stats():
     session.tokens = None
     card = render_card(session)
     content = str(card)
-    assert "↑0" in content
-    assert "↓0" in content
+    assert "↑0" not in content
+    assert "↓0" not in content
+    assert "'footer'" not in content
 
 
 def test_render_completed_card_footer_uses_compact_metrics_format():
