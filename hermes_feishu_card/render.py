@@ -251,10 +251,7 @@ def _render_card_unchecked(
         display_status=display_status,
         loading_gif_img_key=loading_gif_img_key,
     )
-    if native_reply_completed and footer:
-        footer = f"已完成 · {footer}"
-    if session.delivery_kind == "notice" and session.notice_title:
-        configured_title = session.notice_title
+    if session.delivery_kind == "notice" and session.notice_title:        configured_title = session.notice_title
     else:
         configured_title = (
             title.strip() if isinstance(title, str) and title.strip() else DEFAULT_TITLE

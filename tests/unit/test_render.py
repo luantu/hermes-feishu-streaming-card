@@ -293,6 +293,10 @@ def test_v4_completed_reply_card_uses_only_native_feishu_quote_header():
     session.status = "completed"
     session.answer_text = "最终答案"
     session.reply_to_message_id = "om_user"
+    session.duration = 11.0
+    session.model = "deepseek-v4-flash"
+    session.tokens = {"input_tokens": 100, "output_tokens": 50}
+    session.context = {"used_tokens": 100, "max_tokens": 100000}
 
     card = render_card(session, title="Hermes Agent")
 
@@ -304,7 +308,8 @@ def test_v4_completed_reply_card_uses_only_native_feishu_quote_header():
         for item in card["body"]["elements"]
         if item.get("element_id") == "footer"
     )
-    assert footer["content"].startswith("已完成 · ")
+    assert "已完成 · " not in footer["content"]
+    assert "11s" in footer["content"]
 
 
 def test_v4_failed_retains_preview_and_status_only_footer():

@@ -1321,10 +1321,22 @@ async def emit_from_hermes_locals_async(
         if order_identity is None:
             _cleanup_native_policy_state(local_vars)
             return False
+        if event_name in {"message.completed", "message.failed"}:
+            _hfc_info(
+                "async emit terminal entered "
+                f"turn_id={str(order_identity.turn_id or order_identity.message_id)!r} "
+                f"is_new_turn={int(order_identity.is_new_turn)}"
+            )
         event_lock = _policy_async_event_lock(order_identity)
         async with event_lock:
             gate = await _policy_gate_async(config, local_vars, event_name)
             if not gate.card:
+                if event_name in {"message.completed", "message.failed"}:
+                    _hfc_info(
+                        "async emit terminal gate=native (dropped) "
+                        f"turn_id={str(order_identity.turn_id or order_identity.message_id)!r} "
+                        f"turn_key={order_identity.turn_key!r} is_new_turn={int(order_identity.is_new_turn)}"
+                    )
                 return False
             event_locals = _policy_event_locals(local_vars, gate)
             if event_name not in {"thinking.delta", "answer.delta"}:
@@ -1425,11 +1437,19 @@ async def stage_message_completed_from_hermes_locals_async(
                 "message.completed",
             )
             if not gate.card:
+                _hfc_info(
+                    "exact-base completion NOT staged: gate is native "
+                    f"turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
+                )
                 return False
             event_locals = _policy_event_locals(local_vars, gate)
             await _flush_pending_deltas_for_local_vars(event_locals)
             payload = build_event("message.completed", event_locals)
             if payload is None:
+                _hfc_info(
+                    "exact-base completion NOT staged: build_event None "
+                    f"turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
+                )
                 return False
         try:
             task = asyncio.current_task()
@@ -1445,6 +1465,10 @@ async def stage_message_completed_from_hermes_locals_async(
                 ),
                 "task_id": id(task) if task is not None else None,
             }
+        )
+        _hfc_info(
+            "exact-base completion staged "
+            f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
         )
         return True
     except Exception:
@@ -1900,6 +1924,11 @@ async def prepare_exact_base_final_delivery(
     fallback = (adapter, content, reply_to, metadata)
     stage = _exact_completion_stage_for_current_task()
     if stage is None or adapter is None or not content:
+        _hfc_info(
+            "exact-base final delivery FALLBACK: "
+            f"stage={int(stage is not None)} adapter={int(adapter is not None)} "
+            f"content={int(bool(content))} turn_id={str((stage or {}).get('payload') or {}).get('turn_id') or ''!r}"
+        )
         return fallback
     try:
         obligation_id = str(local_vars.get("obligation_id") or "").strip()
@@ -1944,8 +1973,18 @@ async def prepare_exact_base_final_delivery(
                     event_url=event_url,
                     timeout=timeout,
                 )
+            _hfc_info(
+                "exact-base final delivery FALLBACK: post raised "
+                f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
+            )
             return fallback
         applied = _event_was_applied(result, strict=True)
+        _hfc_info(
+            "exact-base final delivery "
+            f"applied={int(applied)} ack_capable={int(ack_capable)} "
+            f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r} "
+            f"delivery={str(result)[:120]!r}"
+        )
         if ack_capable and not applied:
             registered = _register_native_handoff_descriptor(payload, result)
             if not registered:
@@ -1981,8 +2020,12 @@ async def finalize_exact_base_no_text(local_vars: dict[str, Any]) -> None:
             payload,
             float(stage["timeout_seconds"]),
         )
+        _hfc_info(
+            "exact-base no-text terminal posted "
+            f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
+        )
     except Exception:
-        pass
+        _hfc_info("exact-base no-text terminal post raised")
     finally:
         _HFC_EXACT_COMPLETION_STAGE.set(None)
 
