@@ -78,19 +78,12 @@ def test_render_completed_card_keeps_collapsed_zero_tool_timeline():
     session.thinking_text = "不会公开的 raw thinking"
 
     card = render_card(session)
-    timeline = next(
-        item
-        for item in card["body"]["elements"]
-        if item.get("element_id") == "auxiliary_timeline"
-    )
+    element_ids = {item.get("element_id") for item in card["body"]["elements"]}
 
-    assert timeline["expanded"] is False
-    assert timeline["header"]["title"]["content"] == "思考与工具 · 0 次工具调用"
-    assert "暂无可展示的思考或工具记录。" in str(timeline)
+    assert "auxiliary_timeline" not in element_ids
+    assert "暂无可展示的思考或工具记录。" not in str(card)
     assert "不会公开的 raw thinking" not in str(card)
-    assert "tool_summary" not in {
-        item.get("element_id") for item in card["body"]["elements"]
-    }
+    assert "tool_summary" not in element_ids
 
 
 def test_running_tool_without_model_text_removes_loading_placeholder_from_body():
@@ -406,7 +399,6 @@ def test_v3818_normal_completed_card_keeps_element_order_and_configured_footer()
 
     assert [element["element_id"] for element in card["body"]["elements"]] == [
         "main_content",
-        "auxiliary_timeline",
         "main_divider",
         "footer",
     ]
@@ -427,7 +419,6 @@ def test_v3818_normal_failed_card_keeps_element_order_and_footer():
 
     assert [element["element_id"] for element in card["body"]["elements"]] == [
         "main_content",
-        "auxiliary_timeline",
         "main_divider",
         "footer",
     ]
@@ -1359,8 +1350,8 @@ def test_render_answer_stays_primary_over_public_interim_text():
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
 
     assert main["content"] == "这是主回答。"
-    assert "思考与工具 · 0 次工具调用" in str(card)
-    assert "暂无可展示的思考或工具记录。" in str(card)
+    assert "思考与工具 · 0 次工具调用" not in str(card)
+    assert "暂无可展示的思考或工具记录。" not in str(card)
     assert "先分析约束。" not in str(card)
 
 
@@ -1422,8 +1413,8 @@ def test_render_keeps_pre_tool_answer_in_main_while_tool_runs():
     card = render_card(session, timeline_expanded=True)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
     assert main["content"] == "好的，我先做分析再动手。"
-    assert "思考与工具 · 0 次工具调用" in str(card)
-    assert "暂无可展示的思考或工具记录。" in str(card)
+    assert "思考与工具 · 0 次工具调用" not in str(card)
+    assert "暂无可展示的思考或工具记录。" not in str(card)
 
     session.apply(
         SidecarEvent(
@@ -2119,8 +2110,8 @@ def test_render_thinking_without_answer_uses_public_interim_main_content():
     assert main["content"] == "这是公开的阶段性输出。"
     assert "正在思考" not in str(card)
     assert "这是公开的阶段性输出。" in str(card)
-    assert "思考与工具 · 0 次工具调用" in str(card)
-    assert "暂无可展示的思考或工具记录。" in str(card)
+    assert "思考与工具 · 0 次工具调用" not in str(card)
+    assert "暂无可展示的思考或工具记录。" not in str(card)
 
 
 def test_render_tool_summary_keeps_tool_names_when_reasoning_hidden():

@@ -864,22 +864,20 @@ def _render_timeline_elements(
     entries = _select_timeline_entries(all_entries, max_items=max_items)
     folded = max(0, len(all_entries) - len(entries))
     if not entries and not folded:
-        empty_content = (
-            '<font color="grey">等待工具事件…</font>'
-            if _is_initial_loading(session)
-            else '<font color="grey">暂无可展示的思考或工具记录。</font>'
-        )
-        panel_elements = _timeline_markdown_elements(
-            empty_content,
-            "auxiliary_timeline_loading",
-            text_size=_role_text_size(
-                text_sizes,
-                "tool",
-                default="x-small",
-                used_roles=used_text_size_roles,
-            ),
-        )
-        return [_timeline_panel(session, panel_elements, expanded=expanded)]
+        if _is_initial_loading(session):
+            panel_elements = _timeline_markdown_elements(
+                '<font color="grey">等待工具事件…</font>',
+                "auxiliary_timeline_loading",
+                text_size=_role_text_size(
+                    text_sizes,
+                    "tool",
+                    default="x-small",
+                    used_roles=used_text_size_roles,
+                ),
+            )
+            return [_timeline_panel(session, panel_elements, expanded=expanded)]
+        # No thinking/tool records: don't render the collapsible timeline bar.
+        return []
     panel_elements: list[Dict[str, Any]] = []
     if folded:
         panel_elements.extend(
