@@ -50,6 +50,9 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
             "context",
         ],
         "resend_after_seconds": 60,
+        # Seconds a bound card may stay silent (no events since its last
+        # update) before being auto-finalized to its completed state.
+        "card_orphan_timeout_seconds": 600,
     },
 }
 KNOWN_SECTIONS = frozenset(DEFAULT_CONFIG)

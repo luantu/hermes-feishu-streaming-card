@@ -82,6 +82,9 @@ card:
     - input_tokens
     - output_tokens
     - context
+  # Seconds a bound card may stay silent (no events since its last update)
+  # before being auto-finalized to its completed state. Default: 180.
+  card_orphan_timeout_seconds: 600
 
 # ── Multi-Bot (optional) ─────────────────────────────────────────────────────
 # Define multiple Feishu bots under bots.items. Each bot gets its own

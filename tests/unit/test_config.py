@@ -69,6 +69,7 @@ def test_load_config_missing_file_returns_defaults(tmp_path):
                 "context",
             ],
             "resend_after_seconds": 60,
+            "card_orphan_timeout_seconds": 600,
         },
     }
 
@@ -302,6 +303,7 @@ card:
             "context",
         ],
         "resend_after_seconds": 60,
+        "card_orphan_timeout_seconds": 600,
     }
 
 

@@ -604,6 +604,7 @@ def _policy_gate_sync(
                     disposition = cached
                 _pin_policy_disposition(identity, disposition)
     result = _PolicyGateResult(disposition == "card", identity)
+    _hfc_policy_terminal_log(event_name, identity, result, "sync")
     if not result.card:
         _cleanup_native_policy_state(local_vars)
     if event_name in {"message.completed", "message.failed"}:
@@ -624,6 +625,7 @@ async def _policy_gate_async(
     disposition = _pinned_policy_disposition(identity)
     if disposition is not None:
         result = _PolicyGateResult(disposition == "card", identity)
+        _hfc_policy_terminal_log(event_name, identity, result, "pinned")
         if not result.card:
             _cleanup_native_policy_state(local_vars)
         if event_name in {"message.completed", "message.failed"}:
@@ -654,6 +656,7 @@ async def _policy_gate_async(
         # ContextVar writes in the worker's copied context do not flow back to
         # this task, so repeat the idempotent native cleanup here.
         _cleanup_native_policy_state(local_vars)
+    _hfc_policy_terminal_log(event_name, identity, result, "fresh")
     return result
 
 
@@ -1189,8 +1192,15 @@ def emit_from_hermes_locals(
         if not config.enabled:
             return False
         _ensure_runtime_control_started(config)
+        if event_name in {"message.completed", "message.failed"}:
+            _hfc_info(f"sync emit terminal entered turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}")
         gate = _policy_gate_sync(config, local_vars, event_name)
         if not gate.card:
+            if event_name in {"message.completed", "message.failed"}:
+                _hfc_info(
+                    f"sync emit terminal gate=native (dropped) "
+                    f"turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
+                )
             return False
         event_locals = _policy_event_locals(local_vars, gate)
         payload = build_event(event_name, event_locals)
@@ -1219,8 +1229,15 @@ def emit_from_hermes_locals_threadsafe(
         if not config.enabled:
             return False
         _ensure_runtime_control_started(config)
+        if event_name in {"message.completed", "message.failed"}:
+            _hfc_info(f"threadsafe emit terminal entered turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}")
         gate = _policy_gate_sync(config, local_vars, event_name)
         if not gate.card:
+            if event_name in {"message.completed", "message.failed"}:
+                _hfc_info(
+                    f"threadsafe emit terminal gate=native (dropped) "
+                    f"turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
+                )
             return False
         event_locals = _policy_event_locals(local_vars, gate)
         if _queue_coalesced_delta(config, event_locals, event_name):
@@ -1364,6 +1381,11 @@ async def emit_from_hermes_locals_async(
                 )
             if event_name == "message.completed":
                 _register_native_media_text_suppression(payload, applied=applied)
+            if applied and event_name == "message.completed":
+                data = payload.get("data") if isinstance(payload, dict) else {}
+                answer = data.get("answer") if isinstance(data, dict) else None
+                if answer:
+                    _hfc_record_carded_content(payload.get("chat_id"), answer)
             return applied
     except Exception:
         return False
@@ -1426,6 +1448,9 @@ async def stage_message_completed_from_hermes_locals_async(
         if not config.enabled:
             return False
         _ensure_runtime_control_started(config)
+        _hfc_info(
+            f"exact-base stage entered turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
+        )
         order_identity = _policy_identity(config, local_vars, "message.completed")
         if order_identity is None:
             _cleanup_native_policy_state(local_vars)
@@ -1504,6 +1529,10 @@ class _ExactCardDeliveryAdapterProxy:
         return getattr(self._delegate, name)
 
     async def _send_with_retry(self, *_args: Any, **_kwargs: Any) -> Any:
+        _hfc_info(
+            "exact-base proxy SWALLOWED native send "
+            f"name={self.name!r} args={len(_args)} kwargs={sorted(_kwargs)}"
+        )
         return _send_result(True)
 
 
@@ -1995,12 +2024,25 @@ async def prepare_exact_base_final_delivery(
                     timeout=timeout,
                 )
         if applied:
+            _hfc_info(
+                "exact-base final delivery returning PROXY "
+                f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
+            )
+            source_obj = local_vars.get("source")
+            _hfc_record_carded_content(
+                getattr(source_obj, "chat_id", None) if source_obj is not None else None,
+                content,
+            )
             return (
                 _ExactCardDeliveryAdapterProxy(adapter),
                 content,
                 reply_to,
                 metadata,
             )
+        _hfc_info(
+            "exact-base final delivery returning FALLBACK (applied=0) "
+            f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
+        )
         return fallback
     except Exception:
         _HFC_NATIVE_HANDOFF_CONTEXT.set(None)
@@ -2013,7 +2055,9 @@ async def finalize_exact_base_no_text(local_vars: dict[str, Any]) -> None:
     """Finalize a staged terminal whose Base path has no standalone text."""
     stage = _exact_completion_stage_for_current_task()
     if stage is None:
+        _hfc_info("exact-base no-text entered but no stage")
         return
+    _hfc_info("exact-base no-text entered with stage")
     try:
         payload = _exact_terminal_payload(stage, local_vars, ack_capable=False)
         await _post_json_ordered_response(
@@ -2142,23 +2186,32 @@ def emit_cron_delivery(local_vars: dict[str, Any]) -> bool:
         _ensure_runtime_control_started(config)
         policy_locals = _cron_policy_local_vars(local_vars)
         if policy_locals is None:
+            _hfc_info("cron terminal dropped: no feishu policy locals")
             return False
         if not _policy_gate_sync(
             config,
             policy_locals,
             "message.completed",
         ).card:
+            _hfc_info("cron terminal dropped: gate=native")
             return False
         payload = build_cron_event(local_vars)
         if payload is None:
+            _hfc_info("cron terminal dropped: build_cron_event None")
             return False
+        _hfc_info(f"cron terminal emit turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}")
         result = _post_json_sync_response(
             config.event_url,
             payload,
             TERMINAL_TIMEOUT_SECONDS,
         )
         _register_native_handoff_descriptor(payload, result)
-        return _event_was_applied(result, strict=True)
+        applied = _event_was_applied(result, strict=True)
+        _hfc_info(
+            f"cron terminal result applied={int(applied)} "
+            f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
+        )
+        return applied
     except Exception:
         return False
 
@@ -3795,6 +3848,103 @@ def _log_terminal_emit(event_name: str, payload: dict[str, Any] | None) -> None:
         )
     except Exception:
         pass
+
+
+def _hfc_policy_terminal_log(
+    event_name: str,
+    identity: Any,
+    result: Any,
+    source: str,
+) -> None:
+    if event_name not in {"message.completed", "message.failed"}:
+        return
+    try:
+        card = bool(getattr(result, "card", False))
+        _hfc_info(
+            f"policy terminal {source}: card={int(card)} "
+            f"turn_id={str(getattr(identity, 'turn_id', '') or getattr(identity, 'message_id', '') or '')!r} "
+            f"is_new_turn={int(getattr(identity, 'is_new_turn', False))} "
+            f"turn_key={getattr(identity, 'turn_key', None)!r}"
+        )
+    except Exception:
+        pass
+
+
+def _hfc_log_native_send(
+    chat_id: Any,
+    content: Any,
+    reply_to: Any = None,
+) -> None:
+    """Called from Hermes' real _send_with_retry: every ACTUAL native send.
+
+    The exact-base proxy swallows the wrapped send without reaching here, so any
+    log line means a native text really went out — capture the content prefix and
+    the caller stack to identify which Hermes path leaked past the card hooks.
+    """
+    try:
+        import traceback as _traceback
+
+        prefix = " ".join(str(content or "").split())[:80]
+        stack = " | ".join(
+            line.strip() for line in _traceback.format_stack(limit=14)
+        )
+        _hfc_info(
+            "NATIVE_SEND "
+            f"chat={str(chat_id or '')[:10]!r} "
+            f"reply_to={str(reply_to or '')[:28]!r} "
+            f"content={prefix!r} "
+            f"stack={stack}"
+        )
+    except Exception:
+        pass
+
+
+_HFC_CARDED_CONTENT: dict[str, tuple[float, str]] = {}
+_HFC_CARDED_CONTENT_LOCK = threading.Lock()
+_HFC_CARDED_CONTENT_TTL_SECONDS = 120.0
+
+
+def _hfc_content_signature(content: Any) -> str:
+    text = " ".join(str(content or "").split()).strip()
+    return text[:120]
+
+
+def _hfc_record_carded_content(chat_id: Any, content: Any) -> None:
+    """Remember that a card already delivered this content for this chat.
+
+    Hermes' _run_agent_inner has a queued-follow-up branch that resends the final
+    response natively when its own streaming confirmation is missing. HFC cards
+    are not part of Hermes' stream controller, so that branch can double-deliver
+    the answer; the adapter.send wrapper consults this registry to suppress it.
+    """
+    chat = str(chat_id or "").strip()
+    sig = _hfc_content_signature(content)
+    if not chat or not sig:
+        return
+    with _HFC_CARDED_CONTENT_LOCK:
+        _HFC_CARDED_CONTENT[chat] = (time.monotonic(), sig)
+
+
+def _hfc_content_was_carded(chat_id: Any, content: Any) -> bool:
+    chat = str(chat_id or "").strip()
+    sig = _hfc_content_signature(content)
+    if not chat or not sig:
+        return False
+    now = time.monotonic()
+    with _HFC_CARDED_CONTENT_LOCK:
+        entry = _HFC_CARDED_CONTENT.get(chat)
+        if entry is None:
+            return False
+        recorded_at, recorded = entry
+        if now - recorded_at > _HFC_CARDED_CONTENT_TTL_SECONDS:
+            _HFC_CARDED_CONTENT.pop(chat, None)
+            return False
+        # Only treat as a duplicate when both the carded answer and the native
+        # text are substantial and share a long prefix — a short snippet (e.g.
+        # "已生成图片") must never match a longer carded answer.
+        if len(sig) < 60 or len(recorded) < 60:
+            return False
+        return recorded[:60] == sig[:60]
 
 
 def _hfc_slash_confirm_detail(message: str) -> str:
@@ -5457,6 +5607,12 @@ async def _hfc_send_with_native_command_result_card(
             )
         return _send_result(False, error="original Feishu send unavailable")
     if callable(original):
+        if _hfc_content_was_carded(chat_id, content):
+            _hfc_info(
+                "native send suppressed (content already carded) "
+                f"chat={str(chat_id or '')[:10]!r} content={_hfc_content_signature(content)[:40]!r}"
+            )
+            return _send_result(True, message_id="carded_suppressed")
         return await original(self, chat_id, content, reply_to=reply_to, metadata=metadata)
     return _send_result(False, error="original Feishu send unavailable")
 

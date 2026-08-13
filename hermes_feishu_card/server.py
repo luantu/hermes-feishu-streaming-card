@@ -216,6 +216,10 @@ _CARD_ANIMATION_SLEEP = asyncio.sleep
 # conversation that are still streaming (orphaned because Hermes folded several
 # replies into one turn) are finalized after this silence window.
 CONV_FINALIZE_SILENCE_SECONDS = 3.0
+# A thinking card that has a bound Feishu message but receives no events for this
+# long is treated as orphaned (Hermes finished the turn without a terminal) and
+# is finalized to its completed state. Overridable via card.card_orphan_timeout_seconds.
+CARD_ORPHAN_TIMEOUT_SECONDS = 600.0
 RUNTIME_CLEANUP_INTERVAL_SECONDS = 60.0
 RUNTIME_INTEGRITY_STARTUP_GRACE_SECONDS = 30.0
 RUNTIME_INTEGRITY_CHECK_INTERVAL_SECONDS = 15.0
@@ -764,6 +768,77 @@ async def _runtime_cleanup_loop(app: web.Application) -> None:
         now = time.time()
         await _expire_pending_interactions(app, now=now)
         cleanup_runtime_state(app, now)
+        await _finalize_orphan_sessions(app)
+
+
+async def _finalize_orphan_sessions(app: web.Application) -> None:
+    """Finalize thinking cards that never received a terminal event.
+
+    Some Hermes turn-end paths (interrupted turns, cron/tool confirmations)
+    bypass the HFC terminal hooks entirely, so a card can stream its full answer
+    and then sit at 生成中 forever. After a silence timeout, render and PATCH
+    such a card to its completed state, then release the session.
+    """
+    try:
+        timeout = CARD_ORPHAN_TIMEOUT_SECONDS
+        configured = app[BASE_CARD_CONFIG_KEY].get("card_orphan_timeout_seconds")
+        if isinstance(configured, (int, float)) and configured > 0:
+            timeout = float(configured)
+        now = time.time()
+        sessions: Dict[str, CardSession] = app[SESSIONS_KEY]
+        feishu_message_ids: Dict[str, str] = app[FEISHU_MESSAGE_IDS_KEY]
+        message_bot_ids: Dict[str, str] = app[MESSAGE_BOT_IDS_KEY]
+        card_configs: Dict[str, dict[str, Any]] = app[SESSION_CARD_CONFIGS_KEY]
+        for key, sess in list(sessions.items()):
+            if sess.status in {"completed", "failed"}:
+                continue
+            if sess.delivery_kind == "notice":
+                continue
+            if key not in feishu_message_ids:
+                continue
+            interaction = sess.active_interaction
+            if interaction is not None and interaction.status not in {
+                "completed",
+                "failed",
+            }:
+                continue
+            if now - sess.updated_at < timeout:
+                continue
+            sess.timeline.complete()
+            sess.status = "completed"
+            sess.updated_at = time.time()
+            card_config = card_configs.get(key, app[BASE_CARD_CONFIG_KEY])
+            sess.refresh_display_status_source(
+                StatusConfig.from_mapping(card_config.get("status"))
+            )
+            feishu_msg_id = feishu_message_ids.get(key)
+            _card_log(
+                logging.WARNING,
+                "ORPHAN_FINALIZE",
+                card=key,
+                card_id=feishu_msg_id or "",
+                chat=sess.chat_id,
+                conv=sess.conversation_id,
+                outcome="orphan_timeout_finalize",
+                detail=f"idle={int(now - sess.updated_at)}s",
+                content=_content_prefix(sess),
+            )
+            if feishu_msg_id is not None:
+                task = await _schedule_abandoned_session_terminal_update(
+                    app,
+                    session_key=key,
+                    session=sess,
+                    feishu_message_id=feishu_msg_id,
+                    bot_id=message_bot_ids.get(key),
+                )
+                if task is not None:
+                    task.add_done_callback(
+                        lambda _completed, released_key=key: _release_finalized_session(
+                            app, released_key
+                        )
+                    )
+    except Exception:
+        logger.warning("orphan session finalize failed", exc_info=True)
 
 
 async def _cleanup_sleep(delay: float) -> None:
