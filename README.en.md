@@ -16,6 +16,7 @@
 Hermes Feishu Streaming Card turns Hermes Agent Gateway replies in Feishu/Lark into one continuously updated interactive card. Reasoning, tool calls, final answers, approvals, choices, system notices, and runtime stats stay inside cards instead of spilling into scattered native gray text messages.<br><br>It targets the real pain points of running Hermes inside Feishu: missing or out-of-order streaming text, long tables/code blocks rendered as raw Markdown, invisible tool progress, manual approval replies, frozen topic timelines, multi-bot/profile troubleshooting, and uncertain hook compatibility after Hermes upgrades.
 ![Hermes Feishu card command interaction, command result feedback, and tool timeline showcase](docs/assets/feishu-card-showcase-v385.png)
 
+<h2>Optional web scraping service</h2><p>If an Agent workflow needs to retrieve public webpages affected by anti-bot restrictions, <a href="https://scrapingant.com/?ref=zwq4ngy">ScrapingAnt</a> is an optional web scraping service to consider. Its Web Scraping API includes 10,000 free API credits every month with no credit card required; it is not required by this plugin.</p><blockquote>Disclosure: This is an affiliate link. A qualifying first paid subscription may earn this project a commission.</blockquote>
 ## V4 Live Agent States
 
 | Running | Waiting for user |
@@ -139,9 +140,7 @@ The compatibility matrix covers older Hermes starting at `v2026.4.23` and Hermes
 For an existing Hermes container:
 
 ```bash
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.2.9
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.2.12
 bash install-docker.sh
 ```
 
@@ -178,10 +177,11 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_CHARS` | `600` | Flush pending delta when this character budget is reached |
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_MAX_PENDING` | `128` | Pending delta session cap |
 ## Latest Releases
-![Feishu topic reply card continuity and reasoning/tool timeline showcase](docs/assets/feishu-topic-card-showcase-v389.png)
 | Version | Highlights |
 |---|---|
-| [v4.2.9](docs/release-notes-v4.2.9.en.md) | Fixes Issue #197 completed-card quote context, integrates PR #196 non-blocking slash confirmations and PR #199 multi-select/custom-answer forms, and preserves exact callback-token/chat binding plus single-attempt `/events` delivery |
+| [v4.2.12](docs/release-notes-v4.2.12.en.md) | Makes approval cards follow Hermes capabilities and reject undeclared input, while zero-tool cards retain a stable collapsed timeline whenever reasoning display is enabled |
+| [v4.2.11](docs/release-notes-v4.2.11.en.md) | Fixes Issue #202 by freezing each superseded streaming card as a green “moved to the interaction card” history snapshot after replacement delivery; predecessor PATCH failure remains fail-open and only the newest card receives choices and later updates |
+| [v4.2.10](docs/release-notes-v4.2.10.en.md) | Authenticates non-loopback sidecar callbacks and result reads with method/path/body-bound HMAC, enforces absolute interaction expiry with late-button/form rejection and same-card refresh, and adds cross-platform CI, CodeQL, Dependabot, and Node 24 Action SHA gates; see [v4.2.9](docs/release-notes-v4.2.9.en.md) for the preceding release |
 | [v4.2.8](docs/release-notes-v4.2.8.en.md) | Fixes the installer contract so `install.sh`, `install-docker.sh`, and `install.ps1` persist process-supplied Feishu credentials into the private `.env` instead of using them only for the current process |
 | [v4.2.7](docs/release-notes-v4.2.7.en.md) | Fixes Issue #193 Windows cold-import timeouts and legacy backslash manifest paths, integrates PR #180 parent `HERMES_HOME` discovery and PR #181 safe detached-runner PID rebinding, and propagates PowerShell installer failures |
 | [v4.2.6](docs/release-notes-v4.2.6.en.md) | Fixes Issue #187 repeated choice-card position, #188 short terminal postscripts replacing answers, #189/PR #190 exact Base compatibility for Hermes 0.20, and bare Feishu `/update` venv-symlink, slow-fetch, and version-reporting failures; see [v4.2.5](docs/release-notes-v4.2.5.en.md) for the preceding audit safety hotfix |

@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.2.9`。本轮修复 Issue #197，并安全整合 PR #196/#199 的 slash-confirm 与 clarify 表单能力。完整自动化、构建、CI、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。
+当前发布候选为 `4.2.12`。本轮让 approval 卡按 Hermes `smart_denied`、`allow_session`、`allow_permanent` 能力生成固定选项，并在 hook、event、session、renderer 与 sidecar 回调边界显式传播/校验 `allow_custom_input`；启用 reasoning timeline 时，零工具调用卡片在整个生命周期保持稳定折叠入口。完整自动化、构建、CI、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。
 
 V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 
@@ -147,6 +147,37 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
 
+## V4.2.12 发布门禁
+
+- PR #206 的 approval capability matrix 覆盖默认、`allow_permanent=false`、`allow_session=false` 与 `smart_denied=true`；approval 默认只接受当前卡声明的协议选项，clarify 继续支持自定义输入。
+- sidecar 拒绝伪造固定选项、approval 自定义 form 与 truthy-string capability；拒绝后 interaction 保持 pending，token/chat/operator/expiry/idempotency 不变。
+- PR #205 在 reasoning timeline 启用时为零工具运行、完成和失败卡保留同款折叠条与明确空状态；`show_reasoning=false` 保留普通 tool summary，raw thinking 不公开。
+- 两个 PR 更新到同一 main 后的 GitHub 多平台 CI：**已通过**；合并后 runtime 基线完整 pytest：**`2481 passed, 6 skipped`**。
+- v4.2.12 发布候选门禁：docs/package **`94 passed`**、聚焦矩阵 **`830 passed`**、完整 pytest **`2481 passed, 6 skipped`**；sdist/wheel、干净 venv `site-packages` provenance、CLI help 与 `git diff --check`：**已通过**。
+- 本轮不额外发送真实飞书测试消息；PR #205 的真实飞书结果属于贡献者证据，PR #206 与组合结果以自动化、独立攻击测试和多平台 CI 为门禁，不写成维护者真实客户端复测。
+- exact merge SHA、annotated tag、public tag/install 与 Release assets：**发布流程中逐项记录**。
+
+## V4.2.11 发布门禁
+
+- Issue #202 回归先在旧实现观察到 predecessor 没有终态 PATCH，再验证绿色“已转入交互卡片” Header/summary、内容与工具保留、临时运行态和 pending 控件清除。
+- 连续 interaction 每张 predecessor 只 final PATCH 一次；旧 pending token/按钮不会残留，只有最新卡继续接收 callback 与后续更新。
+- replacement send 失败恢复请求前 session；predecessor PATCH 全部失败仍提升新卡并记录既有脱敏 update metrics/diagnostics。
+- animation cancellation 在 predecessor PATCH 前完成；canonical `turn_id` session 使用原 per-session card config。
+- session/render/server/clarify 聚焦矩阵：**`450 passed`**；`git diff --check`：**通过**。
+- 隔离 v4.2.11 候选完整 pytest：**`2478 passed, 6 skipped`**。
+- 本地 sdist/wheel 与全新 venv 候选 wheel `site-packages` provenance/CLI smoke：**通过**。
+- PR CI、exact merge SHA、public tag/install 与 Release assets：**发布流程中逐项记录**。
+
+## V4.2.10 发布门禁
+
+- sidecar request proof 绑定 HTTP method、规范 path 与 raw body，使用独立 `hfc-sidecar-request-v1` 域；缺失、过期、跨 method/path/body 与 replay 均 fail-closed，认证失败响应与指标不包含签名、标识符、正文或选择。
+- 默认 loopback 部署保持兼容；启用非回环事件认证时，`/card/actions`、`/interactions/{id}` 与 `/messages/{id}/summary` 在解析/返回前必须验签。
+- interaction deadline 由 sidecar 接收时刻决定；晚到直连按钮与 form submit 返回过期状态，周期任务刷新原卡，过期 pending 不再永久阻塞清理；Gateway poll 超时只发送一次独立 `interaction.failed`。
+- session/lifecycle/render/hook 单元回归：**`556 passed`**；完整 server/clarify 集成回归：**`297 passed`**；CI workflow 契约：**`15 passed`**。
+- GitHub Actions 覆盖 Ubuntu Python 3.9/3.10/3.11/3.12、Windows 3.12、macOS 3.12 全量 pytest，并保留 Feishu SDK、PowerShell installer 与 Docker Compose smoke；官方 Action 固定到已核验 Node 24 版本的不可变 SHA。
+- 新增 CodeQL Python push/PR/weekly 扫描与 pip/GitHub Actions weekly Dependabot 配置。
+- 隔离 v4.2.10 runtime 完整 pytest：**`2473 passed, 6 skipped`**；精确 PR merge、detached merge-SHA 复验、public tag/install 与 Release assets：**发布流程中逐项记录**。
+
 ## V4.2.9 发布门禁
 
 - PR #196/#199 原作者提交已保留；额外回归锁定调度失败、并发重复、token/chat 鉴权、旧 Hermes callback 签名、单次 `/events` 与日志脱敏。
@@ -154,7 +185,8 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 - 隔离 v4.2.9 runtime 完整 pytest：**`2452 passed, 6 skipped`**；`git diff --check`：**通过**。
 - 本地 sdist/wheel 构建成功，metadata 均为 `4.2.9`；全新 venv 安装 wheel 与公开依赖后，package/distribution 版本均为 `4.2.9`，import 来自 venv `site-packages`，console entrypoint 与 CLI help exit 0。
 - GitHub Actions（Python 3.9/3.12、Feishu SDK、PowerShell、Docker）：**通过**（[run 31318602152](https://github.com/baileyh8/hermes-feishu-streaming-card/actions/runs/31318602152)）。
-- exact merge SHA、tag、公开 tag/install 与 Release assets：**待发布门禁完成**。
+- exact merge SHA `dc332212c14423abb3b42f524dce46ff0ff28479`；annotated tag `v4.2.9` 与 [Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v4.2.9)：**已发布（2026-08-09）**。
+- release-assets [run 31319394583](https://github.com/baileyh8/hermes-feishu-streaming-card/actions/runs/31319394583)：**通过**；macOS、Linux、Windows 与 checksums 四个 assets 均已上传并带 GitHub SHA256 digest。
 
 ## V4.2.8 发布门禁
 

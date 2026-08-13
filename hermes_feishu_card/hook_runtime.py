@@ -35,6 +35,7 @@ from .event_auth import (
     sign_native_handoff_ack_request,
     sign_native_handoff_recovery_request,
     sign_policy_request,
+    sign_sidecar_request,
 )
 from .operations import sign_transport_proof
 from .operations_transport import (
@@ -2425,7 +2426,10 @@ def build_interaction_event(
     timeout_seconds: float | None = None,
     fallback_policy: str = "",
     multi_select: bool = False,
+    allow_custom_input: bool | None = None,
 ) -> dict[str, Any] | None:
+    if allow_custom_input is None:
+        allow_custom_input = kind == "clarify"
     event_locals = {
         **local_vars,
         "_hfc_interaction_id": interaction_id,
@@ -2436,6 +2440,7 @@ def build_interaction_event(
         "_hfc_interaction_timeout_seconds": timeout_seconds,
         "_hfc_interaction_fallback_policy": fallback_policy,
         "_hfc_interaction_multi_select": bool(multi_select),
+        "_hfc_interaction_allow_custom_input": bool(allow_custom_input),
     }
     return build_event("interaction.requested", event_locals)
 
@@ -2451,6 +2456,7 @@ def request_interaction_from_hermes_locals(
     timeout_seconds: float | None = None,
     poll_interval_seconds: float | None = None,
     multi_select: bool = False,
+    allow_custom_input: bool | None = None,
 ) -> dict[str, Any] | None:
     try:
         config = load_runtime_config()
@@ -2476,6 +2482,7 @@ def request_interaction_from_hermes_locals(
             description=description,
             timeout_seconds=timeout_seconds,
             multi_select=multi_select,
+            allow_custom_input=allow_custom_input,
         )
         if payload is None:
             _hfc_warn(
@@ -2548,6 +2555,12 @@ def request_interaction_from_hermes_locals(
                 _hfc_warn(
                     "interaction poll timeout: "
                     f"{_hfc_log_reference('interaction', interaction_id)}"
+                )
+                _post_interaction_timeout_sync(
+                    local_vars,
+                    config.event_url,
+                    payload,
+                    config.timeout_seconds,
                 )
                 return {
                     "ok": False,
@@ -2674,6 +2687,11 @@ async def request_slash_confirm_from_hermes_locals_async(
             if isinstance(result, dict) and result.get("status") == "failed":
                 return None
             if time.monotonic() >= deadline:
+                await _post_interaction_timeout_async(
+                    config.event_url,
+                    payload,
+                    config.timeout_seconds,
+                )
                 return None
             await asyncio.sleep(poll_interval)
     except Exception:
@@ -2856,6 +2874,11 @@ async def _request_command_card_choice_async(
             if isinstance(result, dict) and result.get("status") == "failed":
                 return None
             if time.monotonic() >= deadline:
+                await _post_interaction_timeout_async(
+                    config.event_url,
+                    payload,
+                    config.timeout_seconds,
+                )
                 return None
             await asyncio.sleep(poll_interval)
     except Exception:
@@ -7387,23 +7410,32 @@ def request_approval_choice_from_hermes_locals(
 ) -> str | None:
     command = str(approval_data.get("command") or "").strip()
     description = str(approval_data.get("description") or "dangerous command").strip()
+    smart_denied = approval_data.get("smart_denied") is True
+    allow_session = approval_data.get("allow_session", True) is not False
+    allow_permanent = approval_data.get("allow_permanent", True) is not False
+    allow_custom_input = approval_data.get("allow_custom_input") is True
+    options = [{"label": "允许一次", "value": "once", "style": "primary"}]
+    if not smart_denied and allow_session:
+        options.append({"label": "本会话允许", "value": "session"})
+        if allow_permanent:
+            options.append({"label": "始终允许", "value": "always"})
+    options.append({"label": "拒绝", "value": "deny", "style": "danger"})
     result = request_interaction_from_hermes_locals(
         local_vars,
         kind="approval",
         interaction_id=interaction_id,
         prompt="需要授权后继续执行",
         description=f"```\n{command[:3000]}\n```\n\n{description}",
-        options=[
-            {"label": "允许一次", "value": "once", "style": "primary"},
-            {"label": "本会话允许", "value": "session"},
-            {"label": "始终允许", "value": "always"},
-            {"label": "拒绝", "value": "deny", "style": "danger"},
-        ],
+        options=options,
         timeout_seconds=timeout_seconds,
+        allow_custom_input=allow_custom_input,
     )
     if isinstance(result, dict) and result.get("status") == "completed":
         choice = str(result.get("choice") or "").strip()
-        return choice or None
+        allowed_choices = {str(option["value"]) for option in options}
+        if allow_custom_input:
+            return choice or None
+        return choice if choice in allowed_choices else None
     return None
 
 
@@ -7705,6 +7737,7 @@ def request_clarify_response_from_hermes_locals(
         options=options,
         timeout_seconds=_interaction_timeout(timeout_seconds),
         multi_select=multi_select,
+        allow_custom_input=True,
     )
     if isinstance(result, dict) and result.get("status") == "completed":
         choice = str(result.get("choice") or "").strip()
@@ -7924,6 +7957,14 @@ def _post_json_sync_response(url: str, payload: dict[str, Any], timeout: float) 
 def _post_headers(url: str, body: bytes) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     path = parse.urlsplit(url).path.rstrip("/")
+    if _is_sensitive_sidecar_path(path):
+        try:
+            root_secret = read_transport_root_secret()
+            if root_secret is not None:
+                headers.update(sign_sidecar_request(root_secret, "POST", path, body))
+        except Exception:
+            pass
+        return headers
     if not path.endswith(
         (
             "/events",
@@ -7947,6 +7988,29 @@ def _post_headers(url: str, body: bytes) -> dict[str, str]:
     except Exception:
         pass
     return headers
+
+
+def _get_headers(url: str) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    path = parse.urlsplit(url).path.rstrip("/")
+    if not _is_sensitive_sidecar_path(path):
+        return headers
+    try:
+        root_secret = read_transport_root_secret()
+        if root_secret is not None:
+            headers.update(sign_sidecar_request(root_secret, "GET", path, b""))
+    except Exception:
+        pass
+    return headers
+
+
+def _is_sensitive_sidecar_path(path: str) -> bool:
+    normalized = str(path or "").rstrip("/")
+    return (
+        normalized.endswith("/card/actions")
+        or "/interactions/" in normalized
+        or ("/messages/" in normalized and normalized.endswith("/summary"))
+    )
 
 
 async def lookup_card_summary(
@@ -7984,7 +8048,7 @@ def _summary_base_url(event_url: str) -> str:
 async def _get_json(url: str, timeout: float) -> Any:
     req = request.Request(
         url,
-        headers={"Accept": "application/json"},
+        headers=_get_headers(url),
         method="GET",
     )
     loop = asyncio.get_running_loop()
@@ -8048,7 +8112,7 @@ def _should_bypass_proxy(url: str) -> bool:
 def _get_json_sync(url: str, timeout: float) -> Any:
     req = request.Request(
         url,
-        headers={"Accept": "application/json"},
+        headers=_get_headers(url),
         method="GET",
     )
     return _open_json_request(req, timeout)
@@ -8264,6 +8328,69 @@ def _interaction_timeout(value: float | None) -> float:
     if env_value is not None and env_value >= 0:
         return env_value
     return 300.0
+
+
+def _interaction_timeout_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    failed = dict(payload)
+    sequence_id = str(
+        payload.get("turn_id") or payload.get("message_id") or ""
+    ).strip()
+    if sequence_id:
+        failed["sequence"] = _next_sequence(sequence_id)
+    else:
+        try:
+            failed["sequence"] = int(payload.get("sequence", 0)) + 1
+        except (TypeError, ValueError):
+            failed["sequence"] = 1
+    failed["event"] = "interaction.failed"
+    failed["created_at"] = time.time()
+    source_data = payload.get("data")
+    data = {
+        "interaction_id": (
+            str(source_data.get("interaction_id") or "").strip()
+            if isinstance(source_data, dict)
+            else ""
+        ),
+        "error": "交互已过期",
+    }
+    if isinstance(source_data, dict):
+        profile_id = str(source_data.get("profile_id") or "").strip()
+        if profile_id:
+            data["profile_id"] = profile_id
+    failed["data"] = data
+    return failed
+
+
+def _post_interaction_timeout_sync(
+    local_vars: dict[str, Any],
+    event_url: str,
+    payload: dict[str, Any],
+    timeout: float,
+) -> None:
+    try:
+        _post_interaction_event(
+            local_vars,
+            event_url,
+            _interaction_timeout_payload(payload),
+            timeout,
+        )
+    except Exception:
+        return
+
+
+async def _post_interaction_timeout_async(
+    event_url: str,
+    payload: dict[str, Any],
+    timeout: float,
+) -> None:
+    try:
+        await _post_json_ordered_response(
+            event_url,
+            _interaction_timeout_payload(payload),
+            timeout,
+        )
+    except Exception:
+        return
 
 
 def _interaction_poll_interval(value: float | None) -> float:
@@ -8556,6 +8683,11 @@ def _event_data(
         if multi_select_value is None:
             multi_select_value = local_vars.get("multi_select")
         data["multi_select"] = bool(multi_select_value)
+        allow_custom_input = local_vars.get("_hfc_interaction_allow_custom_input")
+        if allow_custom_input is None:
+            allow_custom_input = local_vars.get("allow_custom_input")
+        if isinstance(allow_custom_input, bool):
+            data["allow_custom_input"] = allow_custom_input
         timeout_value = _finite_float(local_vars.get("_hfc_interaction_timeout_seconds"))
         if timeout_value is not None:
             data["timeout_seconds"] = timeout_value

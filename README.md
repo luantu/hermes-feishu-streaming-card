@@ -16,6 +16,7 @@
 Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变成一张持续更新的交互式卡片。思考过程、工具调用、最终答案、授权确认、选项选择、系统提示和运行统计会收束在卡片内，而不是散落成多条灰色原生消息。<br><br>它面向真实飞书使用场景：流式内容漏字/乱序、长表格和代码块变成 raw markdown、工具过程不可见、approval/clarify 需要手工回复、话题里卡片不更新、多 bot / 多 profile 难排查，以及 Hermes 升级后 hook 兼容不确定。
 ![Hermes 飞书卡片命令交互、结果反馈与工具 timeline 展示](docs/assets/feishu-card-showcase-v385.png)
 
+<h2>可选网页抓取服务</h2><p>如果 Agent 工作流需要获取受反爬限制的公开网页，可了解 <a href="https://scrapingant.com/?ref=zwq4ngy">ScrapingAnt</a> 这项可选网页抓取服务。其 Web Scraping API 每月提供 10,000 个免费 API credits，无需信用卡；它不是本插件的必需依赖。</p><blockquote>说明：以上链接为 Affiliate link；符合条件的首次付费订阅可能为本项目带来佣金。</blockquote>
 ## V4 实时 Agent 状态
 
 | 运行中 | 等待用户 |
@@ -138,9 +139,7 @@ Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x/0
 已有 Hermes 容器优先使用：
 
 ```bash
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.2.9
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.2.12
 bash install-docker.sh
 ```
 
@@ -177,10 +176,11 @@ bash install-docker.sh
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_CHARS` | `600` | pending delta 达到字符数后立即 flush |
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_MAX_PENDING` | `128` | pending delta session 上限 |
 ## 最新版本
-![飞书话题内卡片连续更新与思考工具 timeline 展示](docs/assets/feishu-topic-card-showcase-v389.png)
 | 版本 | 重点 |
 |---|---|
-| [v4.2.9](docs/release-notes-v4.2.9.md) | 修复 Issue #197 引用卡片只显示固定完成状态；整合 PR #196 的非阻塞 slash-confirm 与 PR #199 的多选/自定义回答表单，并保持 callback token、chat binding 与单次 `/events` 安全边界 |
+| [v4.2.12](docs/release-notes-v4.2.12.md) | 审批卡按 Hermes 能力只展示可用授权范围并拒绝未声明输入；零工具调用的卡片在启用 reasoning timeline 时保持稳定折叠入口 |
+| [v4.2.11](docs/release-notes-v4.2.11.md) | 修复 Issue #202：新交互卡发送成功后，旧流式卡会冻结为绿色“已转入交互卡片”历史快照；旧卡 PATCH 失败保持 fail-open，只有最新卡继续接收选择与后续更新 |
+| [v4.2.10](docs/release-notes-v4.2.10.md) | 非回环 sidecar 的回调/结果读取使用 method/path/body 绑定 HMAC；交互绝对过期会拒绝晚到按钮与表单并刷新原卡；跨平台 CI、CodeQL、Dependabot 和 Node 24 Action SHA 门禁同步落地，上一版见 [v4.2.9](docs/release-notes-v4.2.9.md) |
 | [v4.2.8](docs/release-notes-v4.2.8.md) | 修复 `install.sh`、`install-docker.sh` 与 `install.ps1` 只在当前进程使用环境凭据、未持久化到私有 `.env` 的安装契约缺口 |
 | [v4.2.7](docs/release-notes-v4.2.7.md) | 修复 Issue #193 的 Windows 冷启动探针超时与旧 manifest 反斜杠路径，合入 PR #180 的 parent `HERMES_HOME` 查找和 PR #181 的 detached runner PID 安全重绑，并让 PowerShell 安装器正确传播失败 |
 | [v4.2.6](docs/release-notes-v4.2.6.md) | 修复 Issue #187 重复选项卡位置、#188 终态短后记覆盖正文、#189/PR #190 Hermes 0.20 exact Base 兼容，并修复飞书裸 `/update` 的 venv symlink、慢 fetch 与 Hermes 0.20 版本误报；上一版审查安全热修见 [v4.2.5](docs/release-notes-v4.2.5.md) |

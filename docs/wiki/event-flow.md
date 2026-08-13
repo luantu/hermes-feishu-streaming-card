@@ -77,6 +77,7 @@ sidecar 为 Feishu create/reply 初始卡片生成同一条逻辑投递稳定、
 ## 工具事件视觉与运行动画
 
 - `message.started` 后、首个模型或工具事件到达前，正文显示“正在加载上下文…”，并保留“思考与工具 · 0 次工具调用”折叠入口。
+- 启用 reasoning timeline 时，折叠入口在整个卡片生命周期保持稳定；即使终态为 0 次工具调用且没有可公开的 timeline 记录，也显示同款折叠条，展开后给出明确空状态，不回退成普通 Markdown 摘要。原始 `thinking.delta` 继续保持隐藏。
 - 工具事件使用紧凑两级结构：首行由状态图标、工具名和耗时组成；参数、结果或失败原因放在第二行灰色小字中。成功、运行中、失败、取消和等待分别使用语义色，不再使用整块 Markdown 引用背景。
 - 初始加载和运行中工具复用该 session 的 `FlushController` PATCH 同一卡片，每 0.8 秒推进一次 spinner，最多 15 次（约 12 秒）；收到可见正文、工具终态或 session 终态后停止。
 - 动画更新失败即停止，不重建卡片、不切换 message id，也不绕过既有更新重试、终态 drain 和 topic/reply anchor 规则。
@@ -106,7 +107,7 @@ message.completed
 状态规则：
 
 - 运行中：Header title 保留用户配置；subtitle 将 Hermes 最新一条非空工具预览与工具名整理为确定性的动作摘要。正文继续累积公开 `thinking.delta`，完整命令留在 timeline。
-- 等待用户：待处理的 `interaction.requested.prompt` 临时覆盖 Header；正文只保留说明和交互控件，不重复问题。每次请求都会把完整当前状态提升为一张新的最新卡片，旧卡保留为此前快照；交互完成后，最新卡恢复此前工具预览。
+- 等待用户：待处理的 `interaction.requested.prompt` 临时覆盖 Header；正文只保留说明和交互控件，不重复问题。每次请求都会把完整当前状态提升为一张新的最新卡片。新卡发送成功后，旧 animation 先取消并等待退出，旧卡再 PATCH 为绿色“已转入交互卡片”只读快照；快照保留正文与工具历史但移除 pending 控件。交互完成后，最新卡恢复此前工具预览。
 - 失败：保留失败前最后一条工具预览，正文显示 Hermes 的失败原因。
 - 已完成：移除运行时预览；普通聊天只保留飞书原生回复引用作为 Header，不再显示配置标题或在卡片内复制引用。没有有效 reply anchor 的兼容路径仍使用配置标题 fallback。
 - 一旦 `answer.delta` 开始，最终回答成为正文主内容，之前的公开阶段性输出不再与答案并排显示。
@@ -227,7 +228,7 @@ V3.10.0 的 command-card adapter hook 会在运行时包装 runner 的 `_handle_
 
 ## Agent clarify / approval 交互
 
-Agent 任务内的 `interaction.requested` 会渲染为当前 streaming card 里的按钮。若本轮已经存在卡片，sidecar 会发送一张新的完整当前状态卡并把后续更新切换到新 message id；因此多轮选择始终出现在聊天底部，旧卡不会被追加按钮或再次改写。
+Agent 任务内的 `interaction.requested` 会渲染为当前 streaming card 里的按钮。若本轮已经存在卡片，sidecar 会发送一张新的完整当前状态卡并把后续更新切换到新 message id；因此多轮选择始终出现在聊天底部。新卡成功送达后，前一张卡只再接受一次接力终态 PATCH，Header 与引用摘要显示“已转入交互卡片”，之后不再承载 interaction 或流式更新。
 
 HTTP callback 可达时，Feishu/Lark 直接 POST 到 sidecar `/card/actions`。在 WebSocket 长连接或本地/private sidecar 场景中，按钮点击会先到 Hermes Feishu adapter 的原生 card-action channel，再由 hook runtime 接管 `interaction.select` 并转发到 sidecar `/card/actions`。
 
@@ -236,6 +237,8 @@ HTTP callback 可达时，Feishu/Lark 直接 POST 到 sidecar `/card/actions`。
 - sidecar 仍负责校验 `interaction_id` 和 callback token。
 - callback payload 带 `open_chat_id` 时，sidecar 还会确认 chat id 与 active session 匹配。
 - 新卡使用独立 interaction delivery key；发送失败会恢复请求前 session，原卡仍保持权威，Hermes 可按同一事件安全重试。
+- 新卡发送成功后先取消并 await 原卡 animation，再从请求前的 detached session copy 渲染接力快照；canonical session、interaction result 和后续新卡渲染不被该 copy 改写。
+- 接力 PATCH 复用既有更新重试与脱敏 diagnostics；全部失败仍返回 interaction success 并提升新 message id，不回滚已送达的新卡。
 - 成功后 sidecar 记录 `interaction.completed`，Hermes hook 轮询 `/interactions/{interaction_id}` 后继续执行。
 - sidecar 拒绝、超时或没有返回 card 时，hook 返回空 Feishu callback response，避免崩溃或落入未知原生 handler。
 

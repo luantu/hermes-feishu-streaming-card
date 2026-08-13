@@ -71,6 +71,28 @@ def test_render_initial_running_card_shows_context_loading_and_empty_timeline():
     }
 
 
+def test_render_completed_card_keeps_collapsed_zero_tool_timeline():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.thinking_text = "不会公开的 raw thinking"
+
+    card = render_card(session)
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+
+    assert timeline["expanded"] is False
+    assert timeline["header"]["title"]["content"] == "思考与工具 · 0 次工具调用"
+    assert "暂无可展示的思考或工具记录。" in str(timeline)
+    assert "不会公开的 raw thinking" not in str(card)
+    assert "tool_summary" not in {
+        item.get("element_id") for item in card["body"]["elements"]
+    }
+
+
 def test_running_tool_without_model_text_removes_loading_placeholder_from_body():
     from hermes_feishu_card.events import SidecarEvent
 
@@ -384,8 +406,8 @@ def test_v3818_normal_completed_card_keeps_element_order_and_configured_footer()
 
     assert [element["element_id"] for element in card["body"]["elements"]] == [
         "main_content",
+        "auxiliary_timeline",
         "main_divider",
-        "tool_summary",
         "footer",
     ]
     assert card["body"]["elements"][-1] == {
@@ -405,8 +427,8 @@ def test_v3818_normal_failed_card_keeps_element_order_and_footer():
 
     assert [element["element_id"] for element in card["body"]["elements"]] == [
         "main_content",
+        "auxiliary_timeline",
         "main_divider",
-        "tool_summary",
         "footer",
     ]
     assert card["body"]["elements"][-1]["content"] == "已停止"
@@ -446,8 +468,8 @@ def test_model_footer_color_preserves_layout_order_and_configured_fields():
 
     assert [element["element_id"] for element in card["body"]["elements"]] == [
         "main_content",
+        "auxiliary_timeline",
         "main_divider",
-        "tool_summary",
         "footer",
     ]
     assert card["body"]["elements"][-1] == {
@@ -526,6 +548,7 @@ def test_render_pending_interaction_as_buttons():
                 "kind": "approval",
                 "prompt": "允许执行命令吗？",
                 "description": "rm -rf /tmp/demo",
+                "allow_custom_input": False,
                 "options": [
                     {"label": "允许一次", "value": "once", "style": "primary"},
                     {"label": "拒绝", "value": "deny", "style": "danger"},
@@ -548,6 +571,41 @@ def test_render_pending_interaction_as_buttons():
     assert buttons[0]["behaviors"][0]["value"]["token"]
     assert "interaction_actions" not in str(card)
     assert "rm -rf /tmp/demo" in str(card)
+    assert "hfc_other" not in str(card)
+    assert "自定义" not in str(card)
+
+
+def test_render_clarify_custom_input_only_when_capability_is_enabled():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="interaction.requested",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=0.0,
+            data={
+                "interaction_id": "clarify-1",
+                "kind": "clarify",
+                "prompt": "请选择处理方式",
+                "allow_custom_input": True,
+                "options": [
+                    {"label": "继续", "value": "continue"},
+                    {"label": "取消", "value": "cancel"},
+                ],
+            },
+        )
+    )
+
+    card = render_card(session)
+
+    assert "hfc_other" in str(card)
+    assert "输入自定义内容" in str(card)
 
 
 def test_render_pending_interaction_as_text_choices_for_localhost_mode():
@@ -656,7 +714,7 @@ def test_render_completed_card_places_attachment_summary_before_tools():
     card = render_card(session)
 
     element_ids = [element.get("element_id") for element in card["body"]["elements"]]
-    assert element_ids.index("attachment_summary") < element_ids.index("tool_summary")
+    assert element_ids.index("attachment_summary") < element_ids.index("main_divider")
 
 
 def test_render_completed_card_shows_at_most_eight_attachments():
@@ -1145,6 +1203,25 @@ def test_footer_still_static_for_failed():
     assert _render_footer(session) == "已停止"
 
 
+def test_waiting_footer_uses_absolute_remaining_deadline(monkeypatch):
+    from hermes_feishu_card import render as render_module
+    from hermes_feishu_card.render import _render_footer
+
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.active_interaction = InteractionState(
+        interaction_id="approval-1",
+        kind="approval",
+        prompt="允许吗？",
+        timeout_seconds=120.0,
+        requested_at=100.0,
+    )
+    monkeypatch.setattr(render_module._time, "time", lambda: 160.0)
+
+    assert _render_footer(session, display_status="waiting") == (
+        "等待选择 · ⏳ 1 分钟后过期"
+    )
+
+
 def test_render_card_compacts_tables_over_limit_by_default_without_losing_prose():
     from hermes_feishu_card.session import CardSession
     from hermes_feishu_card.render import render_card
@@ -1282,7 +1359,8 @@ def test_render_answer_stays_primary_over_public_interim_text():
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
 
     assert main["content"] == "这是主回答。"
-    assert "auxiliary_timeline" not in str(card)
+    assert "思考与工具 · 0 次工具调用" in str(card)
+    assert "暂无可展示的思考或工具记录。" in str(card)
     assert "先分析约束。" not in str(card)
 
 
@@ -1344,7 +1422,8 @@ def test_render_keeps_pre_tool_answer_in_main_while_tool_runs():
     card = render_card(session, timeline_expanded=True)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
     assert main["content"] == "好的，我先做分析再动手。"
-    assert "auxiliary_timeline" not in str(card)
+    assert "思考与工具 · 0 次工具调用" in str(card)
+    assert "暂无可展示的思考或工具记录。" in str(card)
 
     session.apply(
         SidecarEvent(
@@ -2040,7 +2119,8 @@ def test_render_thinking_without_answer_uses_public_interim_main_content():
     assert main["content"] == "这是公开的阶段性输出。"
     assert "正在思考" not in str(card)
     assert "这是公开的阶段性输出。" in str(card)
-    assert "auxiliary_timeline" not in str(card)
+    assert "思考与工具 · 0 次工具调用" in str(card)
+    assert "暂无可展示的思考或工具记录。" in str(card)
 
 
 def test_render_tool_summary_keeps_tool_names_when_reasoning_hidden():
