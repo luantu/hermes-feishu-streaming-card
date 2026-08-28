@@ -1160,6 +1160,7 @@ async def _flush_pending_delta_key(key: tuple[int, str, str, str, str]) -> None:
     )
     if payload is None:
         return
+    _hfc_accumulate_stream_answer(payload)
     await _send_fail_open_ordered(
         pending.event_url,
         payload,
@@ -1176,6 +1177,7 @@ async def _flush_build_send_ordered(
     payload = build_event(event_name, local_vars)
     if payload is None:
         return
+    _hfc_accumulate_stream_answer(payload)
     await _send_fail_open_ordered(
         config.event_url,
         payload,
@@ -1206,6 +1208,7 @@ def emit_from_hermes_locals(
         payload = build_event(event_name, event_locals)
         if payload is None:
             return False
+        _hfc_accumulate_stream_answer(payload)
         _log_terminal_emit(event_name, payload)
         asyncio.get_running_loop()
         asyncio.create_task(
@@ -1262,6 +1265,7 @@ def emit_from_hermes_locals_threadsafe(
         payload = build_event(event_name, event_locals)
         if payload is None:
             return False
+        _hfc_accumulate_stream_answer(payload)
         _log_terminal_emit(event_name, payload)
         if "_hfc_loop" in event_locals:
             coroutine = _send_fail_open_ordered(
@@ -1362,6 +1366,8 @@ async def emit_from_hermes_locals_async(
             payload = build_event(event_name, event_locals)
             if payload is None:
                 return False
+            if event_name == "answer.delta":
+                _hfc_accumulate_stream_answer(payload)
             if event_name == "message.completed" and _is_emoji_only_answer(payload):
                 return False
             result = await _post_json_ordered_response(
@@ -1381,6 +1387,7 @@ async def emit_from_hermes_locals_async(
                 )
             if event_name == "message.completed":
                 _register_native_media_text_suppression(payload, applied=applied)
+                _hfc_clear_stream_answer(payload)
             if applied and event_name == "message.completed":
                 data = payload.get("data") if isinstance(payload, dict) else {}
                 answer = data.get("answer") if isinstance(data, dict) else None
@@ -3899,9 +3906,91 @@ def _hfc_log_native_send(
         pass
 
 
-_HFC_CARDED_CONTENT: dict[str, tuple[float, str]] = {}
+_HFC_CARDED_CONTENT: dict[str, list[tuple[float, str]]] = {}
 _HFC_CARDED_CONTENT_LOCK = threading.Lock()
 _HFC_CARDED_CONTENT_TTL_SECONDS = 120.0
+_HFC_CARDED_CONTENT_MAX_PER_CHAT = 8
+
+_HFC_STREAMING_ANSWER: dict[str, str] = {}
+_HFC_STREAMING_ANSWER_LOCK = threading.Lock()
+
+
+def _hfc_accumulate_stream_answer(payload: dict[str, Any]) -> None:
+    """Accumulate streamed answer text per turn and register it as carded.
+
+    Hermes' _run_agent_inner resends the final response natively (before the
+    terminal event) when its own streaming confirmation is missing. Recording the
+    answer during streaming — not at the terminal — lets the adapter.send wrapper
+    recognize the later native resend as a duplicate.
+    """
+    try:
+        if payload.get("event") != "answer.delta":
+            return
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return
+        text = str(data.get("text") or "")
+        if not text:
+            return
+        turn_key = str(payload.get("turn_id") or payload.get("message_id") or "")
+        chat_id = str(payload.get("chat_id") or "")
+        if not turn_key or not chat_id:
+            return
+        with _HFC_STREAMING_ANSWER_LOCK:
+            accumulated = _HFC_STREAMING_ANSWER.get(turn_key, "") + text
+            _HFC_STREAMING_ANSWER[turn_key] = accumulated
+        _hfc_record_carded_content(chat_id, accumulated)
+        if len(accumulated) >= 60 and len(accumulated) - len(text) < 60:
+            _hfc_info(
+                f"stream accumulate: turn={turn_key[:20]!r} chat={chat_id[:10]!r} "
+                f"len={len(accumulated)} head={accumulated[:50]!r}"
+            )
+    except Exception:
+        pass
+
+
+def _hfc_clear_stream_answer(payload: dict[str, Any]) -> None:
+    try:
+        turn_key = str(payload.get("turn_id") or payload.get("message_id") or "")
+        if not turn_key:
+            return
+        with _HFC_STREAMING_ANSWER_LOCK:
+            _HFC_STREAMING_ANSWER.pop(turn_key, None)
+    except Exception:
+        pass
+
+
+def _hfc_looks_like_system_notice(content: Any) -> bool:
+    """Heuristic: does this text carry system-notice markers?
+
+    Malformed background/task notices fail the strict fullmatch classifiers and
+    fall through to the adapter.send fallback, where they must still fail open to
+    native text rather than being suppressed as a duplicate card answer.
+    """
+    try:
+        text = str(content or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        markers = (
+            "background task",
+            "background process",
+            "task id",
+            "task started",
+            "task complete",
+            "task failed",
+            "process finished",
+            "process running",
+            "working —",
+            "working…",
+            "⏳",
+            "🔧",
+            "💾",
+            "⚠️",
+        )
+        return any(marker in lowered for marker in markers)
+    except Exception:
+        return False
 
 
 def _hfc_content_signature(content: Any) -> str:
@@ -3916,13 +4005,27 @@ def _hfc_record_carded_content(chat_id: Any, content: Any) -> None:
     response natively when its own streaming confirmation is missing. HFC cards
     are not part of Hermes' stream controller, so that branch can double-deliver
     the answer; the adapter.send wrapper consults this registry to suppress it.
+
+    Kept as a bounded list per chat so interleaved turns in the same group do not
+    overwrite each other's carded content.
     """
     chat = str(chat_id or "").strip()
     sig = _hfc_content_signature(content)
     if not chat or not sig:
         return
+    now = time.monotonic()
     with _HFC_CARDED_CONTENT_LOCK:
-        _HFC_CARDED_CONTENT[chat] = (time.monotonic(), sig)
+        entries = _HFC_CARDED_CONTENT.get(chat)
+        if entries is None:
+            entries = []
+            _HFC_CARDED_CONTENT[chat] = entries
+        # Drop any existing identical signature (dedupe) before appending.
+        entries[:] = [e for e in entries if e[1] != sig]
+        entries.append((now, sig))
+        # Prune expired and cap size, keeping the most recent.
+        entries[:] = [
+            e for e in entries if now - e[0] <= _HFC_CARDED_CONTENT_TTL_SECONDS
+        ][-_HFC_CARDED_CONTENT_MAX_PER_CHAT:]
 
 
 def _hfc_content_was_carded(chat_id: Any, content: Any) -> bool:
@@ -3932,19 +4035,24 @@ def _hfc_content_was_carded(chat_id: Any, content: Any) -> bool:
         return False
     now = time.monotonic()
     with _HFC_CARDED_CONTENT_LOCK:
-        entry = _HFC_CARDED_CONTENT.get(chat)
-        if entry is None:
-            return False
-        recorded_at, recorded = entry
-        if now - recorded_at > _HFC_CARDED_CONTENT_TTL_SECONDS:
-            _HFC_CARDED_CONTENT.pop(chat, None)
+        entries = _HFC_CARDED_CONTENT.get(chat)
+        if not entries:
             return False
         # Only treat as a duplicate when both the carded answer and the native
         # text are substantial and share a long prefix — a short snippet (e.g.
         # "已生成图片") must never match a longer carded answer.
-        if len(sig) < 60 or len(recorded) < 60:
+        if len(sig) < 60:
             return False
-        return recorded[:60] == sig[:60]
+        for recorded_at, recorded in entries:
+            if now - recorded_at > _HFC_CARDED_CONTENT_TTL_SECONDS:
+                continue
+            if len(recorded) >= 60 and recorded[:60] == sig[:60]:
+                return True
+        _hfc_info(
+            f"content NOT carded: sig={sig[:60]!r} "
+            f"entries={[r[:40] for _, r in entries][:3]!r}"
+        )
+        return False
 
 
 def _hfc_slash_confirm_detail(message: str) -> str:
@@ -5610,6 +5718,21 @@ async def _hfc_send_with_native_command_result_card(
         if _hfc_content_was_carded(chat_id, content):
             _hfc_info(
                 "native send suppressed (content already carded) "
+                f"chat={str(chat_id or '')[:10]!r} content={_hfc_content_signature(content)[:40]!r}"
+            )
+            return _send_result(True, message_id="carded_suppressed")
+        # Card-enabled chat fallback: we only reach here when
+        # _hfc_direct_card_allowed_async() returned True, i.e. this chat runs on
+        # cards. A full agent response (>= 60 chars) reaching this path is the
+        # _run_agent_inner queued-follow-up resend of an answer that the card
+        # streaming already delivered — suppressing it is safe and removes the
+        # dependence on the (timing/attribution-fragile) content registry.
+        if (
+            len(_hfc_content_signature(content)) >= 60
+            and not _hfc_looks_like_system_notice(content)
+        ):
+            _hfc_info(
+                "native send suppressed (card-enabled full answer) "
                 f"chat={str(chat_id or '')[:10]!r} content={_hfc_content_signature(content)[:40]!r}"
             )
             return _send_result(True, message_id="carded_suppressed")
