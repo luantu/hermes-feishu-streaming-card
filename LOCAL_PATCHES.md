@@ -3,7 +3,7 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.2.12 合并后（含本地工作树未提交改动）
+> 最后更新：V4.3.7 合并后
 
 ---
 
@@ -48,6 +48,12 @@
 - `render_card()` 仅在 footer 或 tool_summary 有内容时才渲染 `main_divider`；footer 空则不渲染 footer 元素
 - 已完成回复 footer 不再加 `已完成 · ` 前缀（commit aa74d17）
 
+### 1.10 V4.3.x 交互卡片兼容
+- `render_card()` 同时保留本地 `loading_gif_img_key` 与上游 `interaction_profile_id`、`mentions_enabled` 参数
+- 主卡保持 `wide_screen_mode: True`
+- 上游 `_card_quote_summary()` 摘要逻辑保留
+- `normalize_model_name()` 和模型颜色标签逻辑不能被上游交互卡片合并覆盖
+
 ---
 
 ## 二、server.py
@@ -80,6 +86,7 @@
 ### 2.6 话题/回复路由禁用
 - `_thread_id_for_event()` 恒 `return None`（禁 Feishu thread 路由）
 - `_reply_to_message_id_for_event()` 只返回显式 `om_` 开头的 `reply_to_message_id`，不自动推导
+- V4.3.x 新增 `_reply_in_thread_for_event()` 后仍保持上述本地策略：不根据 `event.message_id` 自动生成 reply anchor；`reply_in_thread` 不得绕过本地 thread 禁用策略
 
 ### 2.7 GIF 上传 + 超时重发（遗留）
 - `UPLOADED_GIF_IMG_KEYS_KEY`、启动时 GIF 上传
@@ -120,6 +127,10 @@
 
 ### 3.6 `should_suppress_native_response` 决策日志
 - 拆出 `_should_suppress_native_response()`，外层记录 suppress 决策
+
+### 3.7 V4.3.x native hook bridge 兼容
+- 保留上游 `_THIN_INTERACTION_KINDS`、`_THIN_CONTEXT_COMPACTION_MESSAGES`、`HybridTerminalRecord` 等 native hook bridge 结构
+- 与本地 `_CANONICAL_TURN_MESSAGE_ATTR`、lazy turn binding、原生重复抑制日志并存
 
 ---
 
@@ -186,12 +197,14 @@
 | `render.py` | `timeline_expanded: bool \| None` | 动态展开 |
 | `render.py` | `_render_tool_summary` 返回 `""` | 空 footer/divider 隐藏 |
 | `render.py` | `from .model_names import normalize_model_name` | 模型名归一化 |
+| `render.py` | `interaction_profile_id` / `mentions_enabled` | V4.3.x @提及交互参数 |
 | `server.py` | `_card_log` / `_ensure_lifecycle_logger` | 生命周期日志 |
 | `server.py` | `CARD_ORPHAN_TIMEOUT_SECONDS` / `_finalize_orphan_sessions` | 孤儿卡超时收尾 |
 | `server.py` | `CONV_FINALIZE_SILENCE_SECONDS` / `_finalize_conv_sibling_sessions` | 同会话多卡收尾 |
 | `server.py` | `_apply_terminal_metadata_to_session` | footer 元数据到所有卡（不覆盖正文） |
 | `server.py` | `_release_finalized_session` | 终态后释放 session |
 | `server.py` | `_thread_id_for_event` 恒 `None` | 话题禁用 |
+| `server.py` | `_reply_to_message_id_for_event` 仅显式 `reply_to_message_id` | 禁止自动回复锚点 |
 | `server.py` | `_is_emoji_only` | emoji 应答删卡 |
 | `hook_runtime.py` | `_bind_source_turn` / lazy-bind | 无 started 新流独立 turn_id |
 | `hook_runtime.py` | `_hfc_content_was_carded` | 原生重复抑制 |
