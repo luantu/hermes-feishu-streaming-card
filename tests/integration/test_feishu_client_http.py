@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 import subprocess
 import sys
@@ -151,6 +152,194 @@ async def test_send_card_replies_in_thread_when_reply_anchor_present(feishu_api)
     assert "你好" in reply_request[2]["content"]
     assert reply_request[2]["uuid"] == "hfc_" + "a" * 40
     assert reply_request[3]["Authorization"] == "Bearer tenant-token-1"
+
+
+async def test_send_card_without_reply_anchor_falls_back_to_chat_create(feishu_api):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="secret",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    result = await client.send_card_delivery(
+        "oc_abc",
+        {"schema": "2.0", "body": "topic notice"},
+        thread_id="omt_thread",
+        delivery_uuid="hfc_" + "a" * 40,
+    )
+
+    assert result.message_id == "om_message_1"
+    assert result.retry_count == 0
+    assert token_calls() == 1
+    send_request = requests[1]
+    assert send_request[0] == "send"
+    assert send_request[1] == "chat_id"
+    assert send_request[2]["receive_id"] == "oc_abc"
+    assert send_request[2]["uuid"] == "hfc_" + "a" * 40
+
+
+async def test_send_text_message_posts_text_with_mention(feishu_api):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="secret",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    message_id = await client.send_text_message(
+        "oc_abc",
+        '<at user_id="ou_sender"></at> ✅ 任务已完成',
+    )
+
+    assert message_id == "om_message_1"
+    assert token_calls() == 1
+    send_request = requests[1]
+    assert send_request[0] == "send"
+    assert send_request[1] == "chat_id"
+    assert send_request[2]["receive_id"] == "oc_abc"
+    assert send_request[2]["msg_type"] == "text"
+    assert json.loads(send_request[2]["content"])["text"] == (
+        '<at user_id="ou_sender"></at> ✅ 任务已完成'
+    )
+
+
+async def test_send_text_message_replies_in_thread_when_anchor_present(feishu_api):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="secret",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    message_id = await client.send_text_message(
+        "oc_abc",
+        '<at user_id="ou_sender"></at> ✅ 任务已完成',
+        thread_id="omt_thread",
+        reply_to_message_id="om_user_message",
+    )
+
+    assert message_id == "om_reply_1"
+    assert token_calls() == 1
+    reply_request = requests[1]
+    assert reply_request[0] == "reply"
+    assert reply_request[1] == "om_user_message"
+    assert reply_request[2]["msg_type"] == "text"
+    assert reply_request[2]["reply_in_thread"] is True
+    assert "任务已完成" in json.loads(reply_request[2]["content"])["text"]
+
+
+async def test_send_text_message_can_create_thread_without_thread_id(feishu_api):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="s",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    message_id = await client.send_text_message(
+        "oc_abc",
+        '<at user_id="ou_sender"></at> ✅ 任务已完成',
+        reply_to_message_id="om_user_message",
+        reply_in_thread=True,
+    )
+
+    assert message_id == "om_reply_1"
+    assert token_calls() == 1
+    reply_request = requests[1]
+    assert reply_request[0] == "reply"
+    assert reply_request[1] == "om_user_message"
+    assert reply_request[2]["msg_type"] == "text"
+    assert reply_request[2]["reply_in_thread"] is True
+
+
+@pytest.mark.parametrize(
+    "reply_to_message_id",
+    [
+        pytest.param(None, id="none"),
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace"),
+        pytest.param(123, id="non-string"),
+    ],
+)
+async def test_send_text_message_rejects_reply_in_thread_without_valid_reply_anchor(
+    feishu_api,
+    reply_to_message_id,
+):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="secret",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    with pytest.raises(ValueError, match="reply_to_message_id"):
+        await client.send_text_message(
+            "oc_abc",
+            "thread-only completion notice",
+            reply_to_message_id=reply_to_message_id,
+            reply_in_thread=True,
+        )
+
+    assert token_calls() == 0
+    assert requests == []
+
+
+async def test_send_text_message_rejects_thread_id_without_reply_anchor(feishu_api):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="secret",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    with pytest.raises(ValueError, match="reply_to_message_id"):
+        await client.send_text_message(
+            "oc_abc",
+            "thread completion notice",
+            thread_id="omt_thread",
+        )
+
+    assert token_calls() == 0
+    assert requests == []
+
+
+async def test_send_text_message_keeps_plain_reply_default_for_message_anchor(
+    feishu_api,
+):
+    test_client, requests, token_calls = feishu_api
+    client = FeishuClient(
+        FeishuClientConfig(
+            app_id="cli_test",
+            app_secret="secret",
+            base_url=str(test_client.make_url("/")),
+        )
+    )
+
+    message_id = await client.send_text_message(
+        "oc_abc",
+        "plain reply",
+        reply_to_message_id="om_user_message",
+    )
+
+    assert message_id == "om_reply_1"
+    assert token_calls() == 1
+    reply_request = requests[1]
+    assert reply_request[0] == "reply"
+    assert reply_request[1] == "om_user_message"
+    assert reply_request[2]["reply_in_thread"] is False
 
 
 @pytest.mark.parametrize("delivery_uuid", ["", "   ", "x" * 51, 123])

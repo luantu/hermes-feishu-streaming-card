@@ -64,6 +64,31 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
 
+## V4.3.7 Hermes Delivery-Filter Installer Compatibility
+
+The Hermes 2026-08-25 core passes the current session key explicitly to the Base media/local delivery filters: `filter_*_delivery_paths(..., session_key=session_key)`. V4.3.7's installer exact matcher accepts both that call and the legacy call without keywords. Any extra keyword, wrong name or value, `**kwargs`, or missing or extra positional argument is rejected so HFC never patches an unknown Base contract.
+
+This fix only changes Hermes source-contract recognition for `install`, `setup`, and `doctor`; it does not change Feishu card/API delivery. If a Hermes upgrade produces `exact_delivery_contract: missing_or_unsupported`, upgrade HFC to V4.3.7 and rerun the official `setup` or `install` command. Do not edit Hermes `gateway/platforms/base.py` by hand.
+
+## V4.3.6 Topic Creation and Requester Mentions
+
+Feishu's create API does not support `receive_id_type=thread_id`. Starting in V4.3.6, anchored topic delivery continues through the reply API, while a notification or cron create that has only `thread_id` and no anchor falls back to the parent `chat_id` to avoid `99992402`; HFC does not guess a thread root.
+
+Approval/clarify cards and enabled completion notifications can `@` mention the requester by default. Configure them independently when needed:
+
+```yaml
+card:
+  mentions_in_cards: true
+  interaction_mentions:
+    approval: true
+    clarify: false
+  completion_notify:
+    enabled: true
+    mention: false
+```
+
+`mentions_in_cards: false` is the master off switch and overrides every per-kind and completion mention setting. With completion mentions disabled, sender-less system/background work can still send a plain completion notification.
+
 ## V4.2.0 Safe Private-Chat Updates
 
 An exact bare `/update` in a Feishu private chat first performs read-only checks of the Hermes version, Git worktree, managed hooks, current `origin/main` snapshot, active work, and the cached same-version maintenance wheel. It then shows a 120-second confirmation card. Confirmation authorizes the official `hermes update --yes` to fetch the latest `origin/main` at execution time. If the remote advances after confirmation, the independent runtime first reinstalls the same HFC version and restores the hook, sidecar, and Gateway, then reports the snapshot change as a failure in the original card. Card-based automatic update is available only when runtime telemetry proves complete turn/cron/API counting from one aggregate sample and verifies that the running `HERMES_HOME` matches the checkout marker directory.
@@ -109,6 +134,18 @@ Multi-bot groups from Issue #162 must opt into native mode: add the group to `bi
 New installs write `integrity.mode: safe`; an old config without the section loads as `notify`. After an older install explicitly runs `integrity migrate-safe --config CONFIG --hermes-dir HERMES_DIR --yes`, it reports `sidecar.restart_required: true` and `gateway.restart_required: false`; restart the sidecar. Only a later strict repair that reinstalls the hook reports `gateway.restart_required: true`, and HFC never restarts Gateway automatically. Signed `runtime.hello` / `runtime.heartbeat` events distinguish process liveness from actual delivery readiness.
 
 `service.manager: auto` selects an available `systemd-user` manager or falls back to `detached`; it never silently enters `systemd-system` or invokes sudo. `systemd-system` is an explicit Linux-only transient-unit opt-in. Docker stays an ordinary container process with `detached`. See [V4.1 safety controls and troubleshooting](wiki/v4.1-safety-controls.md) for the full boundary.
+
+V4.3.0 also provides explicit boot persistence without changing the transient default used by `start`. A Linux user or administrator first confirms linger, then creates the real ownership-protected user unit:
+
+```bash
+loginctl enable-linger "$USER"
+hermes-feishu-card enable \
+  --config ~/.hermes_feishu_card/config.yaml \
+  --hermes-dir ~/.hermes/hermes-agent \
+  --yes
+```
+
+`enable` safely stops an existing verified transient/detached sidecar, writes a mode-`0600` unit and private SHA-256 manifest, runs `systemctl --user enable --now`, and verifies package/Python identity through `/health`. Missing linger, an unknown same-name unit, unit/manifest drift, failed shutdown, or an uninstalled Hermes integration refuses the operation. Use `hermes-feishu-card disable` to remove it; do not delete the unit or ownership manifest manually.
 
 ## V4.0.0 Live Dual-Stream Cards
 
@@ -500,14 +537,14 @@ Use `install-docker.sh` inside an existing Hermes container. It defaults to
 script selects Hermes venv Python and does not fall back to system Python unless
 `HFC_PYTHON` is set.
 
-The Compose example defaults `HFC_VERSION` to `v4.2.12`.
+The Compose example defaults `HFC_VERSION` to `v4.3.7`.
 
 Example:
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.2.12
+export HFC_VERSION=v4.3.7
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -750,6 +787,14 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.3.7](release-notes-v4.3.7.en.md) | 2026-08-26 | Issue #240 / PR #241: the installer exact matcher supports Hermes session-scoped media/local delivery filters while keeping every other keyword call fail-closed |
+| [v4.3.6](release-notes-v4.3.6.en.md) | 2026-08-25 | Issue #237: unanchored topic creation uses `chat_id` instead of Feishu's rejected `receive_id_type=thread_id`; PR #228: approval/clarify cards and completion notifications support configurable requester `@` mentions |
+| [v4.3.5](release-notes-v4.3.5.en.md) | 2026-08-24 | Prevents the HFC `edit_message` wrapper from forwarding unsupported internal `metadata` to the Hermes v2026.8.3 Feishu adapter while preserving metadata-aware adapters and ordinary unknown-keyword `TypeError` behavior |
+| [v4.3.4](release-notes-v4.3.4.en.md) | 2026-08-24 | Avoids reverse-DNS startup stalls for the runtime interaction listener and permits process exit without an explicit close; V3 Hybrid `doctor --json` uses the V3 inspector instead of emitting Legacy manifest/hash/path failures |
+| [v4.3.3](release-notes-v4.3.3.en.md) | 2026-08-24 | Preserves the reply anchor and `reply_in_thread` placement when the first reply creates a thread; completion notifications remain in that thread, while an explicit thread text reply without an anchor fails closed |
+| [v4.3.2](release-notes-v4.3.2.en.md) | 2026-08-23 | Issue #227: keeps schema 2.0 streaming ownership separate from the legacy interaction callback card, fixing `230099/200800` and `200673` |
+| [v4.3.1](release-notes-v4.3.1.en.md) | 2026-08-20 | Fixes Hermes 0.20 / Feishu WebSocket profile, callback, and streaming resume after a click, the first text-fallback reply, and v4.3.0 persistent-enable reconciliation |
+| [v4.3.0](release-notes-v4.3.0.en.md) | 2026-08-19 | Hermes v2026.8.3 Hybrid capability proof and V3 installer, single-owner runtime interactions, fixed-tag restore, linger-backed systemd persistence, and local candidate fixes across Issues #210–#223 |
 | [v4.2.12](release-notes-v4.2.12.en.md) | 2026-08-11 | Capability-aware approval cards with server-side choice validation, plus a stable zero-tool reasoning timeline |
 | [v4.2.11](release-notes-v4.2.11.en.md) | 2026-08-10 | Issue #202 freezes superseded interaction cards as “moved to the interaction card” history snapshots while preserving content, tool history, and fail-open PATCH behavior |
 | [v4.2.10](release-notes-v4.2.10.en.md) | 2026-08-10 | Non-loopback sidecar HMAC, absolute interaction expiry and late-callback rejection, plus cross-platform CI, CodeQL, Dependabot, and immutable Action pins |

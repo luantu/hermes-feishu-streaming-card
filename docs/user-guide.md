@@ -64,6 +64,31 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、`group_rules` 安全诊断、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
 
+## V4.3.7 Hermes delivery filter 安装兼容
+
+Hermes 2026-08-25 core 会把当前 session key 显式传给 Base media/local delivery filter：`filter_*_delivery_paths(..., session_key=session_key)`。V4.3.7 的 installer exact matcher 同时接受该调用与旧版无关键字调用；任何额外关键字、错误名称或值、`**kwargs`、缺少或增加位置参数都会拒绝安装，避免在未知 Base contract 上打补丁。
+
+该修复只影响 `install` / `setup` / `doctor` 的 Hermes source contract 识别，不改变 Feishu 卡片/API 投递。升级 Hermes 后如果看到 `exact_delivery_contract: missing_or_unsupported`，先升级 HFC 到 V4.3.7，再重新运行官方 `setup` 或 `install`；不要手工修改 Hermes `gateway/platforms/base.py`。
+
+## V4.3.6 话题 create 与发起人提及
+
+飞书 create API 不支持 `receive_id_type=thread_id`。V4.3.6 起，有真实 reply anchor 的话题继续使用 reply API；只有 `thread_id`、没有 anchor 的通知或 cron create 会回落到父 `chat_id`，避免 `99992402`，但不会猜测 thread root。
+
+approval/clarify 交互卡和启用后的完成通知默认可 `@` 发起人。可按需关闭：
+
+```yaml
+card:
+  mentions_in_cards: true
+  interaction_mentions:
+    approval: true
+    clarify: false
+  completion_notify:
+    enabled: true
+    mention: false
+```
+
+`mentions_in_cards: false` 是总关闭开关；它会覆盖所有 per-kind 与 completion mention 设置。关闭 completion mention 后，无 sender 的系统/后台任务仍可发送普通完成通知。
+
 ## V4.2.0 飞书私聊安全升级
 
 在飞书私聊发送精确的裸 `/update` 时，HFC 会先只读检查 Hermes 版本、Git 工作树、managed hook、当前 `origin/main` 快照、当前任务和已缓存的同版本维护 wheel，再显示 120 秒有效的确认卡。确认即授权官方 `hermes update --yes` 在执行时重新 fetch 最新 `origin/main`；若远端在确认后推进，流程会先重装同一 HFC 版本、恢复 hook、sidecar 和 Gateway，再在原卡片将快照变化报告为失败。只有 runtime 能以单次聚合采样证明 turn/cron/API 计数完整，并证明实际 `HERMES_HOME` 与 checkout marker 目录一致时，卡片自动更新才可用。
@@ -109,6 +134,18 @@ Issue #162 所述的多机器人群聊需要显式使用原生模式：把目标
 新安装写 `integrity.mode: safe`，旧配置缺段时按 `notify` 加载。旧安装显式执行 `integrity migrate-safe --config CONFIG --hermes-dir HERMES_DIR --yes` 后会得到 `sidecar.restart_required: true`、`gateway.restart_required: false`，需要重启 sidecar；若后续 strict repair 重新安装 hook，才会显示 `gateway.restart_required: true`，且 HFC 不自动重启 Gateway。认证 `runtime.hello` / `runtime.heartbeat` 用于区分进程存活与真实发卡 readiness。
 
 `service.manager: auto` 只选择可用的 `systemd-user`，否则使用 `detached`，从不隐式进入 `systemd-system` 或调用 sudo。`systemd-system` 仅 Linux 显式 opt-in 且只用 transient unit；Docker 保持普通容器进程与 `detached`。完整排障见 [V4.1 安全控制与排障](wiki/v4.1-safety-controls.md)。
+
+V4.3.0 另提供显式开机常驻，不改变 `start` 的 transient 默认值。Linux 用户先由自己或管理员确认 linger，再创建受 HFC ownership 保护的真实 user unit：
+
+```bash
+loginctl enable-linger "$USER"
+hermes-feishu-card enable \
+  --config ~/.hermes_feishu_card/config.yaml \
+  --hermes-dir ~/.hermes/hermes-agent \
+  --yes
+```
+
+`enable` 会先安全停止已有 verified transient/detached sidecar，再写入 mode `0600` 的 unit 与私有 SHA-256 manifest，执行 `systemctl --user enable --now` 并核对 `/health` 的 package/Python identity。未启用 linger、同名未知 unit、unit/manifest 漂移、停服失败或 Hermes integration 未安装都会拒绝。移除时使用 `hermes-feishu-card disable`；不要手工删除 unit 或 ownership manifest。
 
 ## V4.0.0 实时双轨卡片
 
@@ -529,7 +566,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v4.2.12`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.3.7`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -537,7 +574,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.2.12
+export HFC_VERSION=v4.3.7
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -822,6 +859,14 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.3.7](release-notes-v4.3.7.md) | 2026-08-26 | Issue #240 / PR #241：installer exact matcher 兼容 Hermes session-scoped media/local delivery filters，并对其他关键字调用保持 fail-closed |
+| [v4.3.6](release-notes-v4.3.6.md) | 2026-08-25 | Issue #237：无 reply anchor 的话题 create 改用 `chat_id`，避免 `receive_id_type=thread_id` 被飞书以 `99992402` 拒绝；PR #228：approval/clarify 交互卡与 completion notification 支持可配置地 `@` 发起人 |
+| [v4.3.5](release-notes-v4.3.5.md) | 2026-08-24 | 修复 HFC `edit_message` wrapper 向 Hermes v2026.8.3 Feishu adapter 转发不受支持的内部 `metadata` 所触发的 `TypeError`，并保留支持该参数的 adapter 与其他未知关键字的原有语义 |
+| [v4.3.4](release-notes-v4.3.4.md) | 2026-08-24 | runtime interaction listener 避免 reverse-DNS 启动阻塞并允许未显式 close 时进程退出；V3 Hybrid `doctor --json` 改用 V3 inspector，消除 Legacy manifest/hash/path 误报 |
+| [v4.3.3](release-notes-v4.3.3.md) | 2026-08-24 | 首回复建 thread 固定 reply anchor 与 `reply_in_thread` placement；completion notification 保持 thread，缺 anchor 的显式 thread text reply fail-closed |
+| [v4.3.2](release-notes-v4.3.2.md) | 2026-08-23 | Issue #227：稳定分离 schema 2.0 streaming owner 与 legacy interaction callback card，修复 `230099/200800` 与 `200673` |
+| [v4.3.1](release-notes-v4.3.1.md) | 2026-08-20 | 修复 Hermes 0.20 / 飞书 WebSocket 点击后的 profile/callback/流式恢复与 text fallback 首次回复，并修复 v4.3.0 persistent enable 对账 |
+| [v4.3.0](release-notes-v4.3.0.md) | 2026-08-19 | Hermes v2026.8.3 Hybrid 能力探测与 V3 installer、单 owner runtime interaction、fixed-tag restore、systemd linger 常驻及 Issues #210–#223 本地候选修复 |
 | [v4.2.12](release-notes-v4.2.12.md) | 2026-08-11 | 审批卡能力收敛与服务端选项校验；零工具卡保持稳定 reasoning timeline |
 | [v4.2.11](release-notes-v4.2.11.md) | 2026-08-10 | Issue #202 旧交互卡冻结为“已转入交互卡片”历史快照，保留内容与工具记录，并维持 PATCH fail-open |
 | [v4.2.10](release-notes-v4.2.10.md) | 2026-08-10 | 非回环 sidecar HMAC、交互绝对过期/晚到回调拒绝，以及跨平台 CI、CodeQL、Dependabot 与 Action SHA 固定 |

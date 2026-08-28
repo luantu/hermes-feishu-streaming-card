@@ -15,6 +15,14 @@ Hermes Gateway
 
 Hermes 进程内的 hook 只负责提取和转发。sidecar 负责会话状态、卡片渲染、Feishu API、重试、诊断和 metrics。
 
+## V4.3 固定 tag Hybrid 流
+
+Hermes `v2026.8.3` 先由真实 PluginManager 加载 `hermes-feishu-card` entrypoint。`pre_llm_call` 把 authenticated ingress 与 canonical turn 绑定；`post_llm_call` 只暂存 answer；唯一 terminal authority 来自 exact `on_session_end`。原生 hooks 缺失的 answer/thinking delta、approval/clarify/slash round-trip、command/status、cron 与 exact Base final delivery 由 17 个 target-aware patch group 补齐。probe、render、detect、remove 和 install 全部绑定同一固定源码证据，不能只凭版本号或存在 hook 名进入 Hybrid。
+
+`/events` 对带 `event_id` 的请求先建立 single-flight owner：第一个请求完成后保存 exact status 与 JSON response；同 payload 重放相同结果，不同 payload 返回 conflict。pending owner 不因 TTL/容量驱逐，全 pending 时新 event fail-closed；completed 才进入 TTL/LRU。`subagent.updated` 使用独立 item，terminal status（含 interrupted）不能被迟到 running 重开。
+
+交互卡实际送达后，Sidecar 才保存不含 plaintext callback token 的 descriptor template。用户选择通过 domain-separated signed loopback listener 回到 PluginRuntime，按 opaque interaction key/token digest/expiry/session binding 找到原 pending entry，在 runtime lock 外直接执行原 resolver；resolver 成功后，Hermes 原 wait 被唤醒，原 claim 再一次性消费 choice。callback、Feishu create/PATCH、terminal finalize 与 cleanup 都有明确 owner/generation fence，不以第二套 wait/poll 代替 Hermes 原流程。
+
 ## V4.1 投递与完整性控制流
 
 新 turn 在任何 sequence、pending delta、session 或原生抑制发生前，通过 `hfc-policy-v1` 查询 per-chat 决策。card decision 在 turn 内固定；native decision 让 original Hermes 路径继续。sidecar 收到 `/events` 后在创建 CardSession、reply alias、动画或 Feishu client state 前再查一次。未知 profile、配置 reload 失败、proof 无效/过期/重放、timeout 或 malformed response 全部走 native fail-open。
@@ -148,11 +156,15 @@ sidecar 仍应创建 session 并发送初始卡片，不能把整条流计入 `e
 关键规则：
 
 - 首张卡片通常锚定用户 topic message id。
+- 尚无 `thread_id` 但 Hermes 明确要求从当前消息建 thread 时，hook 发送 `reply_in_thread=true` 和真实 reply anchor；sidecar 将该 placement 固定在 session 上，后续普通交互、重复交互和 runtime-admission 交互都继续留在同一 thread。
+- Feishu create API 不接受 `receive_id_type=thread_id`。只有存在真实 `reply_to_message_id` 时才能通过 reply API 保留 topic placement；`thread_id` 存在但 anchor 缺失时，实际 create 必须回落到父 `chat_id`，不能把 `omt_*`/`om_*` 当作 create receiver，也不猜测 thread root。
 - hook runtime 从真实入站 `event.message_id` 绑定可选 `turn_id`，同一轮后续事件继续携带这个稳定值；`message_id` 仍可表示 Hermes 内部 streaming/reply identity。
 - `reply_to_message_id` 只决定飞书回复锚点，不决定 session ownership。
 - sidecar 对显式 `turn_id` 启用 canonical turn hard fence：session、sequence、policy 与 native handoff 都使用 `turn_id`，绝不查询 reply alias。
 - 旧 hook 缺少 `turn_id` 时继续走兼容路径：sidecar 可用 `reply_to_message_id` 查已有 active card，找到后继续 PATCH 原卡片。
 - hook runtime 不把 `source.message_id` 当 canonical turn identity；它只保留 Feishu reply anchor 语义。
+
+无 anchor 时回落父群只改变实际 API receiver；native-handoff 的 logical topic route 与 delivery UUID identity 仍保留原 `thread_id`，避免同一 obligation 因 fallback 改变幂等键。
 
 这条规则解决：
 
@@ -228,18 +240,20 @@ V3.10.0 的 command-card adapter hook 会在运行时包装 runner 的 `_handle_
 
 ## Agent clarify / approval 交互
 
-Agent 任务内的 `interaction.requested` 会渲染为当前 streaming card 里的按钮。若本轮已经存在卡片，sidecar 会发送一张新的完整当前状态卡并把后续更新切换到新 message id；因此多轮选择始终出现在聊天底部。新卡成功送达后，前一张卡只再接受一次接力终态 PATCH，Header 与引用摘要显示“已转入交互卡片”，之后不再承载 interaction 或流式更新。
+Agent 任务内的 `interaction.requested` 会渲染为当前 streaming card 里的按钮。等待选择时使用 Feishu WebSocket card-action 可回调的 interactive-card payload；终态和普通流式更新继续使用 CardKit v2。若本轮已经存在卡片，sidecar 会发送一张新的完整当前状态卡并把后续更新切换到新 message id；因此多轮选择始终出现在聊天底部。新卡成功送达后，前一张卡只再接受一次接力终态 PATCH，Header 与引用摘要显示“已转入交互卡片”，之后不再承载 interaction 或流式更新。
 
 HTTP callback 可达时，Feishu/Lark 直接 POST 到 sidecar `/card/actions`。在 WebSocket 长连接或本地/private sidecar 场景中，按钮点击会先到 Hermes Feishu adapter 的原生 card-action channel，再由 hook runtime 接管 `interaction.select` 并转发到 sidecar `/card/actions`。
 
 关键边界：
 
 - sidecar 仍负责校验 `interaction_id` 和 callback token。
+- 按钮值与 Hermes action/context 同时携带 exact profile identity；缺失、冲突或错误 profile 不得跨 profile 命中 session。
 - callback payload 带 `open_chat_id` 时，sidecar 还会确认 chat id 与 active session 匹配。
 - 新卡使用独立 interaction delivery key；发送失败会恢复请求前 session，原卡仍保持权威，Hermes 可按同一事件安全重试。
 - 新卡发送成功后先取消并 await 原卡 animation，再从请求前的 detached session copy 渲染接力快照；canonical session、interaction result 和后续新卡渲染不被该 copy 改写。
 - 接力 PATCH 复用既有更新重试与脱敏 diagnostics；全部失败仍返回 interaction success 并提升新 message id，不回滚已送达的新卡。
-- 成功后 sidecar 记录 `interaction.completed`，Hermes hook 轮询 `/interactions/{interaction_id}` 后继续执行。
+- Hybrid runtime admission 成功后，sidecar 通过签名 loopback listener 直接调用受限 resolver，唤醒原 Hermes pending handle/future；不新建 poll、waiter、future 或第二套 UI owner。随后 `interaction.completed` 只负责卡片状态，answer/thinking delta 继续写入最新 message id。
+- 显式 `card.interaction_mode: text` 在 admission/session mutation 前返回 `applied=false`，把第一条编号/文本回复完整交回 Hermes 原生 interceptor。
 - sidecar 拒绝、超时或没有返回 card 时，hook 返回空 Feishu callback response，避免崩溃或落入未知原生 handler。
 
 ## 群聊边界

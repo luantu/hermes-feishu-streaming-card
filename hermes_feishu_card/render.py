@@ -12,7 +12,7 @@ from typing import Any, Dict, Literal, Optional
 
 from .card_limits import CardLimitInspection, inspect_card_limits
 from .model_names import normalize_model_name
-from .session import CardSession
+from .session import CardSession, _exact_feishu_open_id
 from .status import StatusConfig, resolve_display_status
 from .text import (
     TableOverflowResult,
@@ -114,6 +114,8 @@ def render_card(
     text_sizes: Mapping[str, Any] | None = None,
     loading_gif_img_key: str | None = None,
     table_overflow_mode: str = "compact",
+    interaction_profile_id: str = "default",
+    mentions_enabled: bool = True,
 ) -> Dict[str, Any]:
     return render_card_result(
         session,
@@ -129,6 +131,8 @@ def render_card(
         text_sizes=text_sizes,
         loading_gif_img_key=loading_gif_img_key,
         table_overflow_mode=table_overflow_mode,
+        interaction_profile_id=interaction_profile_id,
+        mentions_enabled=mentions_enabled,
     ).card
 
 
@@ -146,6 +150,8 @@ def render_card_result(
     text_sizes: Mapping[str, Any] | None = None,
     loading_gif_img_key: str | None = None,
     table_overflow_mode: str = "compact",
+    interaction_profile_id: str = "default",
+    mentions_enabled: bool = True,
 ) -> CardRenderResult:
     primary_text = _primary_text_for_session(session)
     table_overflow = transform_table_overflow(
@@ -166,6 +172,8 @@ def render_card_result(
         text_sizes=text_sizes,
         loading_gif_img_key=loading_gif_img_key,
         table_overflow_mode=table_overflow_mode,
+        interaction_profile_id=interaction_profile_id,
+        mentions_enabled=mentions_enabled,
     )
     inspection = inspect_card_limits(card)
     if inspection.safe:
@@ -206,6 +214,8 @@ def _render_card_unchecked(
     text_sizes: Mapping[str, Any] | None = None,
     table_overflow_mode: str = "compact",
     loading_gif_img_key: str | None = None,
+    interaction_profile_id: str = "default",
+    mentions_enabled: bool = True,
 ) -> Dict[str, Any]:
     if timeline_expanded is None:
         timeline_expanded = session.status not in {"completed", "failed"}
@@ -262,6 +272,18 @@ def _render_card_unchecked(
         if runtime_summary
         else _runtime_header_title(session, configured_title)
     )
+    pending_interaction = session.active_interaction
+    if (
+        pending_interaction is not None
+        and pending_interaction.status == "pending"
+        and pending_interaction.kind in {"approval", "clarify"}
+    ):
+        prefix = (
+            "待审批："
+            if pending_interaction.kind == "approval"
+            else "待选择："
+        )
+        header_title = f"{prefix}{header_title}"
     main_role = "notice" if session.delivery_kind == "notice" else "body"
     elements = []
     if primary_text:
@@ -287,7 +309,13 @@ def _render_card_unchecked(
             used_text_size_roles=used_text_size_roles,
         )
         elements.extend(timeline_elements)
-    elements.extend(_render_interaction_elements(session, interaction_mode=interaction_mode))
+    elements.extend(
+        _render_interaction_elements(
+            session,
+            interaction_mode=interaction_mode,
+            mentions_enabled=mentions_enabled,
+        )
+    )
     if attachment_summary:
         elements.append(
             {
@@ -373,6 +401,13 @@ def _render_card_unchecked(
         card["config"]["style"] = {"text_size": mapped_styles}
     if not native_reply_completed:
         card["header"] = header
+    if _uses_legacy_callback_card(session, interaction_mode=interaction_mode):
+        return _render_legacy_callback_card(
+            session,
+            header=header,
+            profile_id=_normalize_interaction_profile_id(interaction_profile_id),
+            mentions_enabled=mentions_enabled,
+        )
     return card
 
 def render_cards(
@@ -438,6 +473,198 @@ def _split_content_by_tables(text: str) -> list[str]:
     if current_blocks:
         parts.append("".join(current_blocks))
     return parts
+
+
+def _uses_legacy_callback_card(
+    session: CardSession, *, interaction_mode: str
+) -> bool:
+    interaction = session.active_interaction
+    return (
+        interaction is not None
+        and interaction.status == "pending"
+        and _normalize_interaction_mode(interaction_mode) == "callback"
+    )
+
+
+def render_legacy_interaction_callback_card(
+    session: CardSession,
+    *,
+    title: str = DEFAULT_TITLE,
+    interaction_profile_id: str = "default",
+    mentions_enabled: bool = True,
+) -> Dict[str, Any]:
+    """Render one interaction entirely on Feishu's legacy callback rail.
+
+    This is the dedicated legacy auxiliary renderer used for interaction
+    messages that are NOT the session's streaming card: the streaming card
+    (schema 2.0) keeps its stable owner, and the interaction replies on this
+    legacy rail instead of switching the session card's dialect.
+    """
+    interaction = session.active_interaction
+    if interaction is None:
+        raise ValueError("active interaction is required")
+    template = {
+        "completed": "green",
+        "failed": "red",
+    }.get(interaction.status, "blue")
+    header_title = interaction.prompt or title
+    if (
+        interaction.status == "pending"
+        and interaction.kind in {"approval", "clarify"}
+    ):
+        prefix = "待审批：" if interaction.kind == "approval" else "待选择："
+        header_title = f"{prefix}{header_title}"
+    header = {
+        "template": template,
+        "title": {
+            "tag": "plain_text",
+            "content": header_title,
+        },
+    }
+    return _render_legacy_callback_card(
+        session,
+        header=header,
+        profile_id=_normalize_interaction_profile_id(interaction_profile_id),
+        mentions_enabled=mentions_enabled,
+    )
+
+
+def _render_legacy_callback_card(
+    session: CardSession,
+    *,
+    header: Mapping[str, Any],
+    profile_id: str,
+    mentions_enabled: bool = True,
+) -> Dict[str, Any]:
+    """Render an interaction on Feishu's server-callback card rail.
+
+    CardKit v2 ``behaviors`` callbacks are client-side interactions and do not
+    reach Hermes' ``p2.card.action.trigger`` WebSocket handler.  Conversely,
+    the legacy ``action`` container is rejected when embedded in a schema-2.0
+    card.  Pending and terminal renders therefore stay in the legacy dialect.
+    """
+    interaction = session.active_interaction
+    if interaction is None:  # Defensive: caller already checked the state.
+        return {}
+
+    elements: list[Dict[str, Any]] = []
+    if interaction.status == "completed":
+        choice = interaction.choice_label or interaction.choice or "已完成"
+        user = f" by {interaction.user_name}" if interaction.user_name else ""
+        elements.append(
+            {"tag": "markdown", "content": f"已选择：{choice}{user}"}
+        )
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": dict(header),
+            "elements": elements,
+        }
+    if interaction.status != "pending":
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": interaction.error or "交互请求失败",
+            }
+        )
+        return {
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": dict(header),
+            "elements": elements,
+        }
+
+    description = normalize_stream_text(interaction.description).strip()
+    if description:
+        elements.append({"tag": "markdown", "content": description})
+
+    mention = _interaction_mention_content(
+        session,
+        interaction,
+        mentions_enabled=mentions_enabled,
+    )
+    if interaction.multi_select:
+        if mention:
+            hint = f"{mention} 请选择（可多选）"
+            if interaction.allow_custom_input:
+                hint += "，或输入自定义内容"
+            elements.append({"tag": "markdown", "content": hint})
+        elements.append(
+            _legacy_form(
+                _render_multi_select_form(interaction, profile_id=profile_id)
+            )
+        )
+    else:
+        hint = "请选择一个选项"
+        if interaction.allow_custom_input:
+            hint += "，或输入自定义内容"
+        if mention:
+            hint = f"{mention} {hint}"
+        elements.append({"tag": "markdown", "content": hint})
+        buttons = [
+            _legacy_button(
+                _render_choice_button(
+                    interaction,
+                    index,
+                    option,
+                    profile_id=profile_id,
+                )
+            )
+            for index, option in enumerate(interaction.options)
+        ]
+        for offset in range(0, len(buttons), 5):
+            elements.append({"tag": "action", "actions": buttons[offset : offset + 5]})
+        if interaction.allow_custom_input:
+            elements.append(
+                _legacy_form(_render_other_form(interaction, profile_id=profile_id))
+            )
+
+    elements.extend(
+        [
+            {"tag": "hr"},
+            {"tag": "markdown", "content": "等待选择…"},
+        ]
+    )
+    return {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": dict(header),
+        "elements": elements,
+    }
+
+
+def _legacy_button(button: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in button.items()
+        if key not in {"element_id", "size", "width", "behaviors"}
+    }
+
+
+def _legacy_form(form: Mapping[str, Any]) -> Dict[str, Any]:
+    elements: list[Dict[str, Any]] = []
+    for raw_element in form.get("elements", []):
+        if not isinstance(raw_element, Mapping):
+            continue
+        element = {
+            key: value
+            for key, value in raw_element.items()
+            if key not in {"element_id", "size", "width", "behaviors"}
+        }
+        if element.pop("form_action_type", None) == "submit":
+            element["action_type"] = "form_submit"
+        elements.append(element)
+    return {
+        "tag": "form",
+        "name": form.get("name", "hfc_interaction_form"),
+        "elements": elements,
+    }
+
+
+def _normalize_interaction_profile_id(value: Any) -> str:
+    if type(value) is not str:
+        return "default"
+    candidate = value.strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", candidate) is None:
+        return "default"
+    return candidate
 
 
 def _card_quote_summary(
@@ -609,14 +836,49 @@ def _render_main_content_elements(
     return elements
 
 
+def _interaction_mention_content(
+    session: CardSession,
+    interaction: Any,
+    *,
+    mentions_enabled: bool = True,
+) -> str:
+    """Return the in-card @ mention prefix for an approval/clarify card, or ``""``.
+
+    The @ mention of the requester / clarified user is returned as a bare
+    ``<at id=...>`` prefix (no trailing text) so callers can merge it into
+    the interaction hint line instead of rendering a separate mention row.
+    Only pending approval/clarify interactions are mentioned, only when the
+    per-kind mention flag is enabled, and only when the session carries a
+    valid Feishu open_id for the requester.
+    """
+    if not mentions_enabled:
+        return ""
+    if getattr(interaction, "status", "") != "pending":
+        return ""
+    if getattr(interaction, "kind", "") not in {"approval", "clarify"}:
+        return ""
+    open_id = _exact_feishu_open_id(getattr(session, "sender_open_id", ""))
+    if not open_id:
+        return ""
+    return f'<at id="{open_id}"></at>'
+
+
 def _render_interaction_elements(
-    session: CardSession, *, interaction_mode: str = "callback"
+    session: CardSession,
+    *,
+    interaction_mode: str = "callback",
+    mentions_enabled: bool = True,
 ) -> list[Dict[str, Any]]:
     interaction = session.active_interaction
     if interaction is None:
         return []
 
     elements: list[Dict[str, Any]] = []
+    mention = _interaction_mention_content(
+        session,
+        interaction,
+        mentions_enabled=mentions_enabled,
+    )
     if interaction.status == "pending" and interaction.description:
         elements.append(
             {
@@ -645,15 +907,12 @@ def _render_interaction_elements(
                     "content": "\n".join(choice_lines),
                 }
             )
-        return elements
-
-    if interaction.status == "pending":
-        if interaction.multi_select:
-            elements.append(_render_multi_select_form(interaction))
-        else:
-            hint = "（单选）请选择"
-            if interaction.allow_custom_input:
-                hint += "，或输入自定义内容"
+        if mention:
+            hint = (
+                f"{mention} 请选择（可多选）"
+                if interaction.multi_select
+                else f"{mention} 请选择一个选项"
+            )
             elements.append(
                 {
                     "tag": "markdown",
@@ -661,8 +920,51 @@ def _render_interaction_elements(
                     "content": hint,
                 }
             )
-            for index, option in enumerate(interaction.options):
-                elements.append(_render_choice_button(interaction, index, option))
+        return elements
+
+    if interaction.status == "pending":
+        if interaction.multi_select:
+            if mention:
+                hint = f"{mention} 请选择（可多选）"
+                if interaction.allow_custom_input:
+                    hint += "，或输入自定义内容"
+                elements.append(
+                    {
+                        "tag": "markdown",
+                        "element_id": "interaction_hint",
+                        "content": hint,
+                    }
+                )
+            elements.append(_render_multi_select_form(interaction))
+        else:
+            hint = "（单选）请选择"
+            if interaction.allow_custom_input:
+                hint += "，或输入自定义内容"
+            if mention:
+                hint = f"{mention} {hint}"
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "interaction_hint",
+                    "content": hint,
+                }
+            )
+            choice_buttons = [
+                _render_choice_button(interaction, index, option)
+                for index, option in enumerate(interaction.options)
+            ]
+            # The Feishu long-connection p2.card.action.trigger channel only
+            # dispatches server-side button events from an ``action`` element.
+            # Keep groups within the legacy five-action limit while retaining
+            # the surrounding CardKit v2 streaming card.
+            for offset in range(0, len(choice_buttons), 5):
+                elements.append(
+                    {
+                        "tag": "action",
+                        "element_id": f"hfc_choice_actions_{offset // 5}",
+                        "actions": choice_buttons[offset : offset + 5],
+                    }
+                )
             if interaction.allow_custom_input:
                 elements.append(_render_other_form(interaction))
         return elements
@@ -671,8 +973,20 @@ def _render_interaction_elements(
         choice = interaction.choice_label or interaction.choice or "已完成"
         user = f" by {interaction.user_name}" if interaction.user_name else ""
         content = f"已选择：{choice}{user}"
-    else:
-        content = interaction.error or "交互请求失败"
+        original_hover = _render_interaction_original_hover(interaction, content)
+        if original_hover is not None:
+            elements.append(original_hover)
+        else:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "interaction_result",
+                    "content": content,
+                }
+            )
+        return elements
+
+    content = interaction.error or "交互请求失败"
     elements.append(
         {
             "tag": "markdown",
@@ -681,6 +995,49 @@ def _render_interaction_elements(
         }
     )
     return elements
+
+
+_HOVER_ORDINALS = ("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")
+
+
+def _render_interaction_original_hover(
+    interaction: Any,
+    content: str,
+) -> Dict[str, Any] | None:
+    lines: list[str] = []
+    question = _hover_plain_line(interaction.prompt or interaction.description)
+    if question:
+        lines.append(f"❓ {question}")
+    option_texts: list[str] = []
+    for index, option in enumerate(interaction.options or [], start=1):
+        label = _hover_plain_line(getattr(option, "label", ""))
+        if not label:
+            continue
+        ordinal = (
+            _HOVER_ORDINALS[index - 1]
+            if index <= len(_HOVER_ORDINALS)
+            else f"{index}."
+        )
+        option_texts.append(f"{ordinal} {label}")
+    if option_texts:
+        lines.append("📋 " + "  ".join(option_texts))
+    if not lines:
+        return None
+    tooltip = "\n".join(lines)
+    if len(tooltip) > 500:
+        tooltip = tooltip[:497].rstrip() + "…"
+    return {
+        "tag": "button",
+        "element_id": "interaction_hover",
+        "type": "text",
+        "size": "small",
+        "text": {"tag": "plain_text", "content": content},
+        "hover_tips": {"tag": "plain_text", "content": tooltip},
+    }
+
+
+def _hover_plain_line(text: Any) -> str:
+    return " ".join(normalize_stream_text(str(text or "")).strip().split())
 
 
 def _interaction_callback_value(
@@ -698,7 +1055,11 @@ def _interaction_callback_value(
 
 
 def _render_choice_button(
-    interaction: Any, index: int, option: Any
+    interaction: Any,
+    index: int,
+    option: Any,
+    *,
+    profile_id: str = "default",
 ) -> Dict[str, Any]:
     return {
         "tag": "button",
@@ -712,16 +1073,17 @@ def _render_choice_button(
         "type": _button_type(option.style),
         "size": "medium",
         "width": "default",
-        "behaviors": [
-            {
-                "type": "callback",
-                "value": _interaction_callback_value(
-                    interaction,
-                    choice=option.value,
-                    choice_label=option.label,
-                ),
-            }
-        ],
+        # Hermes Feishu receives card actions through the server-side
+        # p2.card.action.trigger WebSocket callback.  That callback exposes the
+        # button's top-level ``value`` as event.action.value.  A CardKit
+        # ``behaviors: callback`` entry only drives client callback behavior and
+        # does not reach this long-connection handler.
+        "value": _interaction_callback_value(
+            interaction,
+            choice=option.value,
+            choice_label=option.label,
+            profile_id=_normalize_interaction_profile_id(profile_id),
+        ),
     }
 
 
@@ -738,7 +1100,9 @@ def _render_other_input() -> Dict[str, Any]:
     }
 
 
-def _render_other_form(interaction: Any) -> Dict[str, Any]:
+def _render_other_form(
+    interaction: Any, *, profile_id: str = "default"
+) -> Dict[str, Any]:
     """Single-select card footer: a form with the free-text input + submit
     button. On submit, Feishu returns action.form_value.hfc_other with the
     user's typed answer and action.name = hfc_other_<callback_token>.
@@ -757,12 +1121,17 @@ def _render_other_form(interaction: Any) -> Dict[str, Any]:
                 "width": "default",
                 "form_action_type": "submit",
                 "name": f"hfc_other_{interaction.callback_token}",
+                "value": {
+                    "profile_id": _normalize_interaction_profile_id(profile_id)
+                },
             },
         ],
     }
 
 
-def _render_multi_select_form(interaction: Any) -> Dict[str, Any]:
+def _render_multi_select_form(
+    interaction: Any, *, profile_id: str = "default"
+) -> Dict[str, Any]:
     """Multi-select card body: a form with a native multi-select dropdown
     (multi_select_static) + a single confirm button, plus the free-text
     'Other' input.
@@ -812,6 +1181,9 @@ def _render_multi_select_form(interaction: Any) -> Dict[str, Any]:
             "width": "fill",
             "form_action_type": "submit",
             "name": f"hfc_confirm_{interaction.callback_token}",
+            "value": {
+                "profile_id": _normalize_interaction_profile_id(profile_id)
+            },
         }
     )
     return {
@@ -940,6 +1312,28 @@ def _render_timeline_elements(
                     ),
                 )
             )
+        elif item.kind == "subagent":
+            detail = _limit_text(
+                normalize_stream_text(item.detail),
+                max_tool_result_chars,
+                overflow_label="子代理详情过长，已截断",
+            )
+            panel_elements.extend(
+                _timeline_markdown_elements(
+                    _render_subagent_timeline_row(
+                        item.title,
+                        item.status,
+                        detail,
+                    ),
+                    f"auxiliary_timeline_subagententry_{index}",
+                    text_size=_role_text_size(
+                        text_sizes,
+                        "tool",
+                        default="x-small",
+                        used_roles=used_text_size_roles,
+                    ),
+                )
+            )
         elif item.kind == "notice":
             content = _limit_text(
                 normalize_stream_text(item.content),
@@ -1038,6 +1432,28 @@ def _render_tool_timeline_row(
     for line in str(detail or "").splitlines():
         safe_line = html.escape(line, quote=False)
         lines.append(f'<font color="grey">　{safe_line}</font>')
+    return "\n".join(lines)
+
+
+def _render_subagent_timeline_row(title: str, status: str, detail: str) -> str:
+    normalized_status = str(status or "running").strip().lower()
+    safe_title = html.escape(str(title or "子代理"), quote=False)
+    label = f"子代理：{safe_title}"
+    if normalized_status in {"completed", "success", "succeeded"}:
+        color, headline = "green", f"✓ **{label}** · 已完成"
+    elif normalized_status in {"failed", "error", "timeout", "blocked"}:
+        color, headline = "red", f"✕ **{label}** · 失败"
+    elif normalized_status in {"cancelled", "canceled"}:
+        color, headline = "grey", f"⊘ **{label}** · 已取消"
+    elif normalized_status == "interrupted":
+        color, headline = "grey", f"⊘ **{label}** · 已中断"
+    elif normalized_status in {"queued", "waiting"}:
+        color, headline = "grey", f"○ **{label}** · 等待中"
+    else:
+        color, headline = "blue", f"{_spinner_frame()} **{label}** · 进行中"
+    lines = [f'<font color="{color}">{headline}</font>']
+    for line in str(detail or "").splitlines():
+        lines.append(f'<font color="grey">　{html.escape(line, quote=False)}</font>')
     return "\n".join(lines)
 
 
@@ -1156,7 +1572,7 @@ def _render_footer(
         )
         minutes = max(1, int(math.ceil(remaining_seconds / 60.0)))
         return f"等待选择 · ⏳ {minutes} 分钟后过期"
-    if session.status != "completed":
+    if session.status != "completed" and display_status != "completed":
         if loading_gif_img_key:
             return _render_thinking_footer_gif(loading_gif_img_key)
         return _spinner_text("生成中")

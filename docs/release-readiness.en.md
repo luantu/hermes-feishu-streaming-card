@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.2.12`. This cycle derives approval-card choices from Hermes `smart_denied`, `allow_session`, and `allow_permanent` capabilities and carries an explicit `allow_custom_input` contract through the hook, event, session, renderer, and sidecar callback boundary. With the reasoning timeline enabled, zero-tool cards retain one stable collapsed entry throughout their lifecycle. Full automation, build, CI, exact merge SHA, public tag/install, and Release assets are marked passed only after completion.
+Current release candidate: `4.3.7`. This cycle fixes Issue #240 / PR #241: the Hermes 2026-08-25 core passes `session_key=session_key` to the Base media/local delivery filters, and the installer exact matcher now accepts that new call plus the legacy call without keywords while every other shape remains fail-closed. Full automation, the release PR, exact merge SHA, public tag/install, and Release assets are marked passed only after completion. This cycle has not independently run a real Feishu client smoke; automation is not represented as platform acceptance.
 
 V3.9.0 was released on 2026-07-11, and V3.9.1 was released on 2026-07-11. The V4.0.13 all-command lifecycle remains intact; V4.2.0 narrows only a private-chat bare `/update` into the stricter dedicated maintenance card.
 
@@ -146,6 +146,86 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 - Verify macOS, Linux, Windows, and checksums assets after tagging.
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
+
+## V4.3.7 Release Gates
+
+- Issue #240 / PR #241: the exact matchers for Base `filter_media_delivery_paths` / `filter_local_delivery_paths` must accept both the legacy single-positional-argument call and the new call with exactly `session_key=session_key`, avoiding `exact_delivery_contract: missing_or_unsupported`.
+- Extra, wrong, or unpacked keywords, wrong values, and missing or extra positional arguments must all fail closed. Apply/remove/restore must remain idempotent and byte-exact.
+- Exact PR head `5e75650b0f147a24e65d5f0e499fe8b5a3f8f22f`: focused regression **`460 passed, 1 skipped`**; all six adversarial call shapes were rejected; real Hermes source at `82b32f32ef` passed apply/idempotent/remove roundtrip verification.
+- Full pytest in a fresh Python 3.12 regular-wheel environment **`3330 passed, 5 skipped in 569.93s`**; `git diff --check` **passed**.
+- All 12 GitHub checks on PR #241 passed; exact merge `7fcf3cbd67d3a5100739e9e3d3d7cdcce080cb62`. Release-candidate CI, exact release merge, annotated tag, public tagged install, and Release assets/checksums: **pending the final gates**.
+- Real Feishu client smoke: **not run**. This fix only changes installer AST-contract recognition and does not alter Feishu API/card runtime behavior; automation is not represented as platform acceptance.
+
+## V4.3.6 Release Gates (historical)
+
+- Issue #237 / PR #238: an unanchored topic path must not use `thread_id` as the create API's `receive_id_type` or `receive_id`; the actual request must target the parent `chat_id`. A path with `reply_to_message_id` continues using the reply API and `reply_in_thread`.
+- PR #228: approval/clarify cards and the opt-in completion notification may `@` mention the requester. `card.mentions_in_cards: false` must override per-kind and completion settings. With `completion_notify.mention: false`, a system/background turn without a sender sends a plain completion notification; mention-enabled delivery still rejects a missing or malformed `open_id`.
+- The schema 2.0 streaming card remains the only PATCH owner and legacy interaction cards remain auxiliary. Native-handoff route/UUID identity remains bound to the logical topic even when the actual unanchored create falls back to the parent chat.
+- Exact feature/fix merges: PR #238 `199d0390269693e74d1ff130cb7b4ecc4570dcfe`; PR #228 `69f47123611bb1639e74d9a076212ce621322805`.
+- Existing regression evidence: #237 full pytest in a disposable regular-wheel environment **`3283 passed, 5 skipped`**; #228 final-combination related units **`225 passed`**, server integration **`324 passed`**, the two new completion regressions separately **`2 passed`**, and all 12 CI checks on the final rebased head passed.
+- v4.3.6 release candidate: `git diff --check` **passed**; full pytest in a fresh Python 3.12 regular-wheel environment **`3325 passed, 5 skipped in 560.94s`**; PEP 517 sdist/wheel, package/distribution `4.3.6` from isolated `site-packages`, the single plugin entrypoint, all 24 slices, and the main CLI plus `enable/disable --help` are verified.
+- Release PR CI, exact release merge `a2a244659f198ecd57c862455d3f4d658a827b66`, annotated tag, public tagged install, and Release assets/checksums: **completed**.
+- Real Feishu: the Issue #237 reporter verified that invalid `thread_id` creation returns `99992402`, while `chat_id` creation and the reply API succeed, and reported successful creates after a local hotfix. Independent maintainer client smoke in this cycle: **not run**. Warning throttling is outside this release.
+
+## V4.3.5 Release Gates (historical)
+
+- PR #235: the Hermes v2026.8.3 Feishu adapter exposes `edit_message(chat_id, message_id, content, *, finalize=False)` without `metadata`; when card routing does not take ownership, the HFC wrapper may remove only that wrapper-owned internal keyword before calling the original method.
+- If the original method explicitly accepts `metadata` or `**kwargs`, forwarding must remain intact. Unrelated unknown keywords must not be swallowed and must still raise `TypeError` from the original method.
+- Independent direct regressions: **passed (`4 passed`)**. Hook/server hot-area suites: **passed (`841 passed`)**. Full pytest on the exact PR head: **passed (`3279 passed, 6 skipped in 599.42s`)**.
+- Focused v4.3.5 docs/package/native-provenance gate: **passed (`99 passed`)**. Full pytest in a disposable wheel environment: **passed (`3280 passed, 5 skipped in 555.86s`)**. `git diff --check`: **passed**.
+- PEP 517 sdist/wheel and fresh Python 3.12 wheel-only provenance: **passed**. Package/distribution `4.3.5`, isolated `site-packages` import, the single Hermes plugin entrypoint, all 24 provenance slices, and the main CLI plus `enable/disable --help` are verified.
+- PR #235 HEAD `5b3bf428eb688df4b95607cba1a4ce50e2eeb8d0`: Tests run `32719244038` attempt 3 and CodeQL run `32719244032` **passed**. Attempts 1 and 2 failed only because the fixed Hermes fixture clone received GitHub HTTP 429; the third attempt passed the fixture and every platform job.
+- Exact PR merge `d56555bf9e716de67ed14f8ed992df1ec55cea21`, release merge `7829e51c4c7851aa09347e56bb8c2a7136c4b0cb`, annotated tag, public install, and Release assets/checksums are complete.
+- This cycle does not change card ownership, thread placement, callback authentication, Feishu API payloads, Hermes patch ownership, or the archived `legacy/` runtime.
+
+## V4.3.4 Release Gates (historical)
+
+- PR #229: the runtime interaction listener bind path must not invoke reverse DNS; its `serve_forever` thread must be a daemon so a short-lived command can exit without explicitly calling `close()`.
+- Issue #233: a valid `manifest_version: 3` Hybrid install must be checked through the V3 runtime binding, plugin entrypoint, and fixed-tag inspector and reported as `installed`; no Legacy install diagnosis, recovery, or integrity-repair planner may run.
+- V3 phase/config/target/backup/runtime-identity drift must fail closed with a V3-specific finding, must not expose Legacy automatic repair, and must direct operators to the official V3 restore/reinstall flow.
+- The hosted-macOS blocked-delivery close regression uses a Future deadline to verify bounded completion instead of including runner scheduling overhead in a raw `<0.25s` wall-clock assertion. The production timeout is unchanged.
+- Combined #229/#233/diagnostics/CLI/macOS-timing regressions: **passed (`191 passed`)**. Full pytest in a disposable 4.3.4 venv: **passed (`3275 passed, 6 skipped in 634.95s`)**. `git diff --check`: **passed**.
+- PEP 517 sdist/wheel and fresh Python 3.12 wheel-only provenance: **passed**. Package/distribution `4.3.4`, isolated `site-packages` import, the single Hermes plugin entrypoint, all 24 provenance slices, and the main CLI plus `enable/disable --help` are verified.
+- PR #234 candidate HEAD `435ea4e355719e0f2d904cf1bac986ff18f70876`: Tests run `32710110323` (10 jobs) and CodeQL run `32710110375` **passed**. Exact merge `2f1abcfcad50997c615103e3cdf1302c61f94c91`, tag, and Release assets/checksums are complete.
+- This cycle changes no Feishu card/API delivery semantics and sends no additional real Feishu test message. It does not replace V4.3.3's outstanding first-reply thread client acceptance.
+
+## V4.3.3 Release Gates (historical record)
+
+- When the first reply has no concrete `thread_id` but has explicit `reply_in_thread=true` and a verified `om_` anchor, the streaming card, ordinary/repeated/runtime-admission interactions, and opt-in completion notification must remain in one thread.
+- `send_text_message()` with either `reply_in_thread=true` or a non-empty `thread_id`, but without `reply_to_message_id`, must reject before token/API work and must not post a top-level fallback; the default path with no thread-placement intent remains compatible.
+- Local regressions and full pytest: **passed (`3267 passed, 6 skipped`)**. `git diff --check`, sdist/wheel builds, fresh Python 3.12 wheel-only provenance, the single Hermes plugin entry point, all 24 provenance slices, and CLI help smoke: **passed**.
+- Tests run `32657674121` (10 jobs) and CodeQL run `32657674120` for PR #232 candidate HEAD `f7de533d67f9e50afcd2c4d80fad89b572054605`: **passed**.
+- The exact merge SHA, public tag/install, and Release assets/checksums remain recorded during publication; real Feishu/Lark client acceptance is currently unverified.
+
+## V4.3.2 Release Gates (historical record)
+
+- Issue #227: the original schema 2.0 streaming message must remain the `FEISHU_MESSAGE_IDS_KEY` owner. A newly sent legacy interaction card receives callbacks only and never becomes a schema 2.0 PATCH target.
+- Direct select, custom-input form, runtime admission, repeated interactions, and expiry must return same-dialect legacy terminal cards. If the Gateway receives a schema 2.0 callback card, it returns a success toast instead of a raw callback card.
+- The dialect-aware fake must reject cross-dialect PATCH operations like Feishu. Every later answer/thinking/tool/terminal update targets only the original schema 2.0 message.
+- Combined renderer/hook/server/Feishu SDK compatibility regression: **passed (`932 passed, 1 skipped`)**; `git diff --check`: **passed**.
+- Full pytest: **passed (`3253 passed, 5 skipped in 413.97s`)**. PEP 517 sdist/wheel, fresh Python 3.12 + `lark-oapi 1.6.8` wheel-only `site-packages` provenance, package/distribution `4.3.2`, unique Hermes plugin entrypoint, all 24 slices, and main CLI/`enable`/`disable` help: **passed**.
+- Exact merge SHA, remote CI, annotated tag, public install, Release assets/checksums, and real Feishu direct-choice/custom-input-form acceptance: **recorded during publication**.
+
+## V4.3.1 Release Gates
+
+- Issue #216: a real Feishu click must reach the Hermes WebSocket card-action channel, carry the exact profile to the sidecar, and wake the original pending handle through the signed listener. Later answer/reasoning deltas for the same turn must keep PATCHing the latest card without another user message.
+- Explicit `card.interaction_mode: text` must decline runtime callback ownership before session mutation. Hermes' native interceptor consumes the first numbered/text reply without a second waiter or stale card.
+- PR #226: persistent enable accepts exact `python-sha256:` identity; systemd `WorkingDirectory` rejects relative/control-character input and safely handles `%`/backslashes; tokenless health returns an explicit empty hash while token-bearing health returns SHA-256 only.
+- Two physical clicks through fixed Hermes `v2026.8.3` and a real Feishu WebSocket reached the listener and resolved, after which the card displayed the next result. Acceptance records retain no real identifiers, tokens, answer text, or screenshots.
+- Both README contributor lists must reconcile historical releases, merged/absorbed PRs, accepted issue evidence, and commit/co-author records. GitHub's Contributors graph uses only real authorship; no synthetic commits or attribution are allowed.
+- Full pytest: **`3245 passed, 6 skipped in 425.58s`**. Sdist/wheel plus fresh Python 3.12 wheel-only venv version, `site-packages` origin, unique plugin entrypoint, 24 slices, and CLI help: **passed**.
+- Diff-check, exact merge SHA, remote CI, annotated tag, public install, and Release assets: **recorded during publication**.
+
+## V4.3.0 Release Gates
+
+- The fixed Hermes `v2026.8.3` / commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb` probe must jointly verify source hashes/call-site slices, runtime Python, entrypoint/distribution origin, and real PluginManager subprocess evidence. A version string or hook-name list is not capability proof.
+- Hybrid must detect exactly 17 patch groups across seven targets and compile every file. Repeated install must preserve the manifest hash; restore must leave a Git-clean Hermes checkout, recover the exact pre-install config SHA-256, and remove ownership evidence.
+- Interaction callbacks must wake the original Hermes pending handle/future directly. Sidecar listener POST and Feishu create/PATCH must hold no session/message lock; event-id fence, terminal/native handoff, expiry, session replacement, and caller-cancellation attacks must pass.
+- Persistent `enable` must require `Linger=yes`, safely migrate a verified transient owner, bind mode-`0600` unit/manifest by SHA-256, and retain ownership when shutdown fails. `disable` fails closed on drift.
+- Completed focused evidence: V3 installer/restore/scripts `340 passed, 5 skipped`; persistent process/CLI loopback `302 passed`; real fixed-tag install/idempotence/restore passed end to end.
+- Full pytest: **`3227 passed, 6 skipped in 378.84s`**. Sdist/wheel, fresh Python 3.12 isolated-`site-packages` provenance, exactly one Hermes plugin entrypoint, all 24 provenance slices, and the main CLI plus `enable/disable --help`: **passed locally**. The post-commit gate still reruns `git diff --check` and docs/package tests.
+- V4.3.0 classified Issue #216 as a platform zero-event boundary. Later real-world retesting exposed an additional local profile/callback/streaming-resume gap, fixed separately in V4.3.1. PR #203 changes only archived `legacy/` and is excluded from the active runtime.
+- Exact merge SHA, remote CI, annotated tag, public tag/install, and Release assets: **recorded during publication**.
 
 ## V4.2.12 Release Gates
 

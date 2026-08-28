@@ -6,8 +6,10 @@ import subprocess
 
 import pytest
 
+from hermes_feishu_card.install import detect
 from hermes_feishu_card.install.detect import detect_hermes
 from hermes_feishu_card.install.patcher import PATCH_BEGIN, PATCH_END
+from hermes_feishu_card.integration import IntegrationMode, NativeHookCapabilities
 
 
 FIXTURE_ROOT = (
@@ -44,6 +46,34 @@ def test_detect_legacy_strategy_for_v2026_4_23_fixture():
     assert detection.hook_strategy == "legacy_gateway_run"
     assert detection.compatibility == "partial"
     assert detection.capabilities["message_handler"] is True
+
+
+def test_fixed_tag_integration_detection_selects_hybrid_only_from_probe_facts(
+    monkeypatch,
+):
+    class Probe:
+        capabilities = NativeHookCapabilities.from_names(
+            {
+                "turn_start",
+                "turn_terminal_result",
+                "stable_tool_lifecycle",
+                "approval_observe",
+            }
+        )
+        reason_code = "verified"
+
+    monkeypatch.setattr(
+        detect, "probe_native_hook_capabilities", lambda *args, **kwargs: Probe()
+    )
+
+    result = detect.detect_fixed_tag_integration(
+        FIXTURE_ROOT,
+        runtime_python=Path("/verified/venv/bin/python"),
+    )
+
+    assert result.native_probe is not None
+    assert result.decision.supported is True
+    assert result.decision.mode is IntegrationMode.HYBRID
 
 
 def test_detect_013_plus_strategy_reports_optional_capabilities(tmp_path):
@@ -719,6 +749,36 @@ def test_detect_020_accepts_awaited_to_thread_delivery_contract(tmp_path):
         EXACT_BASE_V020_FIXTURE.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+
+    result = detect_hermes(tmp_path)
+
+    assert result.supported is True
+    assert result.base_required is True
+    assert result.base_hook_strategy == "exact_base_delivery"
+    assert result.capabilities["exact_base_delivery"] is True
+
+
+def test_detect_accepts_session_scoped_delivery_filter_contract(tmp_path):
+    _write_hermes_root(tmp_path, version="v2026.8.25")
+    source = EXACT_BASE_V020_FIXTURE.read_text(encoding="utf-8")
+    source = source.replace(
+        "media_files = self.filter_media_delivery_paths(media_files)",
+        (
+            "media_files = self.filter_media_delivery_paths("
+            "media_files, session_key=session_key)"
+        ),
+        1,
+    ).replace(
+        "local_files = self.filter_local_delivery_paths(local_files)",
+        (
+            "local_files = self.filter_local_delivery_paths("
+            "local_files, session_key=session_key)"
+        ),
+        1,
+    )
+    base_py = tmp_path / "gateway" / "platforms" / "base.py"
+    base_py.parent.mkdir(parents=True, exist_ok=True)
+    base_py.write_text(source, encoding="utf-8")
 
     result = detect_hermes(tmp_path)
 

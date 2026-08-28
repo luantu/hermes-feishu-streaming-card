@@ -2,6 +2,50 @@
 
 自动化测试不能完全证明 Feishu/Lark 客户端体验。涉及卡片 UX、topic、系统提示、命令卡片的版本，发布前需要真实飞书 smoke。
 
+## 首回复建 thread 候选验收
+
+- 在测试群顶层发送一条触发消息，让 Hermes 在尚无 `thread_id` 时请求 `reply_in_thread`；首张 schema 2.0 流式卡必须出现在该消息新建的 thread 中，主群不得出现 top-level fallback 卡。
+- 在同一 turn 依次触发普通 approval/clarify 和 runtime-admission interaction；每张辅助 legacy 交互卡都必须留在同一 thread，原 schema 2.0 卡继续作为唯一 stream PATCH owner。
+- 连续触发两轮 interaction，并受控让第一轮交互卡发送失败后重试；session 的 reply anchor 与 thread placement 不得被后续 event message identity 覆盖，重试也不得降级为主群新卡。
+- 显式 `reply_in_thread=true` 但缺少 reply anchor 时，确认 card 或 completion notification 不发送 top-level fallback；只保留脱敏拒绝分类，不记录真实标识符或正文。
+- 记录前后脱敏 counters，要求 `feishu_send_failures`、`feishu_update_failures` 和 `last_route_error` 不新增；不得保存真实 chat/message/user id、callback token、回答正文或私人截图。
+
+## V4.3.6 话题 create 与 requester mention 验收
+
+- 在带 `thread_id` 但刻意没有 reply anchor 的 system notice 或 cron 场景触发一次卡片 create；请求必须以 `receive_id_type=chat_id` 成功落到父群，`last_send_error.api_code` 不得出现 `99992402`，且不得把 `omt_*`/`om_*` 作为 create receiver。
+- 再以真实 `reply_to_message_id` 触发同类场景；卡片必须通过 reply API 留在原 thread，不能因前一条 fallback 永久丢失 anchored placement。
+- 默认配置下分别触发 approval 与 clarify，合法发起人 `open_id` 只渲染一次 `<at>`。设置 `card.interaction_mentions.clarify: false` 后仅 clarify 不提及；设置 `card.mentions_in_cards: false` 后 approval、clarify 与 completion 全部不提及。
+- 设置 `completion_notify: {enabled: true, mention: false}`，用无 sender 的系统/后台 turn 完成任务；必须发送一次不带 `@` 的普通完成通知。恢复 mention 默认值并提供非法 `open_id` 后不得发送通知，也不得把原始身份写入日志。
+- 每轮都确认原 schema 2.0 卡仍是唯一 streaming PATCH owner，legacy interaction card 只是 auxiliary；`230099`、`200800` 与 `200673` 不新增。
+
+## V4.3.2 Issue #227 卡片方言双轨验收
+
+- 在同一 turn 记录脱敏前后 counters，发起一次 direct choice clarify 和一次 custom-input form clarify；每轮只发送一张辅助 legacy 交互卡，原 schema 2.0 streaming card 必须保持为后续 PATCH owner。
+- 点击后 callback toast 显示“已选择”，辅助 legacy 卡原位变为无 button/form 的完成态；原 schema 2.0 卡从“已转入交互卡片”继续显示 answer/thinking/tool 更新并正常终结。
+- `/health.metrics.feishu_update_failures` 不新增，`last_update_error` 不出现 `230099`/`200800`；Gateway/客户端不出现 `200673`。不得用普通任务卡成功替代 clarify 交互卡本身的验证。
+- direct choice 与 custom-input form 都要覆盖；另复验 expired callback 的 legacy failed 卡，且 original schema 2.0 owner 只收到 schema 2.0 PATCH。
+- 若发布前没有可用的真实测试会话，只记录自动化、CI 与公开安装证据，Issue #227 保持 Open 并请报告者在 Hermes 0.20.0 + lark-oapi 1.6.8 + 飞书 WebSocket 环境复测。
+- 只记录计数、状态和脱敏版本信息；不保存真实 chat/message/user id、callback token、App Secret、用户答案、原始响应或私人截图。
+
+## V4.3.1 Hermes 0.20 交互恢复验收
+
+- 在非 default profile 发起一次 clarify 和一次 approval；卡片按钮必须携带 exact profile，Hermes WebSocket action 转发后 sidecar runtime callback attempts/successes 各增加，failures 不增加。
+- 点击后不要再发送消息；同一 turn 必须继续显示 answer/thinking 流式 PATCH 并正常终结。不能只看到“已选择”后长时间无更新、最后才一次刷新。
+- 显式切换 `card.interaction_mode: text`，发起一轮 interaction 后只回复一次编号或文本；Hermes 必须立即继续，Sidecar 不建立 runtime callback admission，旧卡不得一直显示“交互已过期”。
+- callback 404/409/timeout/expired 与 profile mismatch 用脱敏 health 分类定位；不得记录真实 choice、token、chat/user/profile id 或回答正文。
+- 若应用长连接确实收到零个 `card.action.trigger`，仍属于平台/应用订阅边界；先核对订阅、发布版本、应用身份和开放平台原始事件，再与“事件已到但本地 profile/callback 失败”区分。
+
+## V4.3.0 Hermes 0.20 Hybrid 验收
+
+- 在固定 Hermes `v2026.8.3` 安装后，`doctor --explain` 与 installer 显示 `integration.mode: hybrid`；manifest 为 V3，列出 17 个 patch group 与 7 个 target。重复 install 不改 manifest，restore 后 checkout Git clean。
+- 普通回答只出现一张 streaming card；完成后没有第二条灰色原生正文。failed/interrupted 不得因为 `applied=true` 错误抑制 Hermes 原生失败信息。
+- approval 只出现一张卡，点击 once/session/always/deny 必须唤醒当前 exact tool call；连续 approval、clarify、slash confirm 不串 choice、pending handle 或上一轮 hover 内容。
+- subagent start/running/terminal 使用独立 timeline，`interrupted` 属于终态且迟到 running 不得重开；工具调用数不包含 subagent item。
+- 断开 callback、过期 descriptor、session replacement、重复同选项和冲突选项都要保持原 pending/终态契约；不得出现第二套 poll/wait UI。
+- Linux persistent smoke：确认 `loginctl show-user "$USER" -p Linger --value` 为 `yes`，执行 `enable` 后重启 user manager/主机，`systemctl --user is-enabled/is-active hermes-feishu-card-sidecar.service` 与 `status` 均正确；`disable` 后 unit 与私有 manifest 都消失。
+- V4.3.0 原验收只覆盖 Issue #216 的平台零事件边界；V4.3.1 增加“事件已到、runtime 已继续但流式卡片未恢复”和 text fallback 首次回复的独立验收。
+- 真实飞书消息、截图、chat/user/app identity 必须脱敏；本地 fixed-tag、loopback 与自动化通过不等同于真实客户端验收。
+
 ## V4.2.12 审批能力与零工具时间线验收
 
 - approval 默认不显示或接受“其他”自定义输入；选项严格跟随 `smart_denied`、`allow_session`、`allow_permanent`，伪造固定值或 form input 返回拒绝且原 interaction 保持 pending。

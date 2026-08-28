@@ -4,6 +4,7 @@ from hermes_feishu_card.render import (
     _colored_model_label,
     render_card,
     render_card_result,
+    render_legacy_interaction_callback_card,
 )
 from hermes_feishu_card.session import CardSession, InteractionState, ToolState
 from hermes_feishu_card.status import StatusConfig
@@ -171,7 +172,7 @@ def test_pending_interaction_has_priority_over_compaction_phase():
 
     card = render_card(session, title="研发助手")
 
-    assert card["header"]["title"]["content"] == "允许继续执行吗？"
+    assert card["header"]["title"]["content"] == "待审批：允许继续执行吗？"
     assert "正在压缩上下文" not in str(card["header"])
 
 
@@ -245,18 +246,18 @@ def test_v4_waiting_prompt_moves_to_header_without_body_duplication():
     )
 
     card = render_card(session)
-    footer = next(
+    waiting = next(
         item
-        for item in card["body"]["elements"]
-        if item.get("element_id") == "footer"
+        for item in reversed(card["elements"])
+        if item.get("tag") == "markdown"
     )
 
-    assert card["header"]["title"]["content"] == "允许覆盖文件吗？"
+    assert card["header"]["title"]["content"] == "待审批：允许覆盖文件吗？"
     assert "subtitle" not in card["header"]
     assert str(card).count("允许覆盖文件吗？") == 1
     assert "目标文件：report.html" in str(card)
-    assert "等待" in footer["content"]
-    assert "ctx " not in footer["content"]
+    assert "等待" in waiting["content"]
+    assert "ctx " not in waiting["content"]
 
 
 def test_multi_select_form_binds_submit_action_to_callback_token():
@@ -274,7 +275,7 @@ def test_multi_select_form_binds_submit_action_to_callback_token():
 
     form = next(
         item
-        for item in card["body"]["elements"]
+        for item in card["elements"]
         if item.get("tag") == "form"
     )
     submit = next(
@@ -282,7 +283,8 @@ def test_multi_select_form_binds_submit_action_to_callback_token():
         for item in form["elements"]
         if item.get("tag") == "button"
     )
-    assert submit["form_action_type"] == "submit"
+    assert submit["action_type"] == "form_submit"
+    assert submit["value"] == {"profile_id": "default"}
     assert submit["name"] == "hfc_confirm_callback-secret"
     assert "approval-1" not in submit["name"]
 
@@ -548,18 +550,24 @@ def test_render_pending_interaction_as_buttons():
         )
     )
 
-    card = render_card(session)
+    card = render_card(session, interaction_profile_id="work")
 
-    buttons = [
+    assert "schema" not in card
+    assert "body" not in card
+    assert card["config"] == {"wide_screen_mode": True, "update_multi": True}
+    action = next(
         element
-        for element in card["body"]["elements"]
-        if element.get("tag") == "button"
-    ]
+        for element in card["elements"]
+        if element.get("tag") == "action"
+    )
+    buttons = action["actions"]
     assert [item["text"]["content"] for item in buttons] == ["1. 允许一次", "2. 拒绝"]
-    assert buttons[0]["behaviors"][0]["type"] == "callback"
-    assert buttons[0]["behaviors"][0]["value"]["interaction_id"] == "approval-1"
-    assert buttons[0]["behaviors"][0]["value"]["choice"] == "once"
-    assert buttons[0]["behaviors"][0]["value"]["token"]
+    assert "behaviors" not in buttons[0]
+    assert buttons[0]["value"]["hfc_action"] == "interaction.select"
+    assert buttons[0]["value"]["interaction_id"] == "approval-1"
+    assert buttons[0]["value"]["choice"] == "once"
+    assert buttons[0]["value"]["token"]
+    assert buttons[0]["value"]["profile_id"] == "work"
     assert "interaction_actions" not in str(card)
     assert "rm -rf /tmp/demo" in str(card)
     assert "hfc_other" not in str(card)
@@ -652,6 +660,7 @@ def test_render_completed_interaction_replaces_buttons_with_choice():
                 "interaction_id": "approval-1",
                 "kind": "approval",
                 "prompt": "允许执行命令吗？",
+                "description": "敏感命令详情不应保留在完成态 tooltip",
                 "options": [{"label": "允许一次", "value": "once"}],
             },
         )
@@ -677,9 +686,74 @@ def test_render_completed_interaction_replaces_buttons_with_choice():
 
     card = render_card(session)
 
-    assert not any(element.get("tag") == "button" for element in card["body"]["elements"])
+    assert not any(
+        element.get("tag") == "button" and element.get("behaviors")
+        for element in card["body"]["elements"]
+    )
     assert "已选择：允许一次" in str(card)
     assert "Bailey" in str(card)
+    hover = next(
+        element
+        for element in card["body"]["elements"]
+        if element.get("element_id") == "interaction_hover"
+    )
+    assert hover == {
+        "tag": "button",
+        "element_id": "interaction_hover",
+        "type": "text",
+        "size": "small",
+        "text": {"tag": "plain_text", "content": "已选择：允许一次 by Bailey"},
+        "hover_tips": {
+            "tag": "plain_text",
+            "content": "❓ 允许执行命令吗？\n📋 ① 允许一次",
+        },
+    }
+    assert "敏感命令详情" not in hover["hover_tips"]["content"]
+
+
+def test_render_completed_legacy_callback_card_removes_controls_and_credentials():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.active_interaction = InteractionState(
+        interaction_id="clarify-1",
+        kind="clarify",
+        prompt="请选择",
+        status="completed",
+        callback_token="secret-token",
+        choice="alpha",
+        choice_label="Alpha",
+    )
+
+    card = render_legacy_interaction_callback_card(
+        session,
+        title="Hermes Agent",
+    )
+
+    assert "schema" not in card and "body" not in card
+    assert "已选择：Alpha" in str(card)
+    assert "secret-token" not in str(card)
+    assert not any(
+        item.get("tag") in {"action", "form"} for item in card["elements"]
+    )
+
+
+def test_render_failed_legacy_callback_card_is_noninteractive():
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.active_interaction = InteractionState(
+        interaction_id="clarify-1",
+        kind="clarify",
+        prompt="请选择",
+        status="failed",
+        error="交互已过期",
+    )
+
+    card = render_legacy_interaction_callback_card(
+        session,
+        title="Hermes Agent",
+    )
+
+    assert "schema" not in card and "body" not in card
+    assert "交互已过期" in str(card)
+    assert "action" not in {item.get("tag") for item in card["elements"]}
 
 
 def test_render_completed_card_shows_attachment_summary():
@@ -1194,6 +1268,19 @@ def test_footer_still_static_for_failed():
     assert _render_footer(session) == "已停止"
 
 
+def test_footer_treats_explicit_completed_snapshot_as_terminal():
+    from hermes_feishu_card.render import _render_footer
+
+    session = CardSession(conversation_id="c", message_id="m", chat_id="c")
+    session.status = "running"
+    session.duration = 1.25
+
+    footer = _render_footer(session, display_status="completed")
+
+    assert "生成中" not in footer
+    assert footer.startswith("1s · ")
+
+
 def test_waiting_footer_uses_absolute_remaining_deadline(monkeypatch):
     from hermes_feishu_card import render as render_module
     from hermes_feishu_card.render import _render_footer
@@ -1562,6 +1649,93 @@ def test_render_tool_timeline_uses_compact_semantic_event_rows():
     assert '<font color="grey">　失败: exit 1</font>' in failed
     assert all(not row["content"].startswith("> ") for row in rows)
     assert timeline["border"]["corner_radius"] == "8px"
+
+
+def test_render_subagent_uses_dedicated_escaped_semantic_row():
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession("chat-1", "msg-1", "oc_abc")
+    assert session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="subagent.updated",
+            conversation_id="chat-1",
+            message_id="msg-1",
+            chat_id="oc_abc",
+            platform="feishu",
+            sequence=1,
+            created_at=1.0,
+            data={
+                "child_id": "child-1",
+                "role": "研究 <Lead>",
+                "status": "running",
+                "goal_preview": "检查 <script>alert(1)</script>",
+            },
+        )
+    )
+
+    card = render_card(session, timeline_expanded=True)
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    subagent = next(
+        item
+        for item in timeline["elements"]
+        if str(item.get("element_id", "")).startswith(
+            "auxiliary_timeline_subagententry_"
+        )
+    )
+    content = subagent["content"]
+    assert "子代理：研究 &lt;Lead&gt;" in content
+    assert "进行中" in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
+    assert "<script>" not in content
+    assert session.tool_count == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("queued", "等待中"),
+        ("completed", "已完成"),
+        ("failed", "失败"),
+        ("cancelled", "已取消"),
+        ("interrupted", "已中断"),
+    ],
+)
+def test_render_subagent_distinguishes_lifecycle_statuses(status, expected):
+    from hermes_feishu_card.card_timeline import TimelineEntry
+
+    session = CardSession("chat-1", "msg-1", "oc_abc")
+    session.timeline._entries.append(
+        TimelineEntry(
+            kind="subagent",
+            title="research",
+            status=status,
+            subagent_id="child-1",
+        )
+    )
+
+    card = render_card(session, timeline_expanded=True)
+    timeline = next(
+        item
+        for item in card["body"]["elements"]
+        if item.get("element_id") == "auxiliary_timeline"
+    )
+    subagent = next(
+        item
+        for item in timeline["elements"]
+        if str(item.get("element_id", "")).startswith(
+            "auxiliary_timeline_subagententry_"
+        )
+    )
+
+    assert expected in subagent["content"]
+    assert "子代理：research" in subagent["content"]
+    if status == "interrupted":
+        assert "进行中" not in subagent["content"]
 
 
 def test_render_tool_timeline_removes_all_duration_lines_from_detail():

@@ -2,9 +2,87 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1 / V4.1.2 / V4.1.3 / V4.1.4 / V4.2.0 / V4.2.1 / V4.2.2 / V4.2.3 / V4.2.4 / V4.2.5 / V4.2.6 / V4.2.7 / V4.2.8 / V4.2.9 / V4.2.10 / V4.2.11 / V4.2.12
+## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1 / V4.1.2 / V4.1.3 / V4.1.4 / V4.2.0 / V4.2.1 / V4.2.2 / V4.2.3 / V4.2.4 / V4.2.5 / V4.2.6 / V4.2.7 / V4.2.8 / V4.2.9 / V4.2.10 / V4.2.11 / V4.2.12 / V4.3.0 / V4.3.1 / V4.3.2 / V4.3.3 / V4.3.4 / V4.3.5 / V4.3.6 / V4.3.7
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
+
+### V4.3.7：Hermes session-scoped delivery filter 兼容（发布候选）
+
+- [x] Issue #240 / PR #241：Base media/local delivery filter exact matcher 同时接受旧版单位置参数调用与新版唯一 `session_key=session_key` 关键字调用。
+- [x] extra/wrong/unpacked keyword、错误值与缺少/增加位置参数继续 fail-closed；apply/remove/restore 保持幂等和逐字恢复。
+- [x] PR 精确 head 定向回归 `460 passed, 1 skipped`；fresh normal-wheel 完整 pytest `3330 passed, 5 skipped`；真实 Hermes `82b32f32ef` source roundtrip 与 6 种对抗调用形态通过。
+- [x] PR #241 的 12 项 GitHub checks、maintainer approval 与 exact merge `7fcf3cbd67d3a5100739e9e3d3d7cdcce080cb62`。
+- [ ] release PR CI、exact release merge、annotated tag、public tagged install 与 Release assets/checksums。
+- [ ] 真实飞书 smoke；本修复只影响 installer AST contract，自动化不冒充平台验收。
+
+### V4.3.6：话题 create 兼容与可配置 @ 提及（已发布）
+
+- [x] Issue #237 / PR #238：无 reply anchor 的话题 create 不再使用飞书不支持的 `receive_id_type=thread_id`，改为向父 `chat_id` 创建；有 anchor 的话题路径继续使用 reply API。
+- [x] Gateway native-handoff 的逻辑 topic route 与 UUID identity 保持稳定，但实际无锚点 create 会移除 adapter metadata 中的 `thread_id`，避免同源非法请求。
+- [x] PR #228：approval/clarify 交互卡与 opt-in completion notification 支持 `@` 发起人；`mentions_in_cards: false` 是总关闭开关，per-kind 与 completion 开关只在总开关未关闭时生效。
+- [x] schema 2.0 streaming card 保持唯一 PATCH owner；legacy 交互卡继续作为 auxiliary message。`completion_notify.mention: false` 在无 sender 场景发送普通完成通知，mention 开启时仍拒绝非法 `open_id`。
+- [x] #237 正常 wheel 全量回归 `3283 passed, 5 skipped`；#228 最终组合相关 unit `225 passed`、server integration `324 passed`，最终 rebased head 12 项 CI 全绿。
+- [x] v4.3.6 release candidate：`git diff --check`、sdist/wheel 与 normal-wheel provenance 通过；完整 pytest `3325 passed, 5 skipped in 560.94s`；package/distribution `4.3.6` 来自隔离 `site-packages`，唯一 plugin entrypoint、24 slices 与 CLI help 均已验证。
+- [x] release PR CI、exact release merge `a2a244659f198ecd57c862455d3f4d658a827b66`、annotated tag、public tagged install 与 Release assets/checksums。
+- [ ] 独立真实飞书 smoke；当前仅有 Issue #237 报告者的真实 API 对照与本地热修验证，自动化不冒充平台验收。
+
+### V4.3.5：Feishu edit fallback metadata 兼容热修（已发布）
+
+- [x] 合入 PR #235：HFC wrapper 仅在原 `edit_message` 明确不支持时移除内部 `metadata`，兼容 Hermes v2026.8.3 Feishu adapter。
+- [x] 支持显式 `metadata` 或 `**kwargs` 的 adapter 继续接收原参数；无关未知关键字仍抛 `TypeError`，不被兼容层吞掉。
+- [x] 独立本地回归 `4 passed`，hook/server 热区 `841 passed`，精确 PR HEAD 完整 pytest `3279 passed, 6 skipped`。
+- [x] PR #235 HEAD `5b3bf428eb688df4b95607cba1a4ce50e2eeb8d0`：Tests run `32719244038`（attempt 3，10 jobs）与 CodeQL run `32719244032` 通过；exact merge `d56555bf9e716de67ed14f8ed992df1ec55cea21`。
+- [x] docs/package/native provenance 聚焦门禁 `99 passed`；一次性 wheel 环境完整 pytest `3280 passed, 5 skipped in 555.86s`；sdist/wheel、fresh `site-packages` provenance、唯一 plugin entrypoint、24 slices 与 CLI help 通过。
+- [x] release PR CI、exact release merge `7829e51c4c7851aa09347e56bb8c2a7136c4b0cb`、annotated tag 与 Release assets/checksums 已完成。
+
+### V4.3.4：runtime listener 与 V3 doctor 热修（已发布）
+
+- [x] 合入 PR #229：listener bind 不调用 reverse DNS；`serve_forever` thread 使用 daemon，不显式 `close()` 的短命令仍可退出。
+- [x] 修复 Issue #233：有效 V3 Hybrid 安装的 `doctor --json` 只走 V3 runtime binding、plugin entrypoint 与 fixed-tag inspector，不再触发 Legacy recovery/integrity 误报。
+- [x] phase/config/target/backup/runtime identity 漂移输出 V3-specific finding、拒绝 Legacy 自动 repair，并引导官方 V3 restore/reinstall。
+- [x] hosted macOS blocked-delivery close 使用 Future deadline 验证有界完成，不放宽生产 timeout。
+- [x] #229/#233/diagnostics/CLI/macOS timing 联合回归 `191 passed`。
+- [x] 一次性 4.3.4 venv 完整 pytest `3275 passed, 6 skipped in 634.95s`；`git diff --check`、sdist/wheel、fresh-wheel `site-packages` provenance、唯一 plugin entrypoint、24 slices 与 CLI help 通过。
+- [x] PR #234 candidate HEAD `435ea4e355719e0f2d904cf1bac986ff18f70876`：Tests run `32710110323`（10 jobs）与 CodeQL run `32710110375` 通过。
+- [x] exact merge `2f1abcfcad50997c615103e3cdf1302c61f94c91`、annotated tag、Release assets/checksums 与公开下载校验完成。
+
+### V4.3.3：首回复建 thread 锚点与 text fail-closed 热修（发布候选）
+
+- [x] 合入 #231：`reply_in_thread` 与真实 reply anchor 固定在 `CardSession`，普通/重复/runtime-admission interaction 与 opt-in completion notification 继续使用同一 placement。
+- [x] `reply_in_thread=true` 或非空 `thread_id` 表示 text thread placement；缺少 `reply_to_message_id` 时在 API 边界拒绝，不再静默发到群聊顶层；没有 thread placement intent 的默认路径保持兼容。
+- [x] 单元与 HTTP 回归覆盖首回复无 concrete `thread_id`、completion notification thread placement，以及缺 anchor 时不请求 token/不发 API 请求。
+- [x] 本地完整 pytest `3267 passed, 6 skipped`；`git diff --check`、sdist/wheel、fresh Python 3.12 wheel-only provenance、唯一 Hermes plugin entrypoint、24 slices 与 CLI help smoke 通过。
+- [x] PR #232 candidate HEAD `f7de533d67f9e50afcd2c4d80fad89b572054605`：Tests run `32657674121`（10 jobs）与 CodeQL run `32657674120` 通过。
+- [ ] exact merge SHA、annotated tag、public install 与 Release assets/checksums。
+- [ ] 真实飞书首回复建 thread / missing-anchor smoke（自动化不替代真实客户端证据）。
+
+### V4.3.2：Issue #227 卡片方言双轨热修（发布候选）
+
+- [x] schema 2.0 streaming message 保持稳定 owner；legacy clarify/approval message 不再晋升为 PATCH 目标。
+- [x] `/card/actions` 返回 legacy completed/failed 终态卡；Gateway 对意外 schema 2.0 callback card 降级为 success toast。
+- [x] standard/runtime admission、direct/form、连续 interaction、过期和 predecessor failure 使用方言感知 fake 覆盖。
+- [x] 热区联合回归 `932 passed, 1 skipped`；`git diff --check` 通过。
+- [x] 隔离候选完整 pytest `3253 passed, 5 skipped`；sdist/wheel、fresh Python 3.12 + lark-oapi 1.6.8 wheel-only provenance、唯一 plugin entrypoint、24 slices 与 CLI help。
+- [ ] PR CI、exact merge SHA、tag、public install、Release assets/checksums 与真实飞书验收。
+
+### V4.3.1：Hermes 0.20 交互恢复与 persistent service 热修（发布候选）
+
+- [x] Issue #216：真实 Feishu WebSocket 点击使用可回调卡片 payload 并携带 exact profile；listener 直接唤醒原 pending handle，后续 answer/thinking 继续流式更新。
+- [x] 显式 text mode 在 mutation 前拒绝 runtime callback ownership，第一条文本回复交回 Hermes 原生 interceptor。
+- [x] PR #226：修复 `python-sha256:` identity、systemd `WorkingDirectory` 与 tokenless `process_token_hash` 对账。
+- [x] 中英文 README 贡献者与历史 releases、PR/issues、commit/co-author 对账，保留之前版本署名。
+- [x] 完整 pytest `3245 passed, 6 skipped`；sdist/wheel；fresh Python 3.12 wheel-only `site-packages`、唯一 plugin entrypoint、24 slices 与 CLI help。
+- [ ] diff-check、exact SHA、远端 CI、tag、public install 与 Release assets。
+
+### V4.3.0：Hermes 0.20 Hybrid runtime bridge（已发布）
+
+- [x] 固定 Hermes `v2026.8.3` capability probe、真实 PluginManager evidence 与 17 groups / 7 targets Hybrid patch descriptor。
+- [x] signed Plugin runtime bootstrap、event-id fence、subagent timeline、terminal/native handoff 与 direct pending-handle interaction listener。
+- [x] V3 installer transaction、official plugin enable、idempotent inspect、incomplete repair、byte-exact restore/uninstall 与 legacy V2 安全迁移。
+- [x] Issues #210/#211/#212/#214/#215/#217/#221/#222 和 PR #213/#218/#219/#220/#223 可本地吸收部分；Issue #216 标记为平台零事件边界；PR #203 因只改 `legacy/` 排除。
+- [x] 真实固定 tag 副本完成 venv entrypoint、install/idempotence/restore；V3 联合门禁 `340 passed, 5 skipped`，persistent process/CLI `302 passed`。
+- [x] 完整 pytest `3227 passed, 6 skipped in 378.84s`；sdist/wheel、全新 Python 3.12 隔离 `site-packages`、唯一 Hermes plugin entrypoint、24 个 provenance slices、主 CLI 与 `enable/disable --help` 均通过。
+- [x] exact merge SHA、远端 CI、annotated tag、public tag/install 与 Release assets。
 
 ### V4.2.12：审批能力与零工具时间线（发布候选）
 

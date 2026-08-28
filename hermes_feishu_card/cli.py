@@ -33,7 +33,11 @@ from hermes_feishu_card.diagnostics import (
 )
 from hermes_feishu_card.events import SidecarEvent
 from hermes_feishu_card.feishu_client import FeishuAPIError, FeishuClient, FeishuClientConfig
-from hermes_feishu_card.install.detect import HermesDetection, detect_hermes
+from hermes_feishu_card.install.detect import (
+    HermesDetection,
+    detect_fixed_tag_integration,
+    detect_hermes,
+)
 from hermes_feishu_card.install.envfile import (
     read_hfc_env,
     render_hfc_env,
@@ -46,6 +50,18 @@ from hermes_feishu_card.install.manifest import (
     file_sha256,
     validate_install_manifest,
 )
+from hermes_feishu_card.install.plugin import (
+    RuntimeBindingRefused,
+    probe_plugin_entrypoint,
+    resolve_runtime_binding,
+)
+from hermes_feishu_card.install.v3 import (
+    FixedTagInstallRefused,
+    execute_fixed_tag_hybrid_install,
+    inspect_fixed_tag_hybrid_install,
+    is_fixed_tag_checkout,
+    restore_fixed_tag_hybrid_install,
+)
 from hermes_feishu_card.install.integrity import (
     IntegrityRepairRefused,
     build_integrity_provenance,
@@ -54,6 +70,8 @@ from hermes_feishu_card.install.integrity import (
     render_integrity_manifest_migration,
 )
 from hermes_feishu_card.install.recovery import (
+    RecoveryFinding,
+    RecoveryPlan,
     RecoveryRefused,
     _first_refusal,
     execute_recovery,
@@ -97,6 +115,12 @@ from hermes_feishu_card.process import (
     status_sidecar,
     stop_sidecar,
 )
+from hermes_feishu_card.persistent_service import (
+    disable_persistent_sidecar,
+    enable_persistent_sidecar,
+    persistent_sidecar_active,
+    persistent_sidecar_matches,
+)
 from hermes_feishu_card.render import render_card
 from hermes_feishu_card.server import python_executable_identity
 from hermes_feishu_card.session import CardSession
@@ -104,7 +128,9 @@ from hermes_feishu_card.session import CardSession
 
 BACKUP_SUFFIX = ".hermes_feishu_card.bak"
 MANIFEST_NAME = ".hermes_feishu_card_manifest"
-INSTALL_MANIFEST_VERSION = CURRENT_INSTALL_MANIFEST_VERSION
+# Legacy single-target installs retain the V2 writer until the verified
+# aggregate V3 transaction below owns all seven fixed-tag targets.
+INSTALL_MANIFEST_VERSION = 2
 _BASE_MANIFEST_FIELDS = BASE_INSTALL_MANIFEST_FIELDS
 _CRON_MANIFEST_FIELDS = CRON_INSTALL_MANIFEST_FIELDS
 DEFAULT_EVENT_URL = "http://127.0.0.1:8765/events"
@@ -179,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stop(args)
     if args.command == "status":
         return _run_status(args)
+    if args.command == "enable":
+        return _run_enable(args)
+    if args.command == "disable":
+        return _run_disable(args)
     if args.command == "smoke-feishu-card":
         return _run_smoke_feishu_card(args)
     if args.command == "bots":
@@ -211,6 +241,7 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor")
     doctor.add_argument("--config", required=True)
     doctor.add_argument("--hermes-dir")
+    doctor.add_argument("--hermes-home")
     doctor.add_argument("--skip-hermes", action="store_true")
     doctor.add_argument("--profile-id")
     doctor_output = doctor.add_mutually_exclusive_group()
@@ -222,6 +253,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="run the guided all-in-one installer for ordinary users",
     )
     setup.add_argument("--hermes-dir", required=True, help="Hermes Agent root directory")
+    setup.add_argument("--hermes-home")
     setup.add_argument(
         "--config",
         default=str(Path.home() / ".hermes_feishu_card" / "config.yaml"),
@@ -266,6 +298,25 @@ def _build_parser() -> argparse.ArgumentParser:
         process_parser.add_argument("--env-file")
         if command in {"start", "status"}:
             process_parser.add_argument("--hermes-dir")
+            process_parser.add_argument("--hermes-home")
+
+    enable = subparsers.add_parser(
+        "enable",
+        help="install and enable a persistent systemd user sidecar service",
+    )
+    enable.add_argument("--config", default="config.yaml.example")
+    enable.add_argument("--env-file")
+    enable.add_argument("--hermes-dir", required=True)
+    enable.add_argument(
+        "--yes",
+        action="store_true",
+        required=True,
+        help="confirm persistent user-service installation",
+    )
+    subparsers.add_parser(
+        "disable",
+        help="disable and remove the owned persistent systemd user service",
+    )
 
     smoke = subparsers.add_parser("smoke-feishu-card")
     smoke.add_argument("--config", default="config.yaml.example")
@@ -354,6 +405,7 @@ def _build_parser() -> argparse.ArgumentParser:
     maintenance_subparsers = maintenance.add_subparsers(dest="maintenance_command")
     maintenance_provision = maintenance_subparsers.add_parser("provision")
     maintenance_provision.add_argument("--hermes-dir", required=True)
+    maintenance_provision.add_argument("--hermes-home")
     maintenance_provision.add_argument("--wheel", required=True)
     maintenance_provision.add_argument("--root")
     maintenance_status = maintenance_subparsers.add_parser("status")
@@ -362,6 +414,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=str(Path.home() / ".hermes" / "hermes-agent"),
     )
     maintenance_status.add_argument("--root")
+    maintenance_status.add_argument("--hermes-home")
     for command in ("run", "resume"):
         maintenance_run = maintenance_subparsers.add_parser(command)
         maintenance_run.add_argument("--job", required=True)
@@ -370,6 +423,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for command in ("install", "repair", "restore", "uninstall"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("--hermes-dir", required=True)
+        command_parser.add_argument("--hermes-home")
         command_parser.add_argument("--yes", action="store_true", required=True)
         if command == "install":
             command_parser.add_argument("--no-repair", action="store_true")
@@ -458,6 +512,7 @@ def _run_setup(args: argparse.Namespace) -> int:
         repair_code = _run_repair(
             argparse.Namespace(
                 hermes_dir=args.hermes_dir,
+                hermes_home=getattr(args, "hermes_home", None),
                 yes=True,
                 accept_hermes_upgrade=args.accept_hermes_upgrade,
             )
@@ -468,6 +523,7 @@ def _run_setup(args: argparse.Namespace) -> int:
     install_code = _run_install(
         argparse.Namespace(
             hermes_dir=args.hermes_dir,
+            hermes_home=getattr(args, "hermes_home", None),
             yes=True,
             no_repair=args.no_repair,
             accept_hermes_upgrade=args.accept_hermes_upgrade,
@@ -1092,12 +1148,16 @@ def _build_doctor_report(
             }
         )
 
-    install_state = _diagnose_install_state(detection)
-    recovery_plan = plan_recovery(detection)
-    try:
-        integrity_plan = plan_integrity_repair(detection)
-    except (IntegrityRepairRefused, OSError, RuntimeError, ValueError):
+    if _manifest_version_candidate(_manifest_path(detection.root)) == 3:
+        install_state, recovery_plan = _diagnose_v3_install_state(detection, args)
         integrity_plan = None
+    else:
+        install_state = _diagnose_install_state(detection)
+        recovery_plan = plan_recovery(detection)
+        try:
+            integrity_plan = plan_integrity_repair(detection)
+        except (IntegrityRepairRefused, OSError, RuntimeError, ValueError):
+            integrity_plan = None
     profile_id = str(getattr(args, "_profile_id", "") or "")
     route = _diagnostic_route(config, profile_id)
     try:
@@ -1995,6 +2055,133 @@ def _diagnose_install_state(detection: HermesDetection) -> dict[str, Any]:
     }
 
 
+def _diagnose_v3_install_state(
+    detection: HermesDetection,
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], RecoveryPlan]:
+    manifest_path = _manifest_path(detection.root)
+    try:
+        binding = resolve_runtime_binding(
+            checkout_root=detection.root,
+            hermes_home=getattr(args, "hermes_home", None),
+            profile_id=getattr(args, "profile_id", None),
+        )
+        entrypoint = probe_plugin_entrypoint(
+            binding,
+            expected_version=PACKAGE_VERSION,
+        )
+        inspected = inspect_fixed_tag_hybrid_install(
+            binding=binding,
+            entrypoint=entrypoint,
+            package_version=PACKAGE_VERSION,
+        )
+    except (
+        FixedTagInstallRefused,
+        RuntimeBindingRefused,
+        OSError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        code = _v3_install_finding_code(exc)
+        message = _v3_install_finding_message(code)
+        fingerprint = _v3_doctor_fingerprint(manifest_path, code)
+        return (
+            {
+                "checked": True,
+                "contract": "v3",
+                "status": "incomplete",
+                "message": message,
+                "manifest_exists": manifest_path.exists() or manifest_path.is_symlink(),
+                "manual_action_required": True,
+                "automatic_repair_available": False,
+            },
+            RecoveryPlan(
+                root=detection.root,
+                state="refused",
+                executable=False,
+                fingerprint=fingerprint,
+                actions=(),
+                findings=(RecoveryFinding(code, "error", message),),
+            ),
+        )
+    manifest_path = inspected.manifest_path
+    fingerprint = hashlib.sha256(
+        b"hfc-doctor-v3-installed\0" + manifest_path.read_bytes()
+    ).hexdigest()
+    return (
+        {
+            "checked": True,
+            "contract": "v3",
+            "status": "installed",
+            "message": "Hermes fixed-tag V3 Hybrid install is complete and consistent.",
+            "manifest_exists": True,
+            "manual_action_required": False,
+            "automatic_repair_available": False,
+        },
+        RecoveryPlan(
+            root=detection.root,
+            state="installed",
+            executable=False,
+            fingerprint=fingerprint,
+            actions=(),
+            findings=(),
+        ),
+    )
+
+
+def _v3_install_finding_code(exc: Exception) -> str:
+    if isinstance(exc, RuntimeBindingRefused):
+        return "v3_runtime_binding_changed"
+    message = str(exc).lower()
+    if "requires recovery" in message:
+        return "v3_manifest_recovery_required"
+    if "plugin config changed" in message or "config is missing" in message:
+        return "v3_config_changed"
+    if "target hash changed" in message or "target is missing" in message:
+        return "v3_target_changed"
+    if "backup hash changed" in message or "backup is missing" in message:
+        return "v3_backup_changed"
+    if "binding or mode changed" in message or "entry point" in message:
+        return "v3_runtime_binding_changed"
+    if "manifest" in message:
+        return "v3_manifest_invalid"
+    if "patch" in message or "ownership" in message:
+        return "v3_patch_invalid"
+    return "v3_inspection_failed"
+
+
+def _v3_install_finding_message(code: str) -> str:
+    messages = {
+        "v3_manifest_recovery_required": "The V3 install transaction is not in the installed phase.",
+        "v3_config_changed": "The V3-owned Hermes plugin configuration changed since install.",
+        "v3_target_changed": "A V3-owned Hermes target changed since install.",
+        "v3_backup_changed": "A V3-owned Hermes backup changed since install.",
+        "v3_runtime_binding_changed": "The V3 runtime or plugin binding changed since install.",
+        "v3_manifest_invalid": "The V3 install manifest is missing or invalid.",
+        "v3_patch_invalid": "The V3 Hybrid patch ownership is inconsistent.",
+        "v3_inspection_failed": "The V3 install could not be verified safely.",
+    }
+    return messages.get(code, messages["v3_inspection_failed"])
+
+
+def _v3_doctor_fingerprint(manifest_path: Path, code: str) -> str:
+    evidence = b""
+    try:
+        metadata = manifest_path.lstat()
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 1024 * 1024:
+            evidence = manifest_path.read_bytes()
+        else:
+            evidence = b"unsafe-manifest"
+    except OSError:
+        evidence = b"unavailable-manifest"
+    return hashlib.sha256(
+        b"hfc-doctor-v3-refused\0"
+        + code.encode("ascii", errors="strict")
+        + b"\0"
+        + evidence
+    ).hexdigest()
+
+
 def _install_state_status_from_error(message: str) -> str:
     lowered = message.lower()
     if "changed since install" in lowered or "backup changed" in lowered:
@@ -2308,6 +2495,41 @@ def _lifecycle_hook_check(args: argparse.Namespace) -> dict[str, object] | None:
             "root": hermes_root,
         }
 
+    manifest_path = verified_root / MANIFEST_NAME
+    if _manifest_version_candidate(manifest_path) == 3:
+        try:
+            binding = resolve_runtime_binding(
+                checkout_root=verified_root,
+                hermes_home=getattr(args, "hermes_home", None),
+                profile_id=getattr(args, "profile_id", None),
+            )
+            entrypoint = probe_plugin_entrypoint(
+                binding,
+                expected_version=PACKAGE_VERSION,
+            )
+            inspect_fixed_tag_hybrid_install(
+                binding=binding,
+                entrypoint=entrypoint,
+                package_version=PACKAGE_VERSION,
+            )
+        except (
+            FixedTagInstallRefused,
+            RuntimeBindingRefused,
+            OSError,
+            UnicodeError,
+            ValueError,
+        ):
+            return {
+                "status": "manual_review_required",
+                "blocking": True,
+                "root": verified_root,
+            }
+        return {
+            "status": "installed",
+            "blocking": False,
+            "root": verified_root,
+        }
+
     plan = plan_recovery(detection)
     if plan.state == "installed" and not plan.actions:
         return {"status": "installed", "blocking": False, "root": verified_root}
@@ -2385,6 +2607,94 @@ def _print_sidecar_start_failure(result: str) -> None:
     print(f"error: {result}", file=sys.stderr)
 
 
+def _run_enable(args: argparse.Namespace) -> int:
+    try:
+        config = (
+            load_config(args.config, env_file=args.env_file)
+            if args.env_file is not None
+            else load_config(args.config)
+        )
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    hook_check = _lifecycle_hook_check(args)
+    if hook_check is None or bool(hook_check["blocking"]):
+        if hook_check is not None:
+            hook_check["config"] = args.config
+            _print_lifecycle_hook_check(hook_check, file=sys.stderr)
+        else:
+            print("error: an explicit verified Hermes root is required", file=sys.stderr)
+        return 1
+    if hook_check.get("status") != "installed":
+        print(
+            "error: install the Hermes integration before enabling the persistent "
+            "sidecar service",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        hermes_root = Path(hook_check["root"]).expanduser().resolve(strict=True)
+        runtime_python, runtime_identity = _resolve_start_runtime_identity(
+            hermes_root
+        )
+        if persistent_sidecar_matches(
+            config_path=args.config,
+            config=config,
+            env_file=args.env_file,
+            hermes_dir=hermes_root,
+            python_executable=runtime_python,
+            expected_package_version=PACKAGE_VERSION,
+            expected_python_identity=runtime_identity,
+        ):
+            print("enable: already enabled")
+            return 0
+        stop_result = stop_sidecar(config)
+        if stop_result.startswith("failed:"):
+            print(
+                "error: existing sidecar could not be stopped safely before enable: "
+                f"{stop_result}",
+                file=sys.stderr,
+            )
+            return 1
+        result = enable_persistent_sidecar(
+            config_path=args.config,
+            config=config,
+            env_file=args.env_file,
+            hermes_dir=hermes_root,
+            python_executable=runtime_python,
+            expected_package_version=PACKAGE_VERSION,
+            expected_python_identity=runtime_identity,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if result.startswith("failed:"):
+        print(f"error: {result}", file=sys.stderr)
+        return 1
+    if result == "already enabled":
+        print("enable: already enabled")
+        return 0
+    print("enable ok")
+    return 0
+
+
+def _run_disable(args: argparse.Namespace) -> int:
+    del args
+    try:
+        result = disable_persistent_sidecar()
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if result.startswith("failed:"):
+        print(f"error: {result}", file=sys.stderr)
+        return 1
+    if result == "not enabled":
+        print("disable: not enabled")
+        return 0
+    print("disable ok")
+    return 0
+
+
 def _run_start(args: argparse.Namespace) -> int:
     try:
         config = (
@@ -2406,13 +2716,21 @@ def _run_start(args: argparse.Namespace) -> int:
     if args.env_file is not None:
         start_kwargs["env_file"] = args.env_file
     verified_hermes_root: Path | None = None
-    if args.hermes_dir is not None:
+    if hook_check is not None:
         try:
-            verified_hermes_root = (
-                Path(hook_check["root"]).expanduser().resolve(strict=True)
-                if hook_check is not None
-                else _verified_explicit_hermes_root(args.hermes_dir)
+            verified_hermes_root = Path(hook_check["root"]).expanduser().resolve(
+                strict=True
             )
+        except (OSError, RuntimeError, ValueError):
+            print(
+                "error: Explicit Hermes root could not be verified. Rerun the "
+                f"official installer: {OFFICIAL_INSTALLER_COMMAND}",
+                file=sys.stderr,
+            )
+            return 1
+    elif args.hermes_dir is not None:
+        try:
+            verified_hermes_root = _verified_explicit_hermes_root(args.hermes_dir)
         except (OSError, RuntimeError, ValueError):
             print(
                 "error: Explicit Hermes root could not be verified. Rerun the "
@@ -2436,6 +2754,18 @@ def _run_start(args: argparse.Namespace) -> int:
     )
     if verified_hermes_root is not None:
         start_kwargs["hermes_dir"] = verified_hermes_root
+
+    if verified_hermes_root is not None and persistent_sidecar_matches(
+        config_path=args.config,
+        config=config,
+        env_file=args.env_file,
+        hermes_dir=verified_hermes_root,
+        python_executable=runtime_python,
+        expected_package_version=PACKAGE_VERSION,
+        expected_python_identity=runtime_identity,
+    ):
+        print("start: already running")
+        return 0
 
     try:
         result = start_sidecar(args.config, config, **start_kwargs)
@@ -2461,6 +2791,14 @@ def _run_stop(args: argparse.Namespace) -> int:
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if persistent_sidecar_active():
+        print(
+            "error: persistent sidecar service is enabled; use "
+            "hermes-feishu-card disable",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -2671,6 +3009,12 @@ def _run_status(args: argparse.Namespace) -> int:
         return 1
     readiness_degraded = False
     native_handoff_manual_review = False
+    if (
+        status.get("running") is True
+        and status.get("manager") == "unknown"
+        and persistent_sidecar_active()
+    ):
+        status["manager"] = "systemd-user-persistent"
     if status["running"]:
         print("status: running")
         print(f"pid: {status['pid'] or 'unknown'}")
@@ -3198,6 +3542,10 @@ def _run_install(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    fixed_tag_result = _run_fixed_tag_v3_install(args, detection)
+    if fixed_tag_result is not None:
+        return fixed_tag_result
+
     accept_hermes_upgrade = bool(
         getattr(args, "accept_hermes_upgrade", False)
     )
@@ -3260,6 +3608,7 @@ def _run_install(args: argparse.Namespace) -> int:
                 + _recovery_refusal_message(
                     recovery_plan,
                     accept_hermes_upgrade=accept_hermes_upgrade,
+                    hermes_root=detection.root,
                 ),
                 file=sys.stderr,
             )
@@ -3473,7 +3822,95 @@ def _run_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_fixed_tag_v3_install(
+    args: argparse.Namespace,
+    detection: HermesDetection,
+) -> int | None:
+    if not is_fixed_tag_checkout(detection.root):
+        return None
+    manifest_path = detection.root / MANIFEST_NAME
+    manifest_version = _manifest_version_candidate(manifest_path)
+    if manifest_version in {1, 2}:
+        try:
+            # Legacy ownership is restored before V3 binding requirements;
+            # the verified original snapshot is then re-probed and rendered.
+            _restore(detection.root)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"error: legacy migration restore failed: {exc}", file=sys.stderr)
+            return 1
+        print("manifest: restored verified Legacy source for V3 migration")
+    try:
+        binding = resolve_runtime_binding(
+            checkout_root=detection.root,
+            hermes_home=getattr(args, "hermes_home", None),
+            profile_id=getattr(args, "profile_id", None),
+        )
+        entrypoint = probe_plugin_entrypoint(
+            binding,
+            expected_version=PACKAGE_VERSION,
+        )
+        if entrypoint.status != "verified":
+            raise FixedTagInstallRefused(
+                "plugin entry point verification failed: " + entrypoint.reason
+            )
+        if _is_v3_manifest_candidate(manifest_path):
+            result = inspect_fixed_tag_hybrid_install(
+                binding=binding,
+                entrypoint=entrypoint,
+                package_version=PACKAGE_VERSION,
+            )
+            print("integration.mode: hybrid")
+            print("install ok")
+            return 0
+        integration = detect_fixed_tag_integration(
+            detection.root,
+            runtime_python=binding.runtime_python,
+        )
+        if not integration.decision.supported:
+            raise FixedTagInstallRefused(integration.decision.reason)
+        result = execute_fixed_tag_hybrid_install(
+            binding=binding,
+            entrypoint=entrypoint,
+            decision=integration.decision,
+            source_commit=integration.native_probe.source_commit,
+            plugin_evidence_sha256=(
+                integration.native_probe.plugin_evidence_sha256
+            ),
+            package_version=PACKAGE_VERSION,
+        )
+    except (OSError, UnicodeError, RuntimeBindingRefused, FixedTagInstallRefused) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print("integration.mode: hybrid")
+    print("install ok")
+    if result.gateway_restart_required:
+        print("gateway.restart_required: hermes gateway start")
+    return 0
+
+
+def _is_v3_manifest_candidate(path: Path) -> bool:
+    return _manifest_version_candidate(path) == 3
+
+
+def _manifest_version_candidate(path: Path) -> int | None:
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if type(value) is not dict:
+        return None
+    if "manifest_version" not in value:
+        return 1
+    version = value.get("manifest_version")
+    return version if type(version) is int and not isinstance(version, bool) else None
+
+
 def _run_repair(args: argparse.Namespace) -> int:
+    fixed_tag_result = _run_fixed_tag_v3_repair(args)
+    if fixed_tag_result is not None:
+        return fixed_tag_result
     detection = detect_hermes(args.hermes_dir)
     if not detection.supported:
         print(_format_hermes_detection(detection), file=sys.stderr)
@@ -3498,7 +3935,48 @@ def _run_repair(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_fixed_tag_v3_repair(args: argparse.Namespace) -> int | None:
+    root = Path(args.hermes_dir).expanduser()
+    manifest_path = root / MANIFEST_NAME
+    if not _is_v3_manifest_candidate(manifest_path):
+        return None
+    try:
+        binding = resolve_runtime_binding(
+            checkout_root=root,
+            hermes_home=getattr(args, "hermes_home", None),
+            profile_id=getattr(args, "profile_id", None),
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("phase") == "installed":
+            entrypoint = probe_plugin_entrypoint(
+                binding, expected_version=PACKAGE_VERSION
+            )
+            inspect_fixed_tag_hybrid_install(
+                binding=binding,
+                entrypoint=entrypoint,
+                package_version=PACKAGE_VERSION,
+            )
+            print("repair: no changes")
+        else:
+            restore_fixed_tag_hybrid_install(binding=binding)
+            print("install state: recovered incomplete V3 transaction")
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RuntimeBindingRefused,
+        FixedTagInstallRefused,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print("repair ok")
+    return 0
+
+
 def _run_restore(args: argparse.Namespace) -> int:
+    fixed_tag_result = _run_fixed_tag_v3_restore(args, command="restore")
+    if fixed_tag_result is not None:
+        return fixed_tag_result
     try:
         _restore(Path(args.hermes_dir))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -3510,6 +3988,9 @@ def _run_restore(args: argparse.Namespace) -> int:
 
 
 def _run_uninstall(args: argparse.Namespace) -> int:
+    fixed_tag_result = _run_fixed_tag_v3_restore(args, command="uninstall")
+    if fixed_tag_result is not None:
+        return fixed_tag_result
     try:
         _restore(Path(args.hermes_dir))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -3517,6 +3998,30 @@ def _run_uninstall(args: argparse.Namespace) -> int:
         return 1
 
     print("uninstall ok")
+    return 0
+
+
+def _run_fixed_tag_v3_restore(
+    args: argparse.Namespace,
+    *,
+    command: str,
+) -> int | None:
+    root = Path(args.hermes_dir).expanduser()
+    if not _is_v3_manifest_candidate(root / MANIFEST_NAME):
+        return None
+    try:
+        binding = resolve_runtime_binding(
+            checkout_root=root,
+            hermes_home=getattr(args, "hermes_home", None),
+            profile_id=getattr(args, "profile_id", None),
+        )
+        result = restore_fixed_tag_hybrid_install(binding=binding)
+    except (OSError, UnicodeError, RuntimeBindingRefused, FixedTagInstallRefused) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"{command} ok")
+    if result.gateway_restart_required:
+        print("gateway.restart_required: hermes gateway start")
     return 0
 
 
@@ -3546,6 +4051,7 @@ def _repair_install_state(
             _recovery_refusal_message(
                 plan,
                 accept_hermes_upgrade=accept_hermes_upgrade,
+                hermes_root=detection.root,
             )
         )
     if not plan.executable:
@@ -3553,6 +4059,7 @@ def _repair_install_state(
             _recovery_refusal_message(
                 plan,
                 accept_hermes_upgrade=accept_hermes_upgrade,
+                hermes_root=detection.root,
             )
         )
     if dry_run:
@@ -3570,13 +4077,19 @@ def _recovery_refusal_message(
     plan,
     *,
     accept_hermes_upgrade: bool,
+    hermes_root: Path | None = None,
 ) -> str:
     message = _first_refusal(plan)
     if plan.state == "stale_unpatched" and not accept_hermes_upgrade:
-        message += (
-            " If Hermes was intentionally upgraded, rerun with "
-            "--accept-hermes-upgrade --yes."
-        )
+        if hermes_root is None:
+            command = "--accept-hermes-upgrade --yes"
+        else:
+            command = (
+                "python -m hermes_feishu_card.cli install --hermes-dir "
+                f"{shlex.quote(str(hermes_root))} "
+                "--accept-hermes-upgrade --yes"
+            )
+        message += f" If Hermes was intentionally upgraded, rerun: {command}."
     return message
 
 

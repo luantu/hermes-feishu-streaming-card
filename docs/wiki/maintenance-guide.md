@@ -29,7 +29,7 @@
 高风险点：
 
 - 字段名必须贴合 Hermes 变量：`source`、`event`、`response`、`agent_result`、`event_message_id` 等。
-- Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`。
+- Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`；首回复建 thread 的 `reply_in_thread` 意图还必须进入 `CardSession`，并通过普通交互与 `RuntimeInteractionDeliveryReservation` 的所有新卡发送路径继续传递。create API 不接受 `receive_id_type=thread_id`：无 reply anchor 时实际发送必须回落父 `chat_id`，但 native-handoff 的 logical topic route/UUID identity 仍保持稳定。
 - `message.started` 必须从真实入站 `event.message_id` 绑定 `turn_id`；同一 `source` 的 stream/tool/terminal 回调复用这个 immutable identity。显式 `turn_id` 是 canonical turn hard fence，不能被 `message_id` 或 `reply_to_message_id` alias 覆盖；无法在 `source` 绑定私有属性时保持 legacy fail-open。
 - stable tool lifecycle 与 legacy progress callback 不能同时投递同一调用；wrapper 检测必须读取 agent 当前实际 callback，显式 fallback 标记仅用于卡片路径未接受时恢复原生进度。
 - 已识别 `system.notice` 必须按 sidecar 结果分流：已有卡片异步更新的 `accepted` 与独立卡首次投递的 `delivered` 抑制原生文本，`not_sent` 回退原始通知文本，`unknown` 只尝试固定通用提示且不重复原始通知文本；`accepted` 必须同时带有 `applied=true`，不可解析响应一律视为 `unknown`。
@@ -87,6 +87,7 @@
 高风险点：
 
 - patch 必须幂等、可移除、可检测 corrupt markers。
+- Base media/local delivery filter 的 exact matcher 只接受旧版单位置参数调用，或唯一 `session_key=session_key` 关键字调用；extra/wrong/unpacked keyword 与位置参数漂移必须 fail-closed，并保持 apply/remove/restore 逐字往返。
 - Hermes source-stripped Docker 目录缺少 `VERSION`，或版本 metadata 可读但格式不可解析时，只能在 gateway anchors 可验证时兜底。
 - 新 hook block 必须有 patcher 单测和 remove/restore 覆盖。
 - Hermes 0.20 将同步 delivery-ledger 写入包装为 `await asyncio.to_thread(...)`；只可在已验证的 ledger anchor 内解包这一精确结构，未 `await`、其他 wrapper 或全局 call 解包必须继续拒绝。
@@ -124,6 +125,9 @@
 - runner 必须真正读取 `setup` / `start` 显式传入的 `--env-file`。配置优先级保持 YAML < 同目录 `.env` < 显式 env file < process env；禁止为了修复 systemd 环境而隐式读取全局 `~/.hermes/.env`。
 - 升级迁移只能停止 PID/token/health 三者一致的旧进程，未知进程保持 fail-closed。
 - `auto` 不得探测 system bus、调用 sudo/pkexec、写 `/etc` 或静默 fallback 到 system manager；`systemd-system` 只能显式使用 transient unit。
+- V4.3 `enable` 是独立的 persistent systemd user 路径：必须先验证 `loginctl ... Linger=yes`，再以 exact Hermes venv Python、absolute config/env/Hermes root 渲染 unit。unit 与 `persistent-service.json` 都必须为 owner-only regular file，并以 `unit_sha256` 互证。
+- persistent enable 前先用现有 token/pidfile owner 安全停止 transient/detached sidecar；无 ownership 的同名 active unit、停服失败、manifest/unit 不完整或 drift 均拒绝。enable/health 失败后只有 `disable --now` 成功才可删除 ownership evidence。
+- `start` 对 exact active persistent unit 只返回 already running；`stop` 不绕过 persistent owner，必须走 `disable`。默认 `start` 仍为 transient，安装器不自动执行 `loginctl enable-linger`。
 - 调整 lifecycle 时运行 `tests/unit/test_process.py`、`tests/integration/test_cli_process.py` 和 `tests/unit/test_install_scripts.py`。
 - Windows venv launcher 与实际 runner PID 不一致时，只允许 `win32 + detached + exact token + pidfile PID == runner parent PID` 的一次重绑，并在原子写后重新读取精确记录；其他平台、manager 或不完整证据保持 fail-closed。
 
