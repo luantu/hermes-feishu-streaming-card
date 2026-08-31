@@ -120,6 +120,7 @@ from hermes_feishu_card.persistent_service import (
     enable_persistent_sidecar,
     persistent_sidecar_active,
     persistent_sidecar_matches,
+    persistent_sidecar_setup_blocker,
 )
 from hermes_feishu_card.render import render_card
 from hermes_feishu_card.server import python_executable_identity
@@ -266,6 +267,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-start",
         action="store_true",
         help="install the Hermes hook but do not start the sidecar",
+    )
+    setup.add_argument(
+        "--transient",
+        action="store_true",
+        help=(
+            "explicitly use the non-persistent sidecar instead of enabling the "
+            "owned systemd user service when available"
+        ),
     )
     setup.add_argument(
         "--repair",
@@ -547,27 +556,100 @@ def _run_setup(args: argparse.Namespace) -> int:
         print("setup ok")
         return 0
 
-    try:
-        default_env_path = config_path.parent / ".env"
-        start_kwargs: dict[str, Any] = {
-            "hermes_dir": verified_hermes_root,
-            "python_executable": runtime_python,
-            "expected_package_version": PACKAGE_VERSION,
-            "expected_python_identity": runtime_identity,
-        }
-        if route_settings["env_path"] != default_env_path:
-            start_kwargs["env_file"] = route_settings["env_path"]
-        start_result = start_sidecar(config_path, config, **start_kwargs)
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    if start_result.startswith("failed:"):
-        _print_sidecar_start_failure(start_result)
-        return 1
-    if start_result == "already running":
-        print("start: already running")
+    default_env_path = config_path.parent / ".env"
+    start_kwargs: dict[str, Any] = {
+        "hermes_dir": verified_hermes_root,
+        "python_executable": runtime_python,
+        "expected_package_version": PACKAGE_VERSION,
+        "expected_python_identity": runtime_identity,
+    }
+    persistent_kwargs: dict[str, Any] = {
+        "config_path": config_path,
+        "config": config,
+        "env_file": None,
+        **start_kwargs,
+    }
+    if route_settings["env_path"] != default_env_path:
+        start_kwargs["env_file"] = route_settings["env_path"]
+        persistent_kwargs["env_file"] = route_settings["env_path"]
+
+    explicit_transient = bool(getattr(args, "transient", False))
+    persistence_blocker = (
+        "explicit transient mode requested"
+        if explicit_transient
+        else persistent_sidecar_setup_blocker(config)
+    )
+    if not persistence_blocker:
+        try:
+            if persistent_sidecar_matches(**persistent_kwargs):
+                enable_result = "already enabled"
+            else:
+                stop_result = stop_sidecar(config)
+                if stop_result.startswith("failed:"):
+                    print(
+                        "error: existing sidecar could not be stopped safely before "
+                        f"persistent enable: {stop_result}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                enable_result = enable_persistent_sidecar(**persistent_kwargs)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if enable_result.startswith("failed:"):
+            print(f"error: {enable_result}", file=sys.stderr)
+            return 1
+        if enable_result == "already enabled":
+            print("enable: already enabled")
+        else:
+            print("enable ok")
+        print("persistence: enabled")
     else:
-        print("start ok")
+        if not explicit_transient:
+            enable_command = [
+                "hermes-feishu-card",
+                "enable",
+                "--config",
+                str(config_path),
+                "--hermes-dir",
+                str(verified_hermes_root),
+                "--yes",
+            ]
+            if route_settings["env_path"] != default_env_path:
+                enable_command.extend(
+                    ["--env-file", str(route_settings["env_path"])]
+                )
+            print(
+                "warning: persistent sidecar unavailable: " + persistence_blocker,
+                file=sys.stderr,
+            )
+            print(
+                "warning: using a transient sidecar; it will not survive a host "
+                "reboot",
+                file=sys.stderr,
+            )
+            print(
+                "next: satisfy the persistence requirement, then run "
+                + shlex.join(enable_command),
+                file=sys.stderr,
+            )
+        try:
+            start_result = start_sidecar(config_path, config, **start_kwargs)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if start_result.startswith("failed:"):
+            _print_sidecar_start_failure(start_result)
+            return 1
+        if start_result == "already running":
+            print("start: already running")
+        else:
+            print("start ok")
+        print(
+            "persistence: transient (explicit)"
+            if explicit_transient
+            else "persistence: transient"
+        )
 
     status = status_sidecar(config)
     if not status["running"]:

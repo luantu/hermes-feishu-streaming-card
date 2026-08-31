@@ -125,6 +125,11 @@ def stub_setup_runtime(monkeypatch, hermes_dir):
         "_resolve_start_runtime_identity",
         lambda _root: (runtime_python, identity),
     )
+    monkeypatch.setattr(
+        cli,
+        "persistent_sidecar_setup_blocker",
+        lambda _config: "test fixture uses transient sidecar",
+    )
     return runtime_python, identity
 
 
@@ -1046,6 +1051,173 @@ def test_setup_creates_config_installs_hook_and_starts_sidecar(tmp_path, monkeyp
     assert "HERMES_FEISHU_CARD_PATCH_BEGIN" in run_py(hermes_dir).read_text(
         encoding="utf-8"
     )
+
+
+def test_setup_prefers_persistent_sidecar_when_capability_is_ready(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_dir = copy_hermes(tmp_path)
+    runtime_python, runtime_identity = stub_setup_runtime(monkeypatch, hermes_dir)
+    config_path = tmp_path / "generated" / "feishu-card.yaml"
+    enabled = {}
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_setup_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "setup-secret")
+    monkeypatch.setattr(
+        cli,
+        "persistent_sidecar_setup_blocker",
+        lambda _config: "",
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "persistent_sidecar_matches", lambda **_kwargs: False)
+    monkeypatch.setattr(cli, "stop_sidecar", lambda _config: "not running")
+    monkeypatch.setattr(
+        cli,
+        "start_sidecar",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("transient start must not run")
+        ),
+    )
+
+    def fake_enable(**kwargs):
+        enabled.update(kwargs)
+        return "enabled"
+
+    monkeypatch.setattr(cli, "enable_persistent_sidecar", fake_enable)
+    monkeypatch.setattr(
+        cli,
+        "status_sidecar",
+        lambda _config: {
+            "running": True,
+            "pid": 12345,
+            "manager": "systemd-user-persistent",
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--hermes-dir",
+            str(hermes_dir),
+            "--config",
+            str(config_path),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert "enable ok" in captured.out
+    assert "persistence: enabled" in captured.out
+    assert enabled["config_path"] == config_path
+    assert enabled["config"]["feishu"]["app_id"] == "cli_setup_test"
+    assert enabled["env_file"] is None
+    assert enabled["hermes_dir"] == hermes_dir.resolve()
+    assert enabled["python_executable"] == runtime_python
+    assert enabled["expected_package_version"] == PACKAGE_VERSION
+    assert enabled["expected_python_identity"] == runtime_identity
+
+
+def test_setup_warns_and_starts_transient_when_persistence_is_unavailable(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_dir = copy_hermes(tmp_path)
+    stub_setup_runtime(monkeypatch, hermes_dir)
+    config_path = tmp_path / "generated" / "feishu-card.yaml"
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_setup_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "setup-secret")
+    monkeypatch.setattr(
+        cli,
+        "persistent_sidecar_setup_blocker",
+        lambda _config: "systemd user linger is disabled; run loginctl enable-linger",
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "start_sidecar", lambda *_args, **_kwargs: "started")
+    monkeypatch.setattr(
+        cli,
+        "status_sidecar",
+        lambda _config: {
+            "running": True,
+            "pid": 12345,
+            "manager": "systemd-user",
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--hermes-dir",
+            str(hermes_dir),
+            "--config",
+            str(config_path),
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert "warning: persistent sidecar unavailable" in captured.err
+    assert "will not survive a host reboot" in captured.err
+    assert "loginctl enable-linger" in captured.err
+    assert "hermes-feishu-card enable" in captured.err
+    assert "persistence: transient" in captured.out
+
+
+def test_setup_transient_flag_explicitly_skips_persistent_probe(
+    tmp_path, monkeypatch, capsys
+):
+    hermes_dir = copy_hermes(tmp_path)
+    stub_setup_runtime(monkeypatch, hermes_dir)
+    config_path = tmp_path / "generated" / "feishu-card.yaml"
+    started = {}
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_setup_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "setup-secret")
+    monkeypatch.setattr(
+        cli,
+        "persistent_sidecar_setup_blocker",
+        lambda _config: (_ for _ in ()).throw(
+            AssertionError("explicit transient setup must not probe persistence")
+        ),
+    )
+
+    def fake_start(config_path_arg, config, **kwargs):
+        started.update(
+            {
+                "config_path": config_path_arg,
+                "config": config,
+                "kwargs": kwargs,
+            }
+        )
+        return "started"
+
+    monkeypatch.setattr(cli, "start_sidecar", fake_start)
+    monkeypatch.setattr(
+        cli,
+        "status_sidecar",
+        lambda _config: {
+            "running": True,
+            "pid": 12345,
+            "manager": "detached",
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "setup",
+            "--hermes-dir",
+            str(hermes_dir),
+            "--config",
+            str(config_path),
+            "--transient",
+            "--yes",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    assert captured.err == ""
+    assert "start ok" in captured.out
+    assert "persistence: transient (explicit)" in captured.out
+    assert started["config_path"] == config_path
 
 
 def test_setup_updates_selected_profile_env_and_reports_route_chain(

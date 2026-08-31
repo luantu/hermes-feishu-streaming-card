@@ -78,6 +78,32 @@ def test_enable_refuses_missing_linger_without_mutation(monkeypatch, tmp_path):
     assert not state.exists()
 
 
+def test_setup_blocker_is_empty_only_for_supported_linger_ready_user_service(
+    monkeypatch,
+):
+    monkeypatch.setattr(persistent_service, "_availability_error", lambda: "")
+    monkeypatch.setattr(persistent_service, "_linger_enabled", lambda: True)
+
+    assert (
+        persistent_service.persistent_sidecar_setup_blocker(
+            {"service": {"manager": "auto"}}
+        )
+        == ""
+    )
+    assert "service.manager" in persistent_service.persistent_sidecar_setup_blocker(
+        {"service": {"manager": "detached"}}
+    )
+
+
+def test_setup_blocker_reports_missing_linger(monkeypatch):
+    monkeypatch.setattr(persistent_service, "_availability_error", lambda: "")
+    monkeypatch.setattr(persistent_service, "_linger_enabled", lambda: False)
+
+    assert persistent_service.persistent_sidecar_setup_blocker(
+        {"service": {"manager": "systemd-user"}}
+    ) == "systemd user linger is disabled; run loginctl enable-linger"
+
+
 def test_enable_writes_bound_unit_and_manifest_then_starts(monkeypatch, tmp_path):
     state, config, env_file, hermes, python, unit, manifest = _patch_paths(
         monkeypatch, tmp_path

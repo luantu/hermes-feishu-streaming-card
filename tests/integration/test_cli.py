@@ -45,8 +45,12 @@ def test_doctor_loads_config_and_prints_sidecar_address(tmp_path, capsys):
     assert "127.0.0.1:9002" in captured.out
 
 
-def test_status_reports_process_state(capsys):
-    exit_code = main(["status"])
+def test_status_reports_process_state(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  host: 127.0.0.1\n  port: 9\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_FEISHU_CARD_STATE_DIR", str(tmp_path / "state"))
+
+    exit_code = main(["status", "--config", str(config_path)])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -924,8 +928,10 @@ def test_doctor_bad_config_returns_nonzero(tmp_path, capsys):
     assert "error" in captured.err.lower()
 
 
-def run_cli(*args):
+def run_cli(*args, extra_env=None):
     env = {key: value for key, value in os.environ.items() if key not in CONFIG_ENV_VARS}
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-m", "hermes_feishu_card.cli", *args],
         check=False,
@@ -1749,8 +1755,16 @@ def test_module_doctor_suggests_hermes_cli_project_when_hermes_dir_is_wrong(
     assert f"Use --hermes-dir {actual_dir}" in result.stdout
 
 
-def test_module_status_reports_success():
-    result = run_cli("status")
+def test_module_status_reports_success(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("server:\n  host: 127.0.0.1\n  port: 9\n", encoding="utf-8")
+
+    result = run_cli(
+        "status",
+        "--config",
+        str(config_path),
+        extra_env={"HERMES_FEISHU_CARD_STATE_DIR": str(tmp_path / "state")},
+    )
 
     assert result.returncode == 0
     assert "status" in result.stdout.lower()

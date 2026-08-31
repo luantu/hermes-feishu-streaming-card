@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.3.7`。本轮修复 Issue #240 / PR #241：Hermes 2026-08-25 core 的 Base media/local delivery filter 会收到 `session_key=session_key`，installer exact matcher 现在严格接受该新版调用和旧版无关键字调用，其他形态继续 fail-closed。完整自动化、release PR、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过；本轮尚未独立执行真实飞书客户端 smoke，自动化不冒充平台验收。
+当前发布候选为 `4.3.8`。本轮修复 Issue #244 的 guided setup 开机常驻缺口、Issue #245 的 batch clarify sequence 竞态，并吸收 PR #242 的远程 Feishu/Lark HTTP proxy 支持。完整自动化、release PR、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过；本轮尚未独立执行真实飞书客户端 smoke 或真实 Linux systemd user + linger 主机 smoke，自动化不冒充平台验收。
 
 V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 
@@ -147,7 +147,16 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 
 `v3.9.0` tag 的 release-assets workflow 会发布 4 个 assets：macOS tarball、Linux tarball、Windows zip 和 checksums 文件，分别为 `hermes-feishu-card-v3.9.0-macos.tar.gz`、`hermes-feishu-card-v3.9.0-linux.tar.gz`、`hermes-feishu-card-v3.9.0-windows.zip`、`hermes-feishu-card-v3.9.0-checksums.txt`。
 
-## V4.3.7 发布门禁
+## V4.3.8 发布门禁
+
+- Issue #244：`setup` 仅在 `service.manager=auto|systemd-user`、user manager 可用且 linger 已开启时默认启用 owned persistent service；其他环境明确 warning、transient fallback 与精确 `enable` 命令，`--transient` 显式 opt-out。
+- Issue #245：认证 out-of-band card action completion 不推进 `/events` transport `last_sequence`；第二个 batch clarify 请求仍需通过严格 identity 与单调 sequence 校验，第一题 callback card 在 session lock 内快照。
+- PR #242：远程 Feishu/Lark HTTP 遵循 proxy 环境变量，loopback/private/link-local/unspecified 地址继续 bypass；原作者 commit `c25e2c4c36d5bc795b3c92df6796e7c971e9dba4` 独立保留。
+- focused proxy client **`81 passed`**；session/hook/server **`937 passed`**；persistent/process/install **`649 passed, 5 skipped`**；fresh normal-wheel process lifecycle **`8 passed`**。
+- fresh Python 3.12 normal-wheel 完整 pytest **`3343 passed, 6 skipped in 690.84s`**；`git diff --check` **已通过**。release candidate CI、exact merge SHA、annotated tag、public tagged install 与 Release assets/checksums：**待最终门禁完成**。
+- 真实 Feishu/Lark 客户端 smoke 与真实 Linux systemd user + linger 主机 smoke：**未执行**。自动化、mock 与 CI 不冒充真实平台验收。
+
+## V4.3.7 发布门禁（历史记录）
 
 - Issue #240 / PR #241：Base `filter_media_delivery_paths` / `filter_local_delivery_paths` exact matcher 必须同时接受旧版单位置参数调用与新版唯一 `session_key=session_key` 关键字调用，避免 `exact_delivery_contract: missing_or_unsupported`。
 - extra/wrong/unpacked keyword、错误值以及缺少/增加位置参数必须全部 fail-closed；apply/remove/restore 保持幂等和逐字恢复。

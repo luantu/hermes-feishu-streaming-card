@@ -64,6 +64,12 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、`group_rules` 安全诊断、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
 
+## V4.3.8 常驻 setup、batch clarify 与 HTTP proxy
+
+V4.3.8 的 `setup` 会在 Linux systemd user manager 与 linger 已就绪时默认启用 HFC ownership 保护的 persistent service；不会自行开启 linger、调用 sudo 或进入 system manager。能力不可用时会明确说明 sidecar 无法跨主机重启存活，启动 transient fallback，并打印后续 `enable` 命令；需要保持旧行为时使用 `setup --transient`。
+
+连续 batch clarify 中，card action 的内部完成事件不再占用 Hermes `/events` sequence，下一题不会误判为重复事件；callback card 在锁内快照，不会显示随后到达的下一题。远程 Feishu/Lark HTTP 请求遵循标准 proxy 环境变量，本机、私网、link-local 和 unspecified 目标继续绕过。
+
 ## V4.3.7 Hermes delivery filter 安装兼容
 
 Hermes 2026-08-25 core 会把当前 session key 显式传给 Base media/local delivery filter：`filter_*_delivery_paths(..., session_key=session_key)`。V4.3.7 的 installer exact matcher 同时接受该调用与旧版无关键字调用；任何额外关键字、错误名称或值、`**kwargs`、缺少或增加位置参数都会拒绝安装，避免在未知 Base contract 上打补丁。
@@ -135,7 +141,9 @@ Issue #162 所述的多机器人群聊需要显式使用原生模式：把目标
 
 `service.manager: auto` 只选择可用的 `systemd-user`，否则使用 `detached`，从不隐式进入 `systemd-system` 或调用 sudo。`systemd-system` 仅 Linux 显式 opt-in 且只用 transient unit；Docker 保持普通容器进程与 `detached`。完整排障见 [V4.1 安全控制与排障](wiki/v4.1-safety-controls.md)。
 
-V4.3.0 另提供显式开机常驻，不改变 `start` 的 transient 默认值。Linux 用户先由自己或管理员确认 linger，再创建受 HFC ownership 保护的真实 user unit：
+Linux 上的引导式 `setup` 会在 user manager 可用且 linger 已开启时，默认创建受 HFC ownership 保护的开机常驻 user unit；不会自行开启 linger、调用 sudo 或切换到 system manager。能力不可用时会明确警告“重启后不会存活”，临时启动现有 transient sidecar，并打印满足条件后可执行的精确 `enable` 命令。即使能力就绪，也可用 `setup --transient` 显式关闭自动常驻。独立 `start` 的默认值仍是 transient。
+
+也可以先由用户或管理员确认 linger，再显式创建常驻服务：
 
 ```bash
 loginctl enable-linger "$USER"
@@ -566,7 +574,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v4.3.7`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.3.8`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -574,7 +582,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.3.7
+export HFC_VERSION=v4.3.8
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -807,7 +815,7 @@ streaming:
 
 | 命令 | 说明 |
 |------|------|
-| `setup --hermes-dir ... --yes` | 一键安装：配置、检测、hook、sidecar、健康检查；确认 Hermes 替换了源码时可加 `--accept-hermes-upgrade` |
+| `setup --hermes-dir ... --yes` | 一键安装：配置、检测、hook、sidecar、健康检查；Linux 能力就绪时默认开机常驻，否则警告后 transient 启动；可加 `--transient` 显式关闭常驻，确认 Hermes 替换了源码时可加 `--accept-hermes-upgrade` |
 | `doctor --config ... --hermes-dir ...` | 诊断 Hermes 版本、runtime import、`hook_strategy`、`compatibility`、anchors 和原因；支持 `--explain` / `--json` |
 | `install --hermes-dir ... --yes` | 安装插件到 Hermes runtime venv，并安装 hook；确认 Hermes 替换了源码时可加 `--accept-hermes-upgrade` 一步恢复并重装 |
 | `repair --hermes-dir ... --yes` | 修复可验证的 hook manifest/backup 状态，不覆盖用户改动；真实升级源码变更需显式加 `--accept-hermes-upgrade` |
@@ -859,6 +867,7 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.3.8](release-notes-v4.3.8.md) | 2026-08-29 | Issue #244：setup 默认常驻与显式 transient fallback；Issue #245：修复 batch clarify sequence 竞态；PR #242：远程 Feishu/Lark HTTP 支持 proxy 环境 |
 | [v4.3.7](release-notes-v4.3.7.md) | 2026-08-26 | Issue #240 / PR #241：installer exact matcher 兼容 Hermes session-scoped media/local delivery filters，并对其他关键字调用保持 fail-closed |
 | [v4.3.6](release-notes-v4.3.6.md) | 2026-08-25 | Issue #237：无 reply anchor 的话题 create 改用 `chat_id`，避免 `receive_id_type=thread_id` 被飞书以 `99992402` 拒绝；PR #228：approval/clarify 交互卡与 completion notification 支持可配置地 `@` 发起人 |
 | [v4.3.5](release-notes-v4.3.5.md) | 2026-08-24 | 修复 HFC `edit_message` wrapper 向 Hermes v2026.8.3 Feishu adapter 转发不受支持的内部 `metadata` 所触发的 `TypeError`，并保留支持该参数的 adapter 与其他未知关键字的原有语义 |

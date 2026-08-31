@@ -139,7 +139,7 @@ Hermes `v2026.4.23` 起的旧版和 Hermes 0.13.0+/0.14.0/0.15.x/0.17.x/0.18.x/0
 已有 Hermes 容器优先使用：
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.3.7
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.3.8
 bash install-docker.sh
 ```
 
@@ -158,13 +158,14 @@ bash install-docker.sh
 
 | 命令 | 说明 |
 |---|---|
-| `setup --hermes-dir ... --yes` | 一键配置、检测、安装 hook、启动 sidecar |
+| `setup --hermes-dir ... --yes` | 一键配置、检测、安装 hook、启动 sidecar；Linux user manager 与 linger 就绪时默认开机常驻，否则明确警告并临时启动；可用 `--transient` 显式关闭常驻 |
 | `doctor --config ... --hermes-dir ... --explain` | 诊断 Hermes 版本、runtime import、hook strategy、anchors 和建议 |
 | `install --hermes-dir ... --yes` | 安装插件到 Hermes runtime venv，并安装 hook |
 | `repair --hermes-dir ... --yes` | 修复可验证的 hook manifest/backup 状态 |
 | `setup --repair ... --yes` / `--no-repair` | 自动修复已知安全状态，或显式关闭自动修复 |
 | `restore --hermes-dir ... --yes` | 恢复原始 Hermes 文件 |
-| `start --config ...` / `status --config ...` / `stop --config ...` | sidecar 进程管理和 `/health` 检查；Linux/systemd 使用独立 user service |
+| `start --config ...` / `status --config ...` / `stop --config ...` | transient sidecar 进程管理和 `/health` 检查 |
+| `enable --config ... --hermes-dir ... --yes` / `disable` | 显式管理 HFC ownership 保护的 persistent systemd user service |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | 真实飞书卡片 smoke test |
 | `bots list|show|add|remove|test` | 多 bot 注册、查看和联调 |
 
@@ -178,6 +179,7 @@ bash install-docker.sh
 ## 最新版本
 | 版本 | 重点 |
 |---|---|
+| [v4.3.8](docs/release-notes-v4.3.8.md) | `setup` 能力就绪时默认启用开机常驻、不可用时明确 transient 风险；修复 batch clarify 下一题 sequence 竞态，并让远程 Feishu/Lark HTTP 请求遵循 proxy 环境变量而本机/私网继续绕过 |
 | [v4.3.7](docs/release-notes-v4.3.7.md) | 兼容 Hermes 2026-08-25 core 的 session-scoped delivery filters；安装器严格接受 `session_key=session_key` 新调用，同时保留旧调用并拒绝其他关键字形态 |
 | [v4.3.6](docs/release-notes-v4.3.6.md) | 修复无 reply anchor 的话题 create 路径使用非法 `receive_id_type=thread_id` 导致的 `99992402`；approval/clarify 交互卡与 completion notification 支持可配置地 `@` 发起人，并保持 schema 2.0 主卡 owner 不变 |
 | [v4.3.5](docs/release-notes-v4.3.5.md) | 兼容 Hermes v2026.8.3 Feishu adapter 的 `edit_message` 无 `metadata` 形参：wrapper 只移除原方法明确不支持的内部 metadata，支持 metadata/`**kwargs` 的 adapter 继续透传，无关未知参数仍正常抛出 `TypeError` |
@@ -287,7 +289,7 @@ Hermes Gateway
 - V4.0.10–V4.0.21：感谢 [tianxia3111](https://github.com/tianxia3111)（Issue #133/#153/#155）、[nasvip](https://github.com/nasvip)（Issue #136）、[ati121](https://github.com/ati121)（Issue #141/#142）与 [Cassius0924](https://github.com/Cassius0924)（Issue #147）提供 compaction、systemd 凭据、工具展示、长任务重复卡片、notice 投递和内容完整性证据。
 - V4.1.x：感谢 [shutdown-awa](https://github.com/shutdown-awa)（Issue #157）、[Redeemer-w](https://github.com/Redeemer-w)（Issue #159）、[Cyber-Yichen](https://github.com/Cyber-Yichen)（PR #156）、[wholegale39](https://github.com/wholegale39)（PR #160）、[dake6767](https://github.com/dake6767)（PR #168）、[foras910521-lab](https://github.com/foras910521-lab)（Issue #169）与 [simon881](https://github.com/simon881)（Issue #171）贡献聊天排除、表格截断、systemd、Hermes 新入口、answer-delta、TurnRunner 与 Windows 迁移的方案或现场证据。
 - V4.2.x：感谢 [Cassius0924](https://github.com/Cassius0924)（PR #177/#199/#205/#206）、[mslchy](https://github.com/mslchy)（PR #180/#181）、[ati121](https://github.com/ati121)（Issue #187）、[xingdongcai](https://github.com/xingdongcai)（Issue #188）、[Cyber-Yichen](https://github.com/Cyber-Yichen)（Issue #189）、[createpjf](https://github.com/createpjf)（PR #190）、[Crystalxd](https://github.com/Crystalxd)（Issue #192）、[simon881](https://github.com/simon881)（Issue #193）、[jdysya](https://github.com/jdysya)（Issue #197）、[AnyNice](https://github.com/AnyNice)（Issue #198）、[Timeral](https://github.com/Timeral)（Issue #202）、[chinakids](https://github.com/chinakids)（Issue #208）与 [yuqianma](https://github.com/yuqianma)（Issue #183）贡献话题卡、Windows runner、重复交互、终态正文、Hermes 0.20、引用摘要、旧卡收束、plugin-style runtime 与自启动的实现、复现和复测。
-- V4.3.x：感谢 [leavrcn](https://github.com/leavrcn)（Issue #210/#211/#212/#221/#237）、[jsuper](https://github.com/jsuper)（Issue #214）、[nasvip](https://github.com/nasvip)（Issue #215）、[mouyong](https://github.com/mouyong)（Issue #217）、[Cassius0924](https://github.com/Cassius0924)（PR #213/#220/#228）与 [L261173157](https://github.com/L261173157)（Issue #222 / PR #223）贡献 Hybrid runtime、交互状态、常驻服务、升级恢复、授权、话题投递与 callback 重试的关键证据或方案；感谢 [saulgoodmanngabriel](https://github.com/saulgoodmanngabriel) 和 [zhangzq](https://github.com/zhangzq) 在 Issue #216 提供真实 Hermes 0.20 / 飞书 WebSocket 点击与流式恢复证据；感谢 [RanHuang](https://github.com/RanHuang) 的 PR #226 揭示 persistent service identity、systemd `WorkingDirectory` 与 tokenless health 对账缺口。
+- V4.3.x：感谢 [leavrcn](https://github.com/leavrcn)（Issue #210/#211/#212/#221/#237）、[jsuper](https://github.com/jsuper)（Issue #214）、[nasvip](https://github.com/nasvip)（Issue #215/#244）、[mouyong](https://github.com/mouyong)（Issue #217）、[Timeral](https://github.com/Timeral)（Issue #245）、[Cassius0924](https://github.com/Cassius0924)（PR #213/#220/#228）、[PureWhiteWu](https://github.com/PureWhiteWu)（PR #242）与 [L261173157](https://github.com/L261173157)（Issue #222 / PR #223）贡献 Hybrid runtime、交互状态、常驻服务、升级恢复、授权、话题投递、HTTP proxy 与 callback 重试的关键证据或方案；感谢 [saulgoodmanngabriel](https://github.com/saulgoodmanngabriel) 和 [zhangzq](https://github.com/zhangzq) 在 Issue #216 提供真实 Hermes 0.20 / 飞书 WebSocket 点击与流式恢复证据；感谢 [RanHuang](https://github.com/RanHuang) 的 PR #226 揭示 persistent service identity、systemd `WorkingDirectory` 与 tokenless health 对账缺口。
 - 另感谢 [Akes119](https://github.com/Akes119)（PR #184）和 [yaoge103](https://github.com/yaoge103)（PR #185/#186）提交完成通知与 interaction identity 的替代实现。相关补丁没有按原样合入，因为会造成重复完成通知或削弱 profile/sequence fencing，但这些探索仍作为公开技术讨论保留。
 
 ## 安全说明

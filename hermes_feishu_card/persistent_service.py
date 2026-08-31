@@ -35,6 +35,26 @@ _EXPECTED_MANIFEST_KEYS = {
 }
 
 
+def persistent_sidecar_setup_blocker(config: Mapping[str, object]) -> str:
+    """Return why guided setup cannot safely enable reboot persistence.
+
+    This is deliberately read-only. Guided setup uses it to select the owned
+    persistent service only when the complete systemd-user + linger contract is
+    already available, and otherwise starts the existing transient fallback
+    with an explicit reboot warning.
+    """
+
+    manager = _configured_manager(config)
+    if manager not in {"auto", "systemd-user"}:
+        return "persistent service requires service.manager=auto or systemd-user"
+    availability_error = _availability_error()
+    if availability_error:
+        return availability_error.removeprefix("failed: ")
+    if not _linger_enabled():
+        return "systemd user linger is disabled; run loginctl enable-linger"
+    return ""
+
+
 def enable_persistent_sidecar(
     *,
     config_path: str | Path,

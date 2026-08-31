@@ -9478,6 +9478,82 @@ async def test_repeated_interactions_keep_one_v2_owner_and_fresh_legacy_cards(cl
     assert interaction_buttons(latest_card)
 
 
+async def test_batch_clarify_accepts_next_request_while_first_action_finishes(client):
+    test_client, feishu_client = client
+
+    await test_client.post("/events", json=event_payload("message.started", 0))
+    first = await test_client.post(
+        "/events",
+        json=event_payload(
+            "interaction.requested",
+            1,
+            {
+                "interaction_id": "clarify-batch-first",
+                "kind": "clarify",
+                "prompt": "第一个问题",
+                "options": [{"label": "A", "value": "a"}],
+            },
+        ),
+    )
+    assert first.status == 200
+    first_action = interaction_buttons(feishu_client.sent[-1][1])[0]["value"]
+
+    feishu_client.update_delay = 0.2
+    action_task = asyncio.create_task(
+        test_client.post(
+            "/card/actions",
+            json={
+                "event": {
+                    "operator": {"open_id": "ou_bailey"},
+                    "context": {
+                        "open_chat_id": "oc_abc",
+                        "profile_id": "default",
+                    },
+                    "action": {"value": first_action},
+                }
+            },
+        )
+    )
+
+    session = test_client.app[SESSIONS_KEY]["hermes-message-1"]
+    for _ in range(100):
+        if (
+            session.active_interaction is not None
+            and session.active_interaction.status == "completed"
+        ):
+            break
+        await asyncio.sleep(0.005)
+    assert session.active_interaction is not None
+    assert session.active_interaction.status == "completed"
+    assert not action_task.done()
+
+    second = await test_client.post(
+        "/events",
+        json=event_payload(
+            "interaction.requested",
+            2,
+            {
+                "interaction_id": "clarify-batch-second",
+                "kind": "clarify",
+                "prompt": "第二个问题",
+                "options": [{"label": "B", "value": "b"}],
+            },
+        ),
+    )
+    second_body = await second.json()
+    action_response = await action_task
+    action_body = await action_response.json()
+
+    assert second.status == 200
+    assert second_body["applied"] is True
+    assert "第二个问题" in str(feishu_client.sent[-1][1])
+    assert action_response.status == 200
+    assert "第二个问题" not in str(action_body["card"])
+    assert session.active_interaction is not None
+    assert session.active_interaction.interaction_id == "clarify-batch-second"
+    assert session.active_interaction.status == "pending"
+
+
 async def test_completed_previous_interaction_choice_never_leaks_into_next_snapshot(
     client,
 ):

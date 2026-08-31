@@ -2,17 +2,27 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1 / V4.1.2 / V4.1.3 / V4.1.4 / V4.2.0 / V4.2.1 / V4.2.2 / V4.2.3 / V4.2.4 / V4.2.5 / V4.2.6 / V4.2.7 / V4.2.8 / V4.2.9 / V4.2.10 / V4.2.11 / V4.2.12 / V4.3.0 / V4.3.1 / V4.3.2 / V4.3.3 / V4.3.4 / V4.3.5 / V4.3.6 / V4.3.7
+## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1 / V4.1.2 / V4.1.3 / V4.1.4 / V4.2.0 / V4.2.1 / V4.2.2 / V4.2.3 / V4.2.4 / V4.2.5 / V4.2.6 / V4.2.7 / V4.2.8 / V4.2.9 / V4.2.10 / V4.2.11 / V4.2.12 / V4.3.0 / V4.3.1 / V4.3.2 / V4.3.3 / V4.3.4 / V4.3.5 / V4.3.6 / V4.3.7 / V4.3.8
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
 
-### V4.3.7：Hermes session-scoped delivery filter 兼容（发布候选）
+### V4.3.8：常驻 setup、batch clarify 与 proxy 可靠性热修（发布候选）
+
+- [x] Issue #244：systemd user + linger 能力就绪时 `setup` 默认启用 persistent service；不可用时明确 transient 重启风险并给出精确 `enable` 命令；`--transient` 可显式退出。
+- [x] Issue #245：out-of-band card action completion 不推进 Hermes transport sequence；下一条 batch clarify 请求按相同 next sequence 正常接收，第一题 callback card 不混入下一题。
+- [x] PR #242：远程 Feishu/Lark HTTP 遵循 proxy 环境变量；loopback/private/link-local/unspecified 目标继续 bypass，并保留 Pure White 原始作者提交。
+- [x] focused proxy `81 passed`；session/hook/server `937 passed`；persistent/install `649 passed, 5 skipped`；fresh normal-wheel process `8 passed`。
+- [x] fresh Python 3.12 normal-wheel 完整 pytest `3343 passed, 6 skipped in 690.84s`；`git diff --check`、双语文档与贡献归属已验证。
+- [ ] release PR CI、exact release merge、annotated tag、public tagged install 与 Release assets/checksums。
+- [ ] 真实 Feishu/Lark 客户端 smoke 与真实 Linux systemd user + linger 主机 smoke；自动化不冒充平台验收。
+
+### V4.3.7：Hermes session-scoped delivery filter 兼容（已发布）
 
 - [x] Issue #240 / PR #241：Base media/local delivery filter exact matcher 同时接受旧版单位置参数调用与新版唯一 `session_key=session_key` 关键字调用。
 - [x] extra/wrong/unpacked keyword、错误值与缺少/增加位置参数继续 fail-closed；apply/remove/restore 保持幂等和逐字恢复。
 - [x] PR 精确 head 定向回归 `460 passed, 1 skipped`；fresh normal-wheel 完整 pytest `3330 passed, 5 skipped`；真实 Hermes `82b32f32ef` source roundtrip 与 6 种对抗调用形态通过。
 - [x] PR #241 的 12 项 GitHub checks、maintainer approval 与 exact merge `7fcf3cbd67d3a5100739e9e3d3d7cdcce080cb62`。
-- [ ] release PR CI、exact release merge、annotated tag、public tagged install 与 Release assets/checksums。
+- [x] release PR CI、exact release merge `82e22928b22e49795cb475c41f8057b1ef7fe95e`、annotated tag、public tagged install 与 Release assets/checksums。
 - [ ] 真实飞书 smoke；本修复只影响 installer AST contract，自动化不冒充平台验收。
 
 ### V4.3.6：话题 create 兼容与可配置 @ 提及（已发布）

@@ -271,8 +271,14 @@ uses the owned detached process; it never probes the system bus, invokes
 explicit Linux-only transient-unit opt-in and writes no persistent unit under
 `/etc`. Docker and other containers should select `detached`.
 
-V4.3.0 adds a separate explicit persistent path on Linux. After installation,
-enable linger through the normal user/admin policy and run:
+On Linux, guided `setup` now prefers the owned persistent path when the selected
+user manager works and linger is already enabled. It never enables linger or
+crosses into a system service. If the capability is unavailable, setup starts
+the existing transient sidecar, prints that it will not survive a reboot, and
+shows the exact `enable` command to run after the user/admin policy enables
+linger. Use `setup --transient` to opt out even when persistence is available.
+
+The equivalent explicit persistent command is:
 
 ```bash
 hermes-feishu-card enable --config /absolute/config.yaml \
@@ -282,7 +288,7 @@ hermes-feishu-card enable --config /absolute/config.yaml \
 This writes a real systemd user unit plus a private SHA-256 ownership manifest,
 then verifies the running package/Python identity. It refuses missing linger,
 unknown same-name units, drift, or unsafe shutdown. Remove the owned unit with
-`hermes-feishu-card disable`; `start` remains transient by default.
+`hermes-feishu-card disable`; standalone `start` remains transient by default.
 
 ## macOS / Linux
 
@@ -330,7 +336,7 @@ a privileged container, or mount host system-service directories.
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.3.7
+export HFC_VERSION=v4.3.8
 bash install-docker.sh
 ```
 

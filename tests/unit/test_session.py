@@ -101,6 +101,55 @@ def test_reply_in_thread_placement_is_sticky_within_session():
     assert session.reply_in_thread is True
 
 
+def test_out_of_band_interaction_completion_does_not_consume_transport_sequence():
+    session = CardSession(
+        conversation_id="chat-1",
+        message_id="msg-1",
+        chat_id="oc_abc",
+    )
+
+    assert session.apply(
+        event(
+            "interaction.requested",
+            1,
+            {
+                "interaction_id": "clarify-first",
+                "kind": "clarify",
+                "prompt": "第一个问题",
+                "options": [{"label": "A", "value": "a"}],
+            },
+        )
+    )
+    assert session.apply(
+        event(
+            "interaction.completed",
+            2,
+            {
+                "interaction_id": "clarify-first",
+                "choice": "a",
+                "choice_label": "A",
+            },
+        ),
+        advance_sequence=False,
+    )
+
+    assert session.last_sequence == 1
+    assert session.apply(
+        event(
+            "interaction.requested",
+            2,
+            {
+                "interaction_id": "clarify-second",
+                "kind": "clarify",
+                "prompt": "第二个问题",
+                "options": [{"label": "B", "value": "b"}],
+            },
+        )
+    )
+    assert session.active_interaction is not None
+    assert session.active_interaction.interaction_id == "clarify-second"
+
+
 @pytest.mark.parametrize(
     ("sender_open_id", "expected"),
     (

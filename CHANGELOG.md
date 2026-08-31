@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.3.8 — 2026-08-29
+
+See also: [docs/release-notes-v4.3.8.md](docs/release-notes-v4.3.8.md)
+
+### Fixed
+- Issue #244: guided `setup` now enables the owned persistent systemd user service by default when the configured user manager and linger are already available. Unsupported hosts or missing linger fall back to the existing transient sidecar with an explicit reboot warning and exact recovery command; `--transient` remains an explicit opt-out.
+- Issue #245: authenticated card actions no longer consume the Hermes transport sequence number. A batch clarify action can therefore finish concurrently with the next `interaction.requested` event without that event being rejected as a duplicate or leaking the next prompt into the first callback response.
+- PR #242: remote Feishu/Lark HTTP requests now honor standard proxy environment variables, while loopback and private test/service endpoints continue to bypass environment proxies.
+
+### Safety
+- `setup` never enables linger, invokes sudo, crosses into the system manager, or silently creates persistence when the full owned systemd-user contract is unavailable.
+- Transport events retain strict monotonic sequence checks. Only the authenticated out-of-band card callback avoids advancing the transport watermark.
+- Proxy environment trust is disabled for loopback, private, link-local, and unspecified destinations so local acceptance and sidecar tests remain isolated.
+
+### Credits
+- Thanks @PureWhiteWu for PR #242's proxy implementation and regression coverage, @nasvip for Issue #244's persistent-setup production report, and @Timeral for Issue #245's batch-clarify race reproduction.
+
 ## V4.3.7 — 2026-08-26
 
 See also: [docs/release-notes-v4.3.7.md](docs/release-notes-v4.3.7.md)

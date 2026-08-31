@@ -74,6 +74,7 @@
 - form submit 不接受 interaction ID 或空 token 作为凭据，也不接受缺失或不匹配的 callback chat。
 - `interaction.requested` 在已有 session card 时会发送新的当前状态卡并迁移后续 message id；必须使用 interaction-specific delivery key，发送失败恢复 session，动画任务也必须从旧 message id 切到新卡。
 - interaction deadline 由 sidecar 接收时刻与 `timeout_seconds` 计算为绝对截止时间 `expires_at`；action、result poll 与周期清理都在现有 session lock 下先做幂等过期转换。过期状态只能是 failed，晚到直连按钮或 form submit 不能把它改回 completed，原卡必须刷新为“交互已过期”。
+- card action 是认证的 out-of-band 回调：它生成的内部 `interaction.completed` 可以执行 identity/stale 校验，但不得推进 Hermes `/events` transport 的 `last_sequence`。batch 下一条 `interaction.requested` 必须仍按严格单调序列接受；callback 响应卡要在同一 session lock 内快照，不能混入随后到达的下一题。
 - cleanup 只把尚未到期的 pending interaction 视为活跃；周期循环先转换/刷新过期 interaction，再执行普通 retention cleanup，避免永久保留或删掉仍显示可点击按钮的旧卡。
 
 ### `hermes_feishu_card/install/patcher.py`
@@ -125,9 +126,9 @@
 - runner 必须真正读取 `setup` / `start` 显式传入的 `--env-file`。配置优先级保持 YAML < 同目录 `.env` < 显式 env file < process env；禁止为了修复 systemd 环境而隐式读取全局 `~/.hermes/.env`。
 - 升级迁移只能停止 PID/token/health 三者一致的旧进程，未知进程保持 fail-closed。
 - `auto` 不得探测 system bus、调用 sudo/pkexec、写 `/etc` 或静默 fallback 到 system manager；`systemd-system` 只能显式使用 transient unit。
-- V4.3 `enable` 是独立的 persistent systemd user 路径：必须先验证 `loginctl ... Linger=yes`，再以 exact Hermes venv Python、absolute config/env/Hermes root 渲染 unit。unit 与 `persistent-service.json` 都必须为 owner-only regular file，并以 `unit_sha256` 互证。
+- guided `setup` 在 `service.manager=auto|systemd-user`、user manager 可用且 `loginctl ... Linger=yes` 时默认进入 persistent systemd user 路径；不可用时必须显式警告重启风险并给出精确 `enable` 命令，`--transient` 是显式 opt-out。不得自动 enable linger、调用 sudo 或进入 system manager。随后以 exact Hermes venv Python、absolute config/env/Hermes root 渲染 unit；unit 与 `persistent-service.json` 都必须为 owner-only regular file，并以 `unit_sha256` 互证。
 - persistent enable 前先用现有 token/pidfile owner 安全停止 transient/detached sidecar；无 ownership 的同名 active unit、停服失败、manifest/unit 不完整或 drift 均拒绝。enable/health 失败后只有 `disable --now` 成功才可删除 ownership evidence。
-- `start` 对 exact active persistent unit 只返回 already running；`stop` 不绕过 persistent owner，必须走 `disable`。默认 `start` 仍为 transient，安装器不自动执行 `loginctl enable-linger`。
+- `start` 对 exact active persistent unit 只返回 already running；`stop` 不绕过 persistent owner，必须走 `disable`。独立 `start` 仍为 transient，安装器不自动执行 `loginctl enable-linger`。
 - 调整 lifecycle 时运行 `tests/unit/test_process.py`、`tests/integration/test_cli_process.py` 和 `tests/unit/test_install_scripts.py`。
 - Windows venv launcher 与实际 runner PID 不一致时，只允许 `win32 + detached + exact token + pidfile PID == runner parent PID` 的一次重绑，并在原子写后重新读取精确记录；其他平台、manager 或不完整证据保持 fail-closed。
 

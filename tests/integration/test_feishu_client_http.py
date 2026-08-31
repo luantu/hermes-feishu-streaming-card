@@ -91,6 +91,64 @@ async def feishu_api():
         await client.close()
 
 
+async def test_remote_feishu_request_uses_http_proxy_environment(monkeypatch):
+    observed = []
+
+    async def proxy(request):
+        observed.append(
+            {
+                "method": request.method,
+                "raw_path": request.raw_path,
+                "host": request.headers.get("Host"),
+                "body": await request.json(),
+            }
+        )
+        return web.json_response(
+            {
+                "code": 0,
+                "msg": "ok",
+                "tenant_access_token": "proxy-token",
+                "expire": 7200,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", proxy)
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    proxy_url = str(test_client.make_url("/")).rstrip("/")
+    monkeypatch.setenv("HTTP_PROXY", proxy_url)
+    monkeypatch.setenv("http_proxy", proxy_url)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    try:
+        client = FeishuClient(
+            FeishuClientConfig(
+                app_id="cli_proxy",
+                app_secret="proxy-secret",
+                base_url="http://open.feishu.test/open-apis",
+            )
+        )
+
+        token = await client._tenant_token()
+    finally:
+        await test_client.close()
+
+    assert token == "proxy-token"
+    assert observed == [
+        {
+            "method": "POST",
+            "raw_path": (
+                "http://open.feishu.test/open-apis/"
+                "auth/v3/tenant_access_token/internal"
+            ),
+            "host": "open.feishu.test",
+            "body": {"app_id": "cli_proxy", "app_secret": "proxy-secret"},
+        }
+    ]
+
+
 async def test_send_card_fetches_token_and_posts_interactive_message(feishu_api):
     test_client, requests, token_calls = feishu_api
     client = FeishuClient(

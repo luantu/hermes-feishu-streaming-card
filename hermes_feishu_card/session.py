@@ -193,7 +193,12 @@ class CardSession:
         resolved = resolve_display_status(self, config or StatusConfig.defaults())
         self.display_status_source = resolved.source
 
-    def apply(self, event: SidecarEvent) -> bool:
+    def apply(
+        self,
+        event: SidecarEvent,
+        *,
+        advance_sequence: bool = True,
+    ) -> bool:
         if (
             event.conversation_id != self.conversation_id
             or event.message_id != self.message_id
@@ -205,7 +210,12 @@ class CardSession:
             return False
         if self.status in {"completed", "failed"}:
             return False
-        self.last_sequence = max(self.last_sequence, event.sequence)
+        # Card-action callbacks are authenticated out-of-band transitions. They
+        # may complete an interaction while Hermes is already preparing the next
+        # batch clarify request, so they must not consume the transport sequence
+        # that the next gateway event will use.
+        if advance_sequence:
+            self.last_sequence = max(self.last_sequence, event.sequence)
         if _truthy_flag(event.data.get("reply_in_thread")):
             self.reply_in_thread = True
 

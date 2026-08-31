@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release candidate: `4.3.7`. This cycle fixes Issue #240 / PR #241: the Hermes 2026-08-25 core passes `session_key=session_key` to the Base media/local delivery filters, and the installer exact matcher now accepts that new call plus the legacy call without keywords while every other shape remains fail-closed. Full automation, the release PR, exact merge SHA, public tag/install, and Release assets are marked passed only after completion. This cycle has not independently run a real Feishu client smoke; automation is not represented as platform acceptance.
+Current release candidate: `4.3.8`. This cycle fixes Issue #244's guided-setup reboot-persistence gap and Issue #245's batch-clarify sequence race, and absorbs PR #242's remote Feishu/Lark HTTP proxy support. Full automation, the release PR, exact merge SHA, public tag/install, and Release assets are marked passed only after completion. This cycle has not independently run a real Feishu client smoke or a real Linux systemd-user + linger host smoke; automation is not represented as platform acceptance.
 
 V3.9.0 was released on 2026-07-11, and V3.9.1 was released on 2026-07-11. The V4.0.13 all-command lifecycle remains intact; V4.2.0 narrows only a private-chat bare `/update` into the stricter dedicated maintenance card.
 
@@ -147,7 +147,16 @@ Acceptance also exposed an upstream Hermes `cron run` status-reporting bug: a su
 
 The `v3.9.0` release-assets workflow publishes four assets: the macOS tarball, Linux tarball, Windows zip, and checksums file: `hermes-feishu-card-v3.9.0-macos.tar.gz`, `hermes-feishu-card-v3.9.0-linux.tar.gz`, `hermes-feishu-card-v3.9.0-windows.zip`, and `hermes-feishu-card-v3.9.0-checksums.txt`.
 
-## V4.3.7 Release Gates
+## V4.3.8 Release Gates
+
+- Issue #244: `setup` defaults to the owned persistent service only when `service.manager=auto|systemd-user`, the user manager works, and linger is already enabled. Every other environment gets an explicit warning, transient fallback, and exact `enable` command; `--transient` explicitly opts out.
+- Issue #245: an authenticated out-of-band card-action completion does not advance the `/events` transport `last_sequence`. The second batch-clarify request still passes strict identity and monotonic-sequence validation, and the first callback card is snapshotted under the session lock.
+- PR #242: remote Feishu/Lark HTTP honors proxy environment variables while loopback/private/link-local/unspecified addresses bypass them; original-author commit `c25e2c4c36d5bc795b3c92df6796e7c971e9dba4` remains independent.
+- Focused proxy client: **`81 passed`**; session/hook/server: **`937 passed`**; persistent/process/install: **`649 passed, 5 skipped`**; fresh normal-wheel process lifecycle: **`8 passed`**.
+- Full pytest in a fresh Python 3.12 normal-wheel environment: **`3343 passed, 6 skipped in 690.84s`**; `git diff --check`: **passed**. Release-candidate CI, exact merge SHA, annotated tag, public tagged install, and Release assets/checksums remain final gates.
+- Real Feishu/Lark client smoke and real Linux systemd-user + linger host smoke: **not run**. Automation, mocks, and CI are not represented as real-platform acceptance.
+
+## V4.3.7 Release Gates (Historical Record)
 
 - Issue #240 / PR #241: the exact matchers for Base `filter_media_delivery_paths` / `filter_local_delivery_paths` must accept both the legacy single-positional-argument call and the new call with exactly `session_key=session_key`, avoiding `exact_delivery_contract: missing_or_unsupported`.
 - Extra, wrong, or unpacked keywords, wrong values, and missing or extra positional arguments must all fail closed. Apply/remove/restore must remain idempotent and byte-exact.

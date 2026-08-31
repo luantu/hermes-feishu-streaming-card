@@ -140,7 +140,7 @@ The compatibility matrix covers older Hermes starting at `v2026.4.23` and Hermes
 For an existing Hermes container:
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.3.7
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.3.8
 bash install-docker.sh
 ```
 
@@ -159,13 +159,14 @@ Defaults:
 
 | Command | Purpose |
 |---|---|
-| `setup --hermes-dir ... --yes` | Configure, diagnose, install hook, and start sidecar |
+| `setup --hermes-dir ... --yes` | Configure, diagnose, install the hook, and start the sidecar; enables boot persistence when the Linux user manager and linger are ready, otherwise warns and starts transiently; use `--transient` to opt out |
 | `doctor --config ... --hermes-dir ... --explain` | Diagnose Hermes version, runtime import, hook strategy, anchors, and recommendations |
 | `install --hermes-dir ... --yes` | Install the plugin into Hermes runtime venv and patch Hermes |
 | `repair --hermes-dir ... --yes` | Repair verifiable hook manifest/backup state |
 | `setup --repair ... --yes` / `--no-repair` | Automatically repair known-safe state, or explicitly opt out |
 | `restore --hermes-dir ... --yes` | Restore the original Hermes file |
-| `start --config ...` / `status --config ...` / `stop --config ...` | Manage the sidecar process and `/health`; Linux/systemd uses an independent user service |
+| `start --config ...` / `status --config ...` / `stop --config ...` | Manage the transient sidecar process and `/health` |
+| `enable --config ... --hermes-dir ... --yes` / `disable` | Explicitly manage the HFC-owned persistent systemd user service |
 | `smoke-feishu-card --profile-id ... --chat-id ...` | Send a real Feishu card smoke test |
 | `bots list|show|add|remove|test` | Manage and test multi-bot routing |
 
@@ -179,6 +180,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 ## Latest Releases
 | Version | Highlights |
 |---|---|
+| [v4.3.8](docs/release-notes-v4.3.8.en.md) | Makes guided setup persistent when capabilities are ready and explicit about transient reboot risk otherwise, fixes the next-prompt sequence race in batch clarify, and honors proxy environment variables for remote Feishu/Lark HTTP while keeping local/private bypass |
 | [v4.3.7](docs/release-notes-v4.3.7.en.md) | Supports Hermes 2026-08-25 core session-scoped delivery filters: the installer accepts the exact new `session_key=session_key` call while preserving the legacy call and rejecting every other keyword shape |
 | [v4.3.6](docs/release-notes-v4.3.6.en.md) | Replaces invalid unanchored topic creation with `receive_id_type=chat_id` to prevent Feishu `99992402`; approval/clarify cards and completion notifications can optionally `@` mention the requester without changing the schema 2.0 owner card |
 | [v4.3.5](docs/release-notes-v4.3.5.en.md) | Supports the Hermes v2026.8.3 Feishu adapter whose `edit_message` method has no `metadata` parameter: the wrapper removes only unsupported internal metadata, preserves metadata-aware/`**kwargs` adapters, and still raises `TypeError` for unrelated unknown keywords |
@@ -288,7 +290,7 @@ This list preserves code, PR proposals, issue reproductions, and real-environmen
 - V4.0.10–V4.0.21: thanks to [tianxia3111](https://github.com/tianxia3111) (Issues #133/#153/#155), [nasvip](https://github.com/nasvip) (Issue #136), [ati121](https://github.com/ati121) (Issues #141/#142), and [Cassius0924](https://github.com/Cassius0924) (Issue #147) for compaction, systemd credentials, tool presentation, long-task duplicate cards, notice delivery, and content-integrity evidence.
 - V4.1.x: thanks to [shutdown-awa](https://github.com/shutdown-awa) (Issue #157), [Redeemer-w](https://github.com/Redeemer-w) (Issue #159), [Cyber-Yichen](https://github.com/Cyber-Yichen) (PR #156), [wholegale39](https://github.com/wholegale39) (PR #160), [dake6767](https://github.com/dake6767) (PR #168), [foras910521-lab](https://github.com/foras910521-lab) (Issue #169), and [simon881](https://github.com/simon881) (Issue #171) for per-chat exclusion, table truncation, systemd, newer Hermes entry points, answer-delta selection, TurnRunner, and Windows migration proposals or field evidence.
 - V4.2.x: thanks to [Cassius0924](https://github.com/Cassius0924) (PRs #177/#199/#205/#206), [mslchy](https://github.com/mslchy) (PRs #180/#181), [ati121](https://github.com/ati121) (Issue #187), [xingdongcai](https://github.com/xingdongcai) (Issue #188), [Cyber-Yichen](https://github.com/Cyber-Yichen) (Issue #189), [createpjf](https://github.com/createpjf) (PR #190), [Crystalxd](https://github.com/Crystalxd) (Issue #192), [simon881](https://github.com/simon881) (Issue #193), [jdysya](https://github.com/jdysya) (Issue #197), [AnyNice](https://github.com/AnyNice) (Issue #198), [Timeral](https://github.com/Timeral) (Issue #202), [chinakids](https://github.com/chinakids) (Issue #208), and [yuqianma](https://github.com/yuqianma) (Issue #183) for implementation, reproductions, and retesting across topic cards, Windows runners, repeated interactions, terminal answer integrity, Hermes 0.20, quote summaries, superseded cards, plugin-style runtime, and persistent startup.
-- V4.3.x: thanks to [leavrcn](https://github.com/leavrcn) (Issues #210/#211/#212/#221/#237), [jsuper](https://github.com/jsuper) (Issue #214), [nasvip](https://github.com/nasvip) (Issue #215), [mouyong](https://github.com/mouyong) (Issue #217), [Cassius0924](https://github.com/Cassius0924) (PRs #213/#220/#228), and [L261173157](https://github.com/L261173157) (Issue #222 / PR #223) for key evidence or proposals around the Hybrid runtime, interaction state, persistent service, upgrade recovery, approval, topic delivery, and callback retry; thanks to [saulgoodmanngabriel](https://github.com/saulgoodmanngabriel) and [zhangzq](https://github.com/zhangzq) for real Hermes 0.20 / Feishu WebSocket click and streaming-resume evidence in Issue #216; and thanks to [RanHuang](https://github.com/RanHuang) for PR #226, which exposed persistent-service identity, systemd `WorkingDirectory`, and tokenless-health reconciliation gaps.
+- V4.3.x: thanks to [leavrcn](https://github.com/leavrcn) (Issues #210/#211/#212/#221/#237), [jsuper](https://github.com/jsuper) (Issue #214), [nasvip](https://github.com/nasvip) (Issues #215/#244), [mouyong](https://github.com/mouyong) (Issue #217), [Timeral](https://github.com/Timeral) (Issue #245), [Cassius0924](https://github.com/Cassius0924) (PRs #213/#220/#228), [PureWhiteWu](https://github.com/PureWhiteWu) (PR #242), and [L261173157](https://github.com/L261173157) (Issue #222 / PR #223) for key evidence or proposals around the Hybrid runtime, interaction state, persistent service, upgrade recovery, approval, topic delivery, HTTP proxy handling, and callback retry; thanks to [saulgoodmanngabriel](https://github.com/saulgoodmanngabriel) and [zhangzq](https://github.com/zhangzq) for real Hermes 0.20 / Feishu WebSocket click and streaming-resume evidence in Issue #216; and thanks to [RanHuang](https://github.com/RanHuang) for PR #226, which exposed persistent-service identity, systemd `WorkingDirectory`, and tokenless-health reconciliation gaps.
 - Additional thanks to [Akes119](https://github.com/Akes119) (PR #184) and [yaoge103](https://github.com/yaoge103) (PRs #185/#186) for alternative completion-notice and interaction-identity implementations. Those patches were not merged as written because they could duplicate completion delivery or weaken profile/sequence fencing, but the explorations remain part of the public technical record.
 
 ## Security
