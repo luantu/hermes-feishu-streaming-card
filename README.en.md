@@ -140,7 +140,7 @@ The compatibility matrix covers older Hermes starting at `v2026.4.23` and Hermes
 For an existing Hermes container:
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.3.8
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.4.0
 bash install-docker.sh
 ```
 
@@ -180,6 +180,7 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 ## Latest Releases
 | Version | Highlights |
 |---|---|
+| [v4.4.0](docs/release-notes-v4.4.0.en.md) | Adds a Feishu-native capability center driven by the latest Hermes `COMMAND_REGISTRY`, category/detail navigation, safe quick actions, KPI cards, `/bg`/`/btw`/`/plan` compatibility, real backlog metrics, and extreme-Markdown safe folds |
 | [v4.3.8](docs/release-notes-v4.3.8.en.md) | Makes guided setup persistent when capabilities are ready and explicit about transient reboot risk otherwise, fixes the next-prompt sequence race in batch clarify, and honors proxy environment variables for remote Feishu/Lark HTTP while keeping local/private bypass |
 | [v4.3.7](docs/release-notes-v4.3.7.en.md) | Supports Hermes 2026-08-25 core session-scoped delivery filters: the installer accepts the exact new `session_key=session_key` call while preserving the legacy call and rejecting every other keyword shape |
 | [v4.3.6](docs/release-notes-v4.3.6.en.md) | Replaces invalid unanchored topic creation with `receive_id_type=chat_id` to prevent Feishu `99992402`; approval/clarify cards and completion notifications can optionally `@` mention the requester without changing the schema 2.0 owner card |

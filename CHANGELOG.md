@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## V4.4.0 — 2026-08-31
+
+See also: [docs/release-notes-v4.4.0.md](docs/release-notes-v4.4.0.md)
+
+### Added
+- `/commands` now becomes a live Hermes capability center on Feishu/Lark. It reads the running Hermes `COMMAND_REGISTRY`, groups core/plugin/skill commands, and exposes category navigation, command details, aliases, subcommands, argument modes, and busy policies without a copied HFC allowlist.
+- Safe read-only actions (`/status`, `/context`, `/usage`, `/agents`, `/sessions`, `/profile`, `/version`) and the existing native `/model` and `/resume` pickers can be launched from the capability card. The copied event re-enters the Hermes adapter so access control, busy policy, plugin hooks, and original handlers remain authoritative.
+- Native Hermes results such as `/status`, `/context`, `/usage`, `/agents`, `/sessions`, and `/reasoning` gain KPI columns when stable `Label: Value` fields are present while retaining the complete original output below.
+
+### Changed
+- V4.4.0 targets Hermes `v2026.8.27` / `0.20.6` and is forward-validated against `main@4f225435`, including the new `/bg`, `/btw`, `/plan`, gateway `/busy`, and command argument metadata.
+- `FlushController.pending_count` and `update_queue_peak` now report the actual number of updates coalesced while a PATCH is active instead of a boolean 0/1 signal.
+- Markdown tables whose header or row framing cannot fit inside a legal card block now render an explicit safe-fold notice instead of falling back to character-based row fragments that Feishu/Lark can expose as broken raw Markdown.
+- Ordinary long tables and oversized cells still use the existing structure-preserving split with repeated headers; the five-table `compact` / `truncate` policy and terminal native-answer handoff are unchanged.
+
+### Safety
+- Capability-card callbacks are bound to chat, expiry, Hermes admission, and the initiating operator in group chats. State-changing or destructive commands such as `/update`, `/new`, `/stop`, and `/undo` are never one-click actions.
+- If the live Hermes registry, card create, or card PATCH is unavailable, the exact original Hermes text path remains the fallback.
+
+### Tests
+- Added live-registry compatibility, capability-center structure, copied-event dispatch, state-changing-command rejection, KPI preservation, real backlog depth, and adversarial Markdown table coverage.
+
 ## V4.3.8 — 2026-08-29
 
 See also: [docs/release-notes-v4.3.8.md](docs/release-notes-v4.3.8.md)

@@ -31,9 +31,12 @@ class FlushController:
         if self._task is not None and not self._task.done():
             self._pending = True
             self._pending_terminal = self._pending_terminal or terminal
-            self._pending_count = 1
+            self._pending_count += 1
             self.metrics.update_coalesced += 1
-            self.metrics.update_queue_peak = max(self.metrics.update_queue_peak, 1)
+            self.metrics.update_queue_peak = max(
+                self.metrics.update_queue_peak,
+                self._pending_count,
+            )
             return self._task
         self._pending = False
         self._pending_terminal = terminal

@@ -2,9 +2,21 @@
 
 当前 active runtime 是 `hermes_feishu_card/`。legacy adapter、dual mode、旧 `sidecar/`、旧 `patch/` 和 `installer_v2.py` 不是 active runtime，仅保留作历史参考。
 
-## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1 / V4.1.2 / V4.1.3 / V4.1.4 / V4.2.0 / V4.2.1 / V4.2.2 / V4.2.3 / V4.2.4 / V4.2.5 / V4.2.6 / V4.2.7 / V4.2.8 / V4.2.9 / V4.2.10 / V4.2.11 / V4.2.12 / V4.3.0 / V4.3.1 / V4.3.2 / V4.3.3 / V4.3.4 / V4.3.5 / V4.3.6 / V4.3.7 / V4.3.8
+## V3.8 / V3.9 / V3.10 / V4 系列路线：V3.8.0 / V3.8.1 / V3.8.2 / V3.8.3 / V3.8.4 / V3.8.5 / V3.8.6 / V3.8.7 / V3.8.8 / V3.8.9 / V3.8.10 / V3.8.11 / V3.8.12 / V3.8.13 / V3.8.14 / V3.8.15 / V3.8.16 / V3.8.17 / V3.8.18 / V3.9.0 / V3.9.1 / V3.10.0 / V4.0.0 / V4.0.1 / V4.0.2 / V4.0.3 / V4.0.4 / V4.0.5 / V4.0.6 / V4.0.7 / V4.0.8 / V4.0.9 / V4.0.10 / V4.0.11 / V4.0.12 / V4.0.13 / V4.0.14 / V4.0.15 / V4.0.16 / V4.0.17 / V4.0.18 / V4.0.19 / V4.0.20 / V4.0.21 / V4.1.0 / V4.1.1 / V4.1.2 / V4.1.3 / V4.1.4 / V4.2.0 / V4.2.1 / V4.2.2 / V4.2.3 / V4.2.4 / V4.2.5 / V4.2.6 / V4.2.7 / V4.2.8 / V4.2.9 / V4.2.10 / V4.2.11 / V4.2.12 / V4.3.0 / V4.3.1 / V4.3.2 / V4.3.3 / V4.3.4 / V4.3.5 / V4.3.6 / V4.3.7 / V4.3.8 / V4.4.0
 
 详细路线见 [docs/superpowers/specs/2026-06-30-v3-8-design.md](docs/superpowers/specs/2026-06-30-v3-8-design.md) 和 [docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md](docs/superpowers/plans/2026-06-30-v3-8-card-ux-stability.md)。
+
+### V4.4.0：新版 Hermes 原生能力中心与可视化交互（发布候选）
+
+- [x] 基于 Hermes `v2026.8.27` / `0.20.6` 与 `main@4f225435` 核对 `COMMAND_REGISTRY`、Gateway dispatch、plugin/skill command 与 Feishu adapter 契约。
+- [x] `/commands` 动态生成能力中心，支持分类、详情、alias、subcommand、argument mode、busy policy 和 plugin/skill commands，不再复制固定命令 allowlist。
+- [x] 只读快捷入口与 `/model`、`/resume` 原生 picker 通过 copied `MessageEvent` 回到 Hermes adapter；群聊绑定原发起人，状态变更命令拒绝一键执行。
+- [x] `/status`、`/context`、`/usage`、`/agents`、`/sessions` 等原生输出增加 KPI 可视化且保留完整原文。
+- [x] `pending_count` / `update_queue_peak` 记录真实 coalesced backlog，而不是 0/1 布尔值。
+- [x] 极端 Markdown 表头与无法保持列结构的超长行安全折叠；普通长表格、五表格 policy 与 terminal native handoff 不变。
+- [x] 设计文档、版本元数据、双语文档和本地聚焦测试完成。
+- [ ] release PR CI、exact release merge、annotated tag、public tagged install 与 Release assets/checksums。
+- [ ] 真实 Feishu/Lark 私聊与群聊验收：能力中心导航、快捷命令、原生 picker、KPI 卡片、群聊非发起人拒绝和极端表格；自动化不冒充平台验收。
 
 ### V4.3.8：常驻 setup、batch clarify 与 proxy 可靠性热修（发布候选）
 
@@ -640,8 +652,8 @@
 - [ ] 补齐 E2E / fixture 覆盖，验证 V3.8.x 卡片体验和终态 drain 主链路。
 - [ ] 完成 agent guide、维护手册和开放扩展面的文档整理。
 - [ ] 评估卡片 timeline/metrics 的长期兼容边界，并补发布回归清单。
-- [ ] 完全兜住极端 Markdown table 边界：当结构化拆分失败时输出安全折叠提示，避免回退 plain split。
-- [ ] 清理 terminal 后的 closed `FlushController`，并评估更有诊断价值的 queue depth / coalesced backlog 指标。
+- [x] 完全兜住极端 Markdown table 边界：当结构化拆分失败时输出安全折叠提示，避免回退 plain split（V4.4.0）。
+- [x] 清理 terminal 后的 closed `FlushController`，并增加 `flush_controllers_collected` / `update_coalesced` 脱敏指标；V4.4.0 进一步把 queue peak 升级为真实 coalesced backlog depth。
 - [ ] V3.8.x 候选：按真实使用反馈补充更多 Hermes 原生 notice 分类、去重策略和中英文文案微调。
 - [ ] V3.9 候选：Docker 完整运维体验（镜像内安装、外部 Hermes 目录挂载、doctor 一键诊断、升级流程）。
 - [ ] V3.9 候选：群聊体验后续（可视化配置向导、更多真实 E2E fixture、跨群会话迁移策略）。

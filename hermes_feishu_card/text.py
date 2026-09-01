@@ -15,6 +15,8 @@ TABLE_COMPACT_NOTE = (
     "> 后续表格已转换为紧凑字段列表，以兼容飞书卡片限制；内容完整保留。"
 )
 TABLE_TRUNCATE_NOTE = "> 内容含超过 5 个表格，超出部分已省略。"
+TABLE_HEADER_FOLD_NOTE = "> 表格标题过宽，无法安全拆分，已折叠显示。\n"
+TABLE_ROW_FOLD_NOTE = "> 表格中的超长行无法安全拆分，已折叠显示。\n"
 
 
 @dataclass(frozen=True)
@@ -422,12 +424,12 @@ def _split_table_block(block: str, max_block_size: int) -> list[str]:
     lines = block.splitlines(keepends=True)
     if len(lines) < 2:
         return _split_plain_block(block, max_block_size)
+    header = "".join(lines[:2])
+    if len(header) >= max_block_size:
+        return _split_plain_block(TABLE_HEADER_FOLD_NOTE, max_block_size)
     if len(lines) == 2:
         return [block]
-    header = "".join(lines[:2])
     rows = lines[2:]
-    if len(header) >= max_block_size:
-        return [block]
     row_limit = max_block_size - len(header)
     chunks: list[str] = []
     current = ""
@@ -441,10 +443,7 @@ def _split_table_block(block: str, max_block_size: int) -> list[str]:
                 current = ""
             split_rows = _split_oversized_table_row(row, row_limit)
             if split_rows is None:
-                chunks.extend(
-                    header + piece
-                    for piece in _split_plain_block(row, row_limit)
-                )
+                chunks.extend(_split_plain_block(TABLE_ROW_FOLD_NOTE, max_block_size))
             else:
                 chunks.extend(header + piece for piece in split_rows)
             continue

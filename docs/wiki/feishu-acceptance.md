@@ -2,6 +2,15 @@
 
 自动化测试不能完全证明 Feishu/Lark 客户端体验。涉及卡片 UX、topic、系统提示、命令卡片的版本，发布前需要真实飞书 smoke。
 
+## V4.4.0 新版 Hermes 原生能力中心验收
+
+- 使用候选 wheel `4.4.0`、官方 Hermes `v2026.8.27` / `0.20.6` 和隔离 CLI Gateway；启动后 `/health` 必须为 `healthy`、integrity 为 `runtime_ready`，不得手工修改用户现有 Hermes 源码。
+- 私聊发送 `/commands`：首页必须显示当前 Hermes 原生命令与 skill command 计数；分类选择、`/model` 命令详情、返回分类/首页和安全 `/status` 快捷按钮均需真实点击通过。
+- 私聊发送 `/status` 与 `/context`：状态卡必须同时保留 KPI columns 和完整原文；尚无普通会话时 `/context` 显示明确空态，建立最小普通会话后必须显示 model、window、in-use、headroom、自动压缩阈值、累计吞吐和分类估算。
+- 群聊以真实 `@bot` 发送 `/commands` 和 `/status`：能力中心、分类/详情/返回导航和快捷动作必须由原发起人操作成功；普通群消息必须生成单张持续更新的完成卡，并显示工具折叠区与 footer。
+- 2026-08-31 候选验收结果：上述私聊和群聊路径通过；能力中心读取 63 个 Hermes 原生命令和 74 个 skill commands。普通私聊与群聊流式卡完成后，sidecar 为 `healthy / runtime_ready`，`events_received/events_applied=14/14`、发送 `3/3`、更新 `43/43`，event rejection、发送/更新失败和 profile mismatch 均为 0。
+- 测试群只有一位真人操作者，changed-operator rejection 不冒充真实双人验收，继续由自动化攻击回归覆盖。验收记录不得包含真实 chat/user/message id、凭据、callback token、回答正文或私人截图。
+
 ## 首回复建 thread 候选验收
 
 - 在测试群顶层发送一条触发消息，让 Hermes 在尚无 `thread_id` 时请求 `reply_in_thread`；首张 schema 2.0 流式卡必须出现在该消息新建的 thread 中，主群不得出现 top-level fallback 卡。

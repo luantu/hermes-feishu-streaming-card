@@ -2632,6 +2632,242 @@ def test_command_feedback_long_markdown_is_split_without_data_loss():
     assert "".join(element["content"] for element in card["elements"]) == content
 
 
+def test_commands_feedback_uses_live_hermes_command_center_and_keeps_runtime_state(
+    monkeypatch,
+):
+    catalog = [
+        {
+            "name": "status",
+            "category": "Session",
+            "description": "Show status",
+            "args_hint": "",
+            "aliases": (),
+            "subcommands": (),
+            "busy_policy": "dispatch",
+            "argument_mode": None,
+            "source": "core",
+        },
+        {
+            "name": "plan",
+            "category": "Session",
+            "description": "Write a markdown plan",
+            "args_hint": "[task]",
+            "aliases": (),
+            "subcommands": (),
+            "busy_policy": "reject",
+            "argument_mode": "text",
+            "source": "core",
+        },
+    ]
+    monkeypatch.setattr(
+        hook_runtime,
+        "collect_hermes_command_catalog",
+        lambda: catalog,
+    )
+
+    class DummyFeishuAdapter:
+        name = "feishu"
+
+        def __init__(self):
+            self._client = object()
+            self.sent = None
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            raise AssertionError("/commands must use an interactive card")
+
+        async def _feishu_send_with_retry(self, **kwargs):
+            self.sent = kwargs
+            return SimpleNamespace(success=True, message_id="om_command_center")
+
+    class Event:
+        def __init__(self):
+            self.source = SimpleNamespace(
+                platform="feishu",
+                chat_id="oc_abc",
+                chat_type="dm",
+                user_id="ou_owner",
+                thread_id="",
+            )
+            self.text = "/commands"
+            self.message_id = "om_user_commands"
+
+        def get_command(self):
+            return self.text.strip().split()[0].lstrip("/")
+
+        def get_command_args(self):
+            return self.text.partition(" ")[2]
+
+    adapter = DummyFeishuAdapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    event = Event()
+
+    assert hook_runtime.install_feishu_command_card_adapter_methods(
+        runner, event=event
+    ) is True
+    result = asyncio.run(adapter.send("oc_abc", "native paginated command text"))
+
+    assert result.message_id == "om_command_center"
+    card = json.loads(adapter.sent["payload"])
+    assert card["header"]["title"]["content"] == "Hermes 原生能力中心"
+    assert "2 个原生命令" in card["elements"][0]["content"]
+    state = adapter._hfc_command_center_state
+    assert len(state) == 1
+    center = next(iter(state.values()))
+    assert center["catalog"] == catalog
+    assert center["runner"] is runner
+    assert center["event"] is event
+    assert center["message_id"] == "om_command_center"
+
+
+def test_command_center_safe_action_reenters_hermes_adapter_with_copied_event():
+    received = []
+
+    class Event:
+        def __init__(self):
+            self.source = SimpleNamespace(
+                platform="feishu",
+                chat_id="oc_abc",
+                chat_type="dm",
+                user_id="ou_owner",
+            )
+            self.text = "/commands"
+            self.message_id = "om_user_commands"
+
+        def get_command(self):
+            return self.text.strip().split()[0].lstrip("/")
+
+        def get_command_args(self):
+            return self.text.partition(" ")[2]
+
+    class Adapter:
+        async def handle_message(self, event):
+            received.append(event)
+
+    original = Event()
+    item = {
+        "event": original,
+        "catalog": [
+            {
+                "name": "status",
+                "category": "Session",
+                "description": "Show status",
+                "args_hint": "",
+                "aliases": (),
+                "subcommands": (),
+                "busy_policy": "dispatch",
+                "argument_mode": None,
+                "source": "core",
+            }
+        ],
+    }
+
+    assert asyncio.run(
+        hook_runtime._hfc_run_command_center_action_async(
+            Adapter(), item, "status"
+        )
+    ) is True
+    assert original.text == "/commands"
+    assert len(received) == 1
+    assert received[0] is not original
+    assert received[0].text == "/status"
+    assert received[0].get_command() == "status"
+
+
+def test_command_center_rejects_state_changing_command_execution():
+    item = {
+        "catalog": [
+            {
+                "name": "update",
+                "category": "Info",
+                "description": "Update Hermes",
+                "args_hint": "",
+                "aliases": (),
+                "subcommands": (),
+                "busy_policy": "dispatch",
+                "argument_mode": None,
+                "source": "core",
+            }
+        ]
+    }
+
+    assert hook_runtime._hfc_command_center_entry(item, "update", safe_only=True) is None
+
+
+def test_command_center_discards_corrupt_expiry_without_callback_failure():
+    adapter = SimpleNamespace(
+        _hfc_command_center_state={
+            "commands_bad": {
+                "expires_at": "not-a-number",
+                "chat_id": "oc_dm",
+                "catalog": [],
+            }
+        }
+    )
+    data = SimpleNamespace(
+        event=SimpleNamespace(
+            context=SimpleNamespace(open_chat_id="oc_dm"),
+            operator=SimpleNamespace(open_id="ou_owner", user_id="u_1"),
+        )
+    )
+
+    prepared = hook_runtime._hfc_prepare_command_center_action(
+        adapter,
+        data,
+        {
+            "hfc_command_center_id": "commands_bad",
+            "hfc_command_center_nav": "home",
+        },
+    )
+
+    assert prepared is None
+    assert adapter._hfc_command_center_state == {}
+
+
+def test_command_center_group_actions_require_initiating_operator_and_chat():
+    adapter = SimpleNamespace(
+        _allow_group_message=lambda sender_id, chat_id, is_bot=False: True,
+        _hfc_command_center_state={
+            "commands_group": {
+                "expires_at": time.time() + 60,
+                "chat_id": "oc_group",
+                "chat_type": "group",
+                "operator_open_id": "ou_owner",
+                "catalog": [],
+                "message_id": "om_center",
+            }
+        },
+    )
+
+    def action_data(chat_id, open_id):
+        return SimpleNamespace(
+            event=SimpleNamespace(
+                context=SimpleNamespace(open_chat_id=chat_id),
+                operator=SimpleNamespace(open_id=open_id, user_id="u_1"),
+            )
+        )
+
+    value = {
+        "hfc_command_center_id": "commands_group",
+        "hfc_command_center_nav": "home",
+    }
+
+    assert (
+        hook_runtime._hfc_prepare_command_center_action(
+            adapter, action_data("oc_other", "ou_owner"), value
+        )
+        is None
+    )
+    assert (
+        hook_runtime._hfc_prepare_command_center_action(
+            adapter, action_data("oc_group", "ou_other"), value
+        )
+        is None
+    )
+    assert hook_runtime._hfc_prepare_command_center_action(
+        adapter, action_data("oc_group", "ou_owner"), value
+    ) is not None
+
+
 @pytest.mark.asyncio
 async def test_v400_hook_runtime_suppresses_matching_native_media_text_after_card_delivery(
     monkeypatch,

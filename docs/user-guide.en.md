@@ -64,6 +64,16 @@ Since V3.8.2, the final answer stays in the primary content area while pre-tool 
 | Multi-bot, group, and profile routing is hard to inspect | `bindings.chats`, safe `group_rules` diagnostics, profile-aware sessions, and `/health.routing` diagnostics |
 | Hook or sidecar failures are hard to debug | `doctor`, runtime import checks, `/health` metrics, fail-closed installer, restore/uninstall |
 
+## V4.4.0 Native Capability Center for Current Hermes
+
+V4.4.0 uses Hermes `v2026.8.27` / `0.20.6` as its released compatibility baseline and forward-validates against `main@4f225435`. Current Hermes centralizes commands in `hermes_cli.commands.COMMAND_REGISTRY`, so Feishu `/commands` now reads the running registry instead of displaying an HFC-maintained fixed list. Names, categories, aliases, argument hints, subcommands, argument modes, busy policies, and plugin/skill commands follow the active Hermes runtime, including newer `/bg`, `/btw`, `/plan`, and gateway `/busy` contracts.
+
+The capability center provides overview, category, and command-detail views. `/status`, `/context`, `/usage`, `/agents`, `/sessions`, `/profile`, `/version`, and the existing native `/model` and `/resume` pickers can be launched as safe quick actions. HFC copies the original `MessageEvent` and re-enters the Hermes adapter, so access control, busy policy, plugin hooks, and original handlers stay authoritative. Group actions are bound to the initiating operator. State-changing commands such as `/update`, `/new`, `/stop`, and `/undo` are never one-click actions.
+
+Native `/status`, `/context`, `/usage`, `/agents`, `/sessions`, and `/reasoning` outputs promote stable `Label: Value` fields into KPI columns while retaining the exact full output below. Unrecognized shapes remain plain full-text cards rather than losing data for presentation.
+
+This release also turns `update_queue_peak` from a 0/1 signal into the real coalesced backlog depth observed while a PATCH is active. The final unsafe long-content fallback is closed as well: ordinary long tables and oversized cells retain structural splitting, while only a header or row that cannot form any legal Markdown table is replaced by an explicit safe-fold notice. The five-table policy, 28,000-byte budget, and full native-answer handoff remain unchanged.
+
 ## V4.3.8 Persistent Setup, Batch Clarify, and HTTP Proxy
 
 In V4.3.8, `setup` enables the HFC ownership-protected persistent service by default when the Linux systemd user manager and linger are ready; it never enables linger, invokes sudo, or enters the system manager. When the capability is unavailable, setup explicitly says the sidecar will not survive a host reboot, starts the transient fallback, and prints the follow-up `enable` command. Use `setup --transient` to preserve the old explicit transient behavior.
@@ -545,14 +555,14 @@ Use `install-docker.sh` inside an existing Hermes container. It defaults to
 script selects Hermes venv Python and does not fall back to system Python unless
 `HFC_PYTHON` is set.
 
-The Compose example defaults `HFC_VERSION` to `v4.3.8`.
+The Compose example defaults `HFC_VERSION` to `v4.4.0`.
 
 Example:
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.3.8
+export HFC_VERSION=v4.4.0
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -795,6 +805,7 @@ The Hermes hook converts `message.started` / `thinking.delta` / `answer.delta` /
 
 | Version | Date | Highlights |
 |---------|------|-----------|
+| [v4.4.0](release-notes-v4.4.0.en.md) | 2026-08-31 | Current-Hermes capability center, category/detail navigation, safe quick actions, native KPI cards, real backlog depth, and extreme-Markdown safe folds |
 | [v4.3.8](release-notes-v4.3.8.en.md) | 2026-08-29 | Issue #244: persistent-by-default setup with explicit transient fallback; Issue #245: fixes the batch-clarify sequence race; PR #242: proxy-environment support for remote Feishu/Lark HTTP |
 | [v4.3.7](release-notes-v4.3.7.en.md) | 2026-08-26 | Issue #240 / PR #241: the installer exact matcher supports Hermes session-scoped media/local delivery filters while keeping every other keyword call fail-closed |
 | [v4.3.6](release-notes-v4.3.6.en.md) | 2026-08-25 | Issue #237: unanchored topic creation uses `chat_id` instead of Feishu's rejected `receive_id_type=thread_id`; PR #228: approval/clarify cards and completion notifications support configurable requester `@` mentions |

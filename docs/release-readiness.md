@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.3.8`。本轮修复 Issue #244 的 guided setup 开机常驻缺口、Issue #245 的 batch clarify sequence 竞态，并吸收 PR #242 的远程 Feishu/Lark HTTP proxy 支持。完整自动化、release PR、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过；本轮尚未独立执行真实飞书客户端 smoke 或真实 Linux systemd user + linger 主机 smoke，自动化不冒充平台验收。
+当前发布候选为 `4.4.0`。本轮以 Hermes `v2026.8.27` / `0.20.6` 为正式基线，并向前验证 `main@4f225435`：飞书 `/commands` 升级为动态原生能力中心，安全快捷动作仍交回 Hermes 原 handler，常用命令结果增加 KPI 可视化，同时补齐真实 backlog depth 与极端 Markdown fail-safe。完整自动化与真实飞书私聊/群聊 smoke 已完成；release PR、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。自动化不冒充平台验收。
 
 V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 
@@ -82,6 +82,15 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 ```
 
 真实飞书联调只能使用本机配置或环境变量提供 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`。不要把 App Secret、tenant token 或真实 chat_id 提交到仓库。公开演示截图入库前需要确认不包含敏感凭据和不可公开的会话内容。
+
+## V4.4.0 发布门禁
+
+- Hermes `v2026.8.27` / `0.20.6` 与独立 `main@4f225435` 的动态 `COMMAND_REGISTRY` 加载：**已通过**，最新 main 识别 66 个 Gateway 命令，包括 `/bg`、`/btw`、`/plan` 与 Gateway `/busy`。
+- 最新 main 的 Gateway/Base/Cron patch apply、幂等重装、remove 后逐字还原：**已通过**。
+- 能力中心三层导航、安全 copied-event dispatch、群聊发起人/原 chat 绑定、状态变更命令拒绝、KPI 原文保留、真实 backlog depth 与极端表格 fallback：**聚焦自动化通过**。
+- 完整 pytest **`3356 passed, 5 skipped`**、`git diff --check`、sdist/wheel 与干净 Python 3.12 `site-packages` package/distribution/CLI provenance：**通过**。
+- 真实飞书私聊/群聊 `/commands`、分类/详情/返回导航、安全快捷 `/status`、私聊 `/context` 空态与真实用量视图、普通流式完成 footer：**已通过（2026-08-31）**。候选 wheel `4.4.0` 运行于官方 Hermes `v2026.8.27` / `0.20.6` 隔离 CLI 环境；sidecar 最终为 `healthy / runtime_ready`，事件 `14/14`、发送 `3/3`、更新 `43/43`，拒绝、发送/更新失败与 profile mismatch 均为 0。changed-operator rejection 因测试群仅一位真人，继续由自动化覆盖。
+- Release PR、exact merge SHA、annotated tag、public install 与 Release assets/checksums：**待显式发布审批**。
 
 ## V3.9.0 人工验收进度
 

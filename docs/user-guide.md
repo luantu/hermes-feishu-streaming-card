@@ -64,6 +64,16 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | 多机器人、多群聊、多 profile 难确认路由 | `bindings.chats`、`group_rules` 安全诊断、profile-aware session key、`/health.routing` 诊断 |
 | sidecar 或 hook 出问题难定位 | `doctor`、runtime import 检查、`/health` metrics、fail-closed installer、restore/uninstall |
 
+## V4.4.0 新版 Hermes 原生能力中心
+
+V4.4.0 以 Hermes `v2026.8.27` / `0.20.6` 为正式兼容基线，并用 `main@4f225435` 验证向前兼容。新版 Hermes 已把命令统一到 `hermes_cli.commands.COMMAND_REGISTRY`，因此飞书 `/commands` 不再显示 HFC 维护的固定列表，而是从当前运行时读取命令名称、分类、alias、参数、subcommand、argument mode、busy policy，以及 plugin/skill commands。Hermes 新增或调整 `/bg`、`/btw`、`/plan`、`/busy` 后，能力中心可以自动跟随。
+
+能力中心支持首页、分类和命令详情三层浏览。`/status`、`/context`、`/usage`、`/agents`、`/sessions`、`/profile`、`/version` 以及已有 `/model`、`/resume` 原生 picker 可以从卡片快捷启动；HFC 会复制原 `MessageEvent` 并重新进入 Hermes adapter，因此权限检查、busy policy、plugin hook 和原 handler 仍由 Hermes 决定。群聊快捷动作只允许原发起人点击；`/update`、`/new`、`/stop`、`/undo` 等会改变状态的命令不会提供一键执行。
+
+`/status`、`/context`、`/usage`、`/agents`、`/sessions` 和 `/reasoning` 等原生输出会把稳定的 `Label: Value` 字段提升为 KPI columns，同时在下方保留完整原文；无法识别时只显示原文，不会为了可视化丢数据。
+
+本版还把 `update_queue_peak` 从 0/1 信号升级为一次 PATCH 执行期间的真实 coalesced backlog depth，并收紧长内容的最后一条不安全 fallback：普通长表格和单个超长单元格继续结构化拆分，只有完全无法形成合法 Markdown table 的表头或行才显示明确安全折叠提示。五表格 `compact` / `truncate`、28,000-byte budget 和完整原生答案 handoff 保持不变。
+
 ## V4.3.8 常驻 setup、batch clarify 与 HTTP proxy
 
 V4.3.8 的 `setup` 会在 Linux systemd user manager 与 linger 已就绪时默认启用 HFC ownership 保护的 persistent service；不会自行开启 linger、调用 sudo 或进入 system manager。能力不可用时会明确说明 sidecar 无法跨主机重启存活，启动 transient fallback，并打印后续 `enable` 命令；需要保持旧行为时使用 `setup --transient`。
@@ -574,7 +584,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v4.3.8`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.4.0`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -582,7 +592,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.3.8
+export HFC_VERSION=v4.4.0
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -867,6 +877,7 @@ Hermes hook 将事件 fail-open 转发给 sidecar。sidecar 持有完整会话�
 
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
+| [v4.4.0](release-notes-v4.4.0.md) | 2026-08-31 | 新版 Hermes 动态能力中心、分类/详情/安全快捷命令、原生 KPI 卡片、真实 backlog depth 与极端 Markdown 安全折叠 |
 | [v4.3.8](release-notes-v4.3.8.md) | 2026-08-29 | Issue #244：setup 默认常驻与显式 transient fallback；Issue #245：修复 batch clarify sequence 竞态；PR #242：远程 Feishu/Lark HTTP 支持 proxy 环境 |
 | [v4.3.7](release-notes-v4.3.7.md) | 2026-08-26 | Issue #240 / PR #241：installer exact matcher 兼容 Hermes session-scoped media/local delivery filters，并对其他关键字调用保持 fail-closed |
 | [v4.3.6](release-notes-v4.3.6.md) | 2026-08-25 | Issue #237：无 reply anchor 的话题 create 改用 `chat_id`，避免 `receive_id_type=thread_id` 被飞书以 `99992402` 拒绝；PR #228：approval/clarify 交互卡与 completion notification 支持可配置地 `@` 发起人 |

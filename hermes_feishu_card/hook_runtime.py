@@ -49,6 +49,13 @@ from .native_handoff import (
     derive_native_handoff_uuid_seed,
     is_exact_native_text_scope,
 )
+from .native_commands import (
+    NATIVE_RESULT_COMMANDS,
+    build_command_center_card,
+    build_native_result_card,
+    collect_hermes_command_catalog,
+    command_is_safe_quick_action,
+)
 from .profile_sources import (
     TRUSTED_PROFILE_SOURCES,
     legacy_profile_identity,
@@ -4794,6 +4801,83 @@ def _hfc_command_result_card(
     }
 
 
+def _hfc_build_native_command_feedback_card(
+    command: str,
+    content: str,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    if command == "commands":
+        catalog = context.get("command_catalog")
+        if not isinstance(catalog, list):
+            catalog = collect_hermes_command_catalog()
+            context["command_catalog"] = catalog
+        if catalog:
+            center_id = str(context.get("command_center_id") or "").strip()
+            if not center_id:
+                seed = ":".join(
+                    [
+                        str(context.get("chat_id") or ""),
+                        str(context.get("reply_to_message_id") or ""),
+                        str(context.get("created_at") or time.monotonic()),
+                    ]
+                )
+                center_id = "commands_" + sha256(seed.encode("utf-8")).hexdigest()[:16]
+                context["command_center_id"] = center_id
+            return build_command_center_card(catalog, center_id=center_id)
+    if command in NATIVE_RESULT_COMMANDS:
+        return build_native_result_card(command, content)
+    return _hfc_command_result_card(
+        title=_hfc_command_result_title(command),
+        content=content,
+        template=_hfc_command_result_template(content),
+    )
+
+
+def _hfc_remember_command_center_state(
+    adapter: Any,
+    context: dict[str, Any],
+    message_id: str,
+) -> None:
+    center_id = str(context.get("command_center_id") or "").strip()
+    catalog = context.get("command_catalog")
+    if not center_id or not message_id or not isinstance(catalog, list):
+        return
+    state = getattr(adapter, "_hfc_command_center_state", None)
+    if not isinstance(state, dict):
+        state = {}
+        setattr(adapter, "_hfc_command_center_state", state)
+    now = time.time()
+    for key, item in list(state.items()):
+        if not isinstance(item, dict) or _hfc_command_center_state_expired(item, now):
+            state.pop(key, None)
+    while len(state) >= 64:
+        state.pop(next(iter(state)), None)
+    state[center_id] = {
+        "catalog": catalog,
+        "chat_id": str(context.get("chat_id") or ""),
+        "chat_type": str(context.get("chat_type") or "").lower(),
+        "operator_open_id": str(context.get("operator_open_id") or ""),
+        "message_id": message_id,
+        "runner": context.get("runner"),
+        "event": context.get("event"),
+        "selected_category": "",
+        "expires_at": now + 600.0,
+    }
+
+
+def _hfc_command_center_state_expired(
+    item: dict[str, Any],
+    now: float | None = None,
+) -> bool:
+    try:
+        expires_at = float(item.get("expires_at") or 0.0)
+    except (TypeError, ValueError):
+        return True
+    if not math.isfinite(expires_at):
+        return True
+    return expires_at <= (time.time() if now is None else now)
+
+
 def _hfc_command_from_event(event: Any) -> str:
     command = ""
     getter = getattr(event, "get_command", None)
@@ -4855,11 +4939,19 @@ def _hfc_command_result_context_from_event(event: Any) -> dict[str, Any] | None:
     command = _hfc_canonical_command(raw_command)
     if not command:
         return None
+    get_args = getattr(event, "get_command_args", None)
+    try:
+        raw_args = str(get_args() or "").strip() if callable(get_args) else ""
+    except Exception:
+        raw_args = ""
     now = time.monotonic()
     return {
         "command": command,
         "raw_command": raw_command,
+        "raw_args": raw_args,
         "chat_id": str(getattr(source, "chat_id", "") or "").strip(),
+        "chat_type": str(getattr(source, "chat_type", "") or "").strip().lower(),
+        "operator_open_id": _hfc_resume_operator_open_id(event),
         "reply_to_message_id": _hfc_command_event_message_id(event),
         "thread_id": str(getattr(source, "thread_id", "") or "").strip(),
         "card_message_id": "",
@@ -5397,11 +5489,7 @@ async def _hfc_send_native_command_result_card(
 
     async with lock:
         command = str(context.get("command") or "").strip().lower()
-        card = _hfc_command_result_card(
-            title=_hfc_command_result_title(command),
-            content=content,
-            template=_hfc_command_result_template(content),
-        )
+        card = _hfc_build_native_command_feedback_card(command, content, context)
         card_message_id = str(context.get("card_message_id") or "").strip()
         if card_message_id:
             updated = await _hfc_update_native_command_card(
@@ -5410,6 +5498,12 @@ async def _hfc_send_native_command_result_card(
                 card,
             )
             if updated:
+                if command == "commands":
+                    _hfc_remember_command_center_state(
+                        adapter,
+                        context,
+                        card_message_id,
+                    )
                 return _send_result(True, message_id=card_message_id)
             return _send_result(False, error="update command result card failed")
 
@@ -5446,6 +5540,12 @@ async def _hfc_send_native_command_result_card(
                     message_id = str(getattr(result, "message_id", "") or "").strip()
                     if message_id:
                         context["card_message_id"] = message_id
+                        if command == "commands":
+                            _hfc_remember_command_center_state(
+                                adapter,
+                                context,
+                                message_id,
+                            )
                     return result
                 return result
             except Exception:
@@ -5458,6 +5558,8 @@ async def _hfc_send_native_command_result_card(
             )
             return _send_result(False, error="send command result card failed")
         context["card_message_id"] = message_id
+        if command == "commands":
+            _hfc_remember_command_center_state(adapter, context, message_id)
         return _send_result(True, message_id=message_id)
 
 
@@ -6927,6 +7029,10 @@ def _hfc_action_value_from_data(data: Any) -> dict[str, Any]:
             "hfc_model_picker_view",
             "hfc_model_picker_nav",
             "hfc_resume_picker_id",
+            "hfc_command_center_id",
+            "hfc_command_center_nav",
+            "hfc_command_center_category",
+            "hfc_command_center_command",
         ):
             if key not in value and form_value.get(key):
                 value[key] = form_value.get(key)
@@ -7137,6 +7243,219 @@ def _hfc_prepare_native_resume_action(
     }
 
 
+def _hfc_command_center_entry(
+    item: dict[str, Any],
+    command: str,
+    *,
+    safe_only: bool = False,
+) -> dict[str, Any] | None:
+    catalog = item.get("catalog")
+    if not isinstance(catalog, list):
+        return None
+    normalized = str(command or "").strip().lower().lstrip("/")
+    for entry in catalog:
+        if not isinstance(entry, dict) or str(entry.get("name") or "") != normalized:
+            continue
+        if safe_only and not command_is_safe_quick_action(entry):
+            return None
+        return entry
+    return None
+
+
+def _hfc_prepare_command_center_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> dict[str, Any] | None:
+    center_id = str(action_value.get("hfc_command_center_id") or "").strip()
+    state = getattr(adapter, "_hfc_command_center_state", None)
+    if not center_id or not isinstance(state, dict):
+        return None
+    item = state.get(center_id)
+    if not isinstance(item, dict):
+        return None
+    if _hfc_command_center_state_expired(item):
+        state.pop(center_id, None)
+        return None
+    chat_id = _hfc_action_chat_id(data)
+    expected_chat_id = str(item.get("chat_id") or "")
+    if expected_chat_id and chat_id and expected_chat_id != chat_id:
+        return None
+    if not _hfc_card_operator_allowed(adapter, data, expected_chat_id or chat_id):
+        return None
+    chat_type = str(item.get("chat_type") or "").strip().lower()
+    initiating_operator = str(item.get("operator_open_id") or "").strip()
+    action_operator = _hfc_action_open_id(data)
+    if chat_type not in {"", "dm", "p2p", "private"}:
+        if not initiating_operator or action_operator != initiating_operator:
+            return None
+    nav = str(action_value.get("hfc_command_center_nav") or "").strip().lower()
+    if nav not in {"home", "category", "detail", "run"}:
+        return None
+    choice = str(action_value.get("hfc_choice") or "").strip()
+    category = str(action_value.get("hfc_command_center_category") or "").strip()
+    command = str(action_value.get("hfc_command_center_command") or "").strip()
+    if nav == "category" and choice:
+        category = choice
+    if nav == "detail" and choice:
+        command = choice
+    return {
+        "state": state,
+        "center_id": center_id,
+        "item": item,
+        "nav": nav,
+        "category": category,
+        "command": command,
+        "message_id": str(item.get("message_id") or ""),
+    }
+
+
+def _hfc_command_center_card_from_action(
+    prepared: dict[str, Any],
+) -> dict[str, Any]:
+    item = prepared["item"]
+    catalog = item.get("catalog")
+    if not isinstance(catalog, list):
+        return _hfc_command_result_card(
+            title="命令中心已失效",
+            content="请重新发送 `/commands`。",
+            template="red",
+        )
+    nav = prepared["nav"]
+    category = prepared["category"]
+    command = prepared["command"]
+    if nav == "home":
+        item["selected_category"] = ""
+        return build_command_center_card(
+            catalog,
+            center_id=prepared["center_id"],
+        )
+    if nav == "category":
+        item["selected_category"] = category
+        return build_command_center_card(
+            catalog,
+            center_id=prepared["center_id"],
+            selected_category=category,
+        )
+    if nav == "detail":
+        if _hfc_command_center_entry(item, command) is None:
+            return _hfc_command_result_card(
+                title="命令不存在",
+                content="Hermes 注册表已变化，请重新发送 `/commands`。",
+                template="red",
+            )
+        selected_category = category or str(item.get("selected_category") or "")
+        return build_command_center_card(
+            catalog,
+            center_id=prepared["center_id"],
+            selected_category=selected_category,
+            selected_command=command,
+        )
+    return _hfc_command_result_card(
+        title="命令中心",
+        content="请选择一个分类或命令。",
+        template="blue",
+    )
+
+
+async def _hfc_run_command_center_action_async(
+    adapter: Any,
+    item: dict[str, Any],
+    command: str,
+) -> bool:
+    if _hfc_command_center_entry(item, command, safe_only=True) is None:
+        return False
+    event = item.get("event")
+    handle_message = getattr(adapter, "handle_message", None)
+    if event is None or not callable(handle_message):
+        return False
+    try:
+        command_event = copy.copy(event)
+        source = getattr(event, "source", None)
+        if source is not None:
+            command_event.source = copy.copy(source)
+        command_event.text = f"/{str(command).strip().lstrip('/')}"
+        await handle_message(command_event)
+        return True
+    except Exception as exc:
+        _hfc_warn(
+            "command center dispatch failed: "
+            f"command=/{str(command).strip().lstrip('/')} "
+            f"error={_hfc_exception_summary(exc)}"
+        )
+        return False
+
+
+def _hfc_schedule_command_center_action(
+    adapter: Any,
+    item: dict[str, Any],
+    command: str,
+) -> bool:
+    coroutine = _hfc_run_command_center_action_async(adapter, item, command)
+    loop = getattr(adapter, "_loop", None)
+    submit = getattr(adapter, "_submit_on_loop", None)
+    submitted = False
+    try:
+        if loop is not None and callable(submit):
+            submitted = bool(submit(loop, coroutine))
+            return submitted
+        if loop is not None and getattr(loop, "is_running", lambda: False)():
+            asyncio.run_coroutine_threadsafe(coroutine, loop)
+            submitted = True
+            return True
+        return False
+    except Exception as exc:
+        _hfc_warn(
+            "command center schedule failed: "
+            f"{_hfc_exception_summary(exc)}"
+        )
+        return False
+    finally:
+        if not submitted:
+            coroutine.close()
+
+
+def _hfc_handle_command_center_action(
+    adapter: Any,
+    data: Any,
+    action_value: dict[str, Any],
+) -> Any:
+    prepared = _hfc_prepare_command_center_action(adapter, data, action_value)
+    if prepared is None:
+        return _hfc_empty_feishu_callback_response(adapter)
+    if prepared["nav"] != "run":
+        return _hfc_raw_feishu_callback_response(
+            adapter,
+            _hfc_command_center_card_from_action(prepared),
+        )
+    command = prepared["command"]
+    if _hfc_command_center_entry(prepared["item"], command, safe_only=True) is None:
+        card = _hfc_command_result_card(
+            title="请在消息框确认",
+            content=(
+                f"`/{command}` 需要参数或可能改变状态，"
+                "请在消息框中发送完整命令。"
+            ),
+            template="orange",
+        )
+        return _hfc_raw_feishu_callback_response(adapter, card)
+    scheduled = _hfc_schedule_command_center_action(
+        adapter,
+        prepared["item"],
+        command,
+    )
+    card = _hfc_command_result_card(
+        title=f"正在打开 /{command}" if scheduled else "命令启动失败",
+        content=(
+            "已交回 Hermes 原生命令入口处理。"
+            if scheduled
+            else "Gateway 事件循环不可用，请直接发送命令。"
+        ),
+        template="blue" if scheduled else "red",
+    )
+    return _hfc_raw_feishu_callback_response(adapter, card)
+
+
 def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
     action_value = _hfc_action_value_from_data(data)
     action = str(action_value.get("hfc_action") or "").strip()
@@ -7150,6 +7469,7 @@ def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
         "slash_confirm",
         "model_picker",
         "resume_picker",
+        "command_center",
         "interaction.select",
     ):
         if _hfc_is_duplicate_card_action(self, data):
@@ -7161,6 +7481,8 @@ def _hfc_on_feishu_card_action_trigger(self: Any, data: Any) -> Any:
         return _hfc_handle_native_model_action(self, data, action_value)
     if action == "resume_picker":
         return _hfc_handle_native_resume_action(self, data, action_value)
+    if action == "command_center":
+        return _hfc_handle_command_center_action(self, data, action_value)
     if action == "interaction.select":
         return _hfc_handle_interaction_select_action(self, data, action_value)
     if action == "operations.select":
@@ -8324,6 +8646,35 @@ async def _hfc_handle_feishu_card_action_event(self: Any, data: Any) -> None:
         else:
             _hfc_info("background resume_picker ignored: unresolved")
         return
+    if action == "command_center":
+        if _hfc_is_duplicate_card_action(self, data):
+            return
+        prepared = _hfc_prepare_command_center_action(self, data, action_value)
+        if prepared is None:
+            _hfc_info("background command_center ignored: unresolved")
+            return
+        if prepared["nav"] == "run":
+            command = prepared["command"]
+            succeeded = await _hfc_run_command_center_action_async(
+                self,
+                prepared["item"],
+                command,
+            )
+            card = _hfc_command_result_card(
+                title=f"已打开 /{command}" if succeeded else "命令启动失败",
+                content=(
+                    "已交回 Hermes 原生命令入口处理。"
+                    if succeeded
+                    else "该命令不可从卡片运行，请在消息框中发送。"
+                ),
+                template="blue" if succeeded else "red",
+            )
+        else:
+            card = _hfc_command_center_card_from_action(prepared)
+        message_id = prepared["message_id"]
+        if message_id:
+            await _hfc_update_native_command_card(self, message_id, card)
+        return
     if action == "interaction.select":
         if _hfc_is_duplicate_card_action(self, data):
             return
@@ -8582,6 +8933,9 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
         command_result_context = (
             _hfc_command_result_context_from_event(event) if event is not None else None
         )
+        if isinstance(command_result_context, dict):
+            command_result_context["runner"] = runner
+            command_result_context["event"] = event
         notice_context = _hfc_notice_context_from_event(event) if event is not None else None
         delivery_context = (
             _hfc_delivery_context_from_event(event) if event is not None else None

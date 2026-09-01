@@ -7776,7 +7776,7 @@ async def test_v4_preview_burst_coalesces_and_late_preview_cannot_reopen_card(
     health = await test_client.get("/health")
     metrics = (await health.json())["metrics"]
     assert metrics["update_coalesced"] > 0
-    assert metrics["update_queue_peak"] == 1
+    assert metrics["update_queue_peak"] > 1
 
 
 async def test_completed_without_deltas_updates_started_card(client):
@@ -11299,7 +11299,7 @@ async def test_burst_updates_are_coalesced_and_reported_in_health(client, monkey
     health = await test_client.get("/health")
     body = await health.json()
     assert body["metrics"]["update_coalesced"] > 0
-    assert body["metrics"]["update_queue_peak"] == 1
+    assert body["metrics"]["update_queue_peak"] > 1
     assert body["metrics"]["feishu_update_attempts"] < 24
 
 
