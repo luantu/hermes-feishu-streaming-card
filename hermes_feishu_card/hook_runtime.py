@@ -2016,10 +2016,14 @@ def _exact_base_delivery_hook_available() -> bool:
         method = getattr(BasePlatformAdapter, "_process_message_background", None)
         code = getattr(method, "__code__", None)
         names = set(getattr(code, "co_names", ()) or ())
-        return {
-            "prepare_exact_base_final_delivery",
-            "finalize_exact_base_no_text",
-        }.issubset(names)
+        if {"prepare_exact_base_final_delivery", "finalize_exact_base_no_text"}.issubset(names):
+            return True
+        send = getattr(BasePlatformAdapter, "_send_final_text", None)
+        send_names = set(getattr(getattr(send, "__code__", None), "co_names", ()))
+        return {"capture_decomposed_base_context", "finalize_exact_base_no_text", "_send_final_text"}.issubset(names) and {
+            "prepare_decomposed_base_final_delivery", "_record_delivery_obligation",
+            "_send_with_retry", "_finalize_delivery_obligation",
+        }.issubset(send_names)
     except Exception:
         return False
 
@@ -2490,6 +2494,31 @@ async def _recover_exact_terminal_native_handoff(
         )
         return True
     return False
+
+
+def capture_decomposed_base_context(local_vars: dict[str, Any]) -> None:
+    """Carry extracted attachments across Base's helper call in this exact turn."""
+    stage = _exact_completion_stage_for_current_task()
+    if stage is not None:
+        stage["base_context"] = {
+            key: local_vars[key] for key in ("images", "local_files", "media_files")
+        }
+
+
+async def prepare_decomposed_base_final_delivery(
+    local_vars: dict[str, Any],
+) -> tuple[Any, str, Any, Any]:
+    stage = _exact_completion_stage_for_current_task()
+    if stage is not None:
+        context = stage.pop("base_context", None)
+        if not isinstance(context, dict):
+            # Missing extraction evidence must never grant a text-only ACK.
+            _HFC_EXACT_COMPLETION_STAGE.set(None)
+            _HFC_NATIVE_HANDOFF_CONTEXT.set(None)
+            return (local_vars.get("delivery_adapter"), str(local_vars.get("content") or ""),
+                    local_vars.get("reply_to"), local_vars.get("metadata"))
+        local_vars = {**local_vars, **context}
+    return await prepare_exact_base_final_delivery(local_vars)
 
 
 async def prepare_exact_base_final_delivery(
