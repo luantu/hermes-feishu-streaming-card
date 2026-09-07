@@ -45,6 +45,10 @@ Read `docs/wiki/maintenance-guide.md` before touching these hot areas:
 - `hermes_feishu_card/install/patcher.py`
 - installer scripts, Docker install, release workflow
 
+Fork sync and install work: read `docs/fork-maintenance-guide.md` first. It
+covers upstream merge discipline, local patch preservation, install method,
+and common failures.
+
 Use these wiki pages for context:
 
 - `docs/wiki/README.md` — maintainer wiki entry
@@ -52,6 +56,7 @@ Use these wiki pages for context:
 - `docs/wiki/event-flow.md` — Hermes event to Feishu card lifecycle
 - `docs/wiki/feishu-acceptance.md` — real Feishu/Lark smoke checklist
 - `docs/wiki/release-playbook.md` — release checklist
+- `docs/fork-maintenance-guide.md` — upstream merge + install playbook
 
 ## Testing Expectations
 
