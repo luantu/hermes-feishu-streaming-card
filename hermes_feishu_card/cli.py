@@ -1495,6 +1495,7 @@ def _doctor_hermes_report(detection: HermesDetection) -> dict[str, Any]:
         "cron_hook_strategy": detection.cron_hook_strategy,
         "compatibility": detection.compatibility,
         "anchors": dict(detection.capabilities),
+        "anchor_locations": dict(detection.capability_locations),
         "reason": detection.reason,
         "suggested_root": (
             str(detection.suggested_root)
@@ -2060,6 +2061,14 @@ def _summarize_process_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _diagnose_install_state(detection: HermesDetection) -> dict[str, Any]:
+    from .install import decomposed
+    if detection.decomposed or decomposed.is_managed(detection.root):
+        plan = decomposed.plan(detection)
+        return {"checked": True, "status": plan.state,
+                "manifest_exists": (detection.root / MANIFEST_NAME).exists(),
+                "manual_action_required": plan.state == "refused",
+                "automatic_repair_available": plan.executable,
+                "message": "Decomposed ownership: " + plan.state}
     run_py = detection.run_py
     backup_path = _backup_path(run_py)
     manifest_path = _manifest_path(detection.root)
@@ -2444,7 +2453,8 @@ def _format_hermes_detection(detection: HermesDetection) -> str:
     ]
     for capability, found in detection.capabilities.items():
         anchor_status = "found" if found else "missing"
-        lines.append(f"  {capability}: {anchor_status}")
+        locations = ", ".join(detection.capability_locations.get(capability, ()))
+        lines.append(f"  {capability}: {anchor_status}" + (f" ({locations})" if locations else ""))
     lines.append(f"reason: {detection.reason}")
     return "\n".join(lines)
 
@@ -3628,6 +3638,20 @@ def _run_install(args: argparse.Namespace) -> int:
     if fixed_tag_result is not None:
         return fixed_tag_result
 
+    if detection.decomposed:
+        from .install.decomposed import install as install_decomposed
+        try:
+            changed = install_decomposed(
+                detection, no_repair=bool(getattr(args, "no_repair", False)),
+                accept_hermes_upgrade=bool(getattr(args, "accept_hermes_upgrade", False)))
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print("install ok" if changed else "install ok (already installed)")
+        if changed:
+            print("gateway.restart_required: hermes gateway start")
+        return 0
+
     accept_hermes_upgrade = bool(
         getattr(args, "accept_hermes_upgrade", False)
     )
@@ -4193,6 +4217,11 @@ def _repair_action_message(action: str) -> str:
 
 
 def _restore(hermes_root: Path) -> None:
+    from .install import decomposed
+    detection = detect_hermes(hermes_root)
+    if detection.decomposed or decomposed.is_managed(hermes_root):
+        decomposed.restore(detection)
+        return
     run_py = hermes_root / "gateway" / "run.py"
     cron_py = hermes_root / "cron" / "scheduler.py"
     base_py = hermes_root / "gateway" / "platforms" / "base.py"
