@@ -5892,7 +5892,7 @@ async def _hfc_send_raw_message_with_native_handoff_route(self: Any, **kwargs: A
         metadata_reply_to = _metadata_reply_to(
             metadata if isinstance(metadata, dict) else None
         )
-        if metadata_reply_to:
+        if metadata_reply_to.startswith("om_"):
             kwargs = dict(kwargs)
             kwargs["reply_to"] = metadata_reply_to
             reply_to = metadata_reply_to
@@ -8431,8 +8431,23 @@ def request_approval_choice_from_hermes_locals(
     interaction_id: str,
     timeout_seconds: float | None = None,
 ) -> str | None:
+    import html
+
     command = str(approval_data.get("command") or "").strip()
     description = str(approval_data.get("description") or "dangerous command").strip()
+    # Ordinary Markdown wraps long commands on mobile, unlike fenced blocks.
+    # Escape formatting so command text cannot hide parts behind links or tags.
+    def approval_text(value: str) -> str:
+        return re.sub(r"([\\`*_{}\[\]()#+.!|>-])", r"\\\1", html.escape(value, quote=False))
+
+    approval_description = (
+        f"**操作说明**\n{approval_text(description)}\n\n"
+        f"**完整命令**\n{approval_text(command)}"
+    )
+    # Reserve room for the header, options, callbacks, and footer inside the
+    # 28 KB card envelope. Never offer approval for a truncated command.
+    if len(json.dumps(approval_description, ensure_ascii=False).encode("utf-8")) > 12_000:
+        return None
     smart_denied = approval_data.get("smart_denied") is True
     allow_session = approval_data.get("allow_session", True) is not False
     allow_permanent = approval_data.get("allow_permanent", True) is not False
@@ -8448,7 +8463,7 @@ def request_approval_choice_from_hermes_locals(
         kind="approval",
         interaction_id=interaction_id,
         prompt="需要授权后继续执行",
-        description=f"```\n{command[:3000]}\n```\n\n{description}",
+        description=approval_description,
         options=options,
         timeout_seconds=timeout_seconds,
         allow_custom_input=allow_custom_input,
@@ -9294,7 +9309,7 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     # inside a topic group).  Priority: resolved targets > origin > env var.
     thread_id = str(
         _resolved_target_thread_id(resolved_targets, "feishu")
-        or origin_thread_id
+        or (origin_thread_id if chat_id == str(origin_chat_id or "").strip() else "")
         or os.environ.get("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "")
     ).strip() or ""
 
@@ -9324,7 +9339,9 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
             "delivery_kind": "cron",
             **(
                 {"reply_to_message_id": origin_message_id}
-                if origin_message_id
+                if origin_message_id.startswith("om_")
+                and chat_id == str(origin_chat_id or "").strip()
+                and thread_id == str(origin_thread_id or "").strip()
                 else {}
             ),
             "profile_id": profile_id,
@@ -9834,6 +9851,10 @@ def _event_data(
                 data[reply_key] = value
         if local_vars.get("redirect_followup") is True:
             data["redirect_followup"] = True
+            for key in ("redirect_from_turn_id", "redirect_from_message_id"):
+                value = _first_string(local_vars, (key,))
+                if value:
+                    data[key] = value
         return data
     return {}
 
@@ -9887,8 +9908,14 @@ def _is_lower_hex(value: str, length: int) -> bool:
 
 
 def _profile_identity(local_vars: dict[str, Any], source_obj: Any, message_obj: Any) -> tuple[str, str]:
+    runner = local_vars.get("self") or local_vars.get("runner")
+    registered = _GATEWAY_RUNNER_REF() if _GATEWAY_RUNNER_REF is not None else None
+    multiplex = any(
+        getattr(getattr(item, "config", None), "multiplex_profiles", False) is True
+        for item in (runner, registered)
+    )
     env_profile = os.environ.get("HERMES_FEISHU_CARD_PROFILE_ID", "").strip()
-    if env_profile:
+    if env_profile and not multiplex:
         return legacy_profile_identity(env_profile, "env")
     direct = (
         _first_string(local_vars, ("profile_id", "hermes_profile", "profile"))
@@ -9897,6 +9924,17 @@ def _profile_identity(local_vars: dict[str, Any], source_obj: Any, message_obj: 
     )
     if direct:
         return legacy_profile_identity(direct, "locals")
+    if multiplex:
+        # Hermes scopes get_hermes_home() with a ContextVar for each turn;
+        # process-wide HERMES_HOME belongs to the primary profile only.
+        try:
+            from hermes_constants import get_hermes_home
+            profile = profile_from_hermes_home_path(str(get_hermes_home()))
+        except (ImportError, AttributeError):
+            profile = None
+        if profile:
+            return legacy_profile_identity(profile, "hermes_home")
+        return "default", "fallback_default"
     hermes_home = os.environ.get("HERMES_HOME", "").strip()
     profile = profile_from_hermes_home_path(hermes_home)
     if profile:
@@ -9991,6 +10029,42 @@ def _first_string(source: dict[str, Any], names: tuple[str, ...]) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def bind_agent_turn_identity(agent: Any, source: Any) -> bool:
+    """Bind a cached agent to the already admitted source turn, never a reply anchor."""
+    try:
+        # Cached agents are reused: failure to prove this turn invalidates the
+        # previous binding rather than allowing a later redirect to reuse it.
+        setattr(agent, "_hfc_turn_binding", None)
+        turn_id = getattr(source, _CANONICAL_TURN_ATTR, None)
+        if _platform_name({}, source) != "feishu" or not isinstance(turn_id, str) or not turn_id.strip():
+            return False
+        profile, profile_source = _profile_identity({}, source, None)
+        chat_id = _first_attr_string(source, ("chat_id",))
+        thread_id = _first_attr_string(source, ("thread_id",)) or ""
+        if not chat_id or profile_source.startswith("sanitized_"):
+            return False
+        setattr(agent, "_hfc_turn_binding", (turn_id.strip(), profile, chat_id, thread_id))
+        return True
+    except Exception:
+        return False
+
+
+def redirect_turn_id_for_agent(agent: Any, source: Any) -> str:
+    """Return the exact callback owner only within the same profile/chat/topic."""
+    try:
+        binding = getattr(agent, "_hfc_turn_binding", None)
+        if not isinstance(binding, tuple) or len(binding) != 4:
+            return ""
+        profile, profile_source = _profile_identity({}, source, None)
+        scope = (profile, _first_attr_string(source, ("chat_id",)),
+                 _first_attr_string(source, ("thread_id",)) or "")
+        if _platform_name({}, source) != "feishu" or profile_source.startswith("sanitized_"):
+            return ""
+        return binding[0] if binding[1:] == scope else ""
+    except Exception:
+        return ""
 
 
 def _turn_id_for_runtime_event(
@@ -10338,6 +10412,23 @@ def _completion_model(local_vars: dict[str, Any]) -> str:
         if result_model is not None:
             return result_model
     return "Unknown"
+
+
+def effective_response_model(agent: Any) -> str:
+    """Capture the actual fallback route before Gateway discards result fields."""
+    route = getattr(agent, "_provider_fallback_route", None)
+    if isinstance(route, (tuple, list)) and len(route) == 2:
+        model, provider = route
+    else:
+        model, provider = getattr(agent, "model", None), getattr(agent, "provider", None)
+    if not isinstance(model, str) or not model.strip():
+        return ""
+    model = model.strip()
+    # A URL or arbitrary secret-bearing runtime value is not a provider label.
+    if isinstance(provider, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", provider):
+        if not model.startswith(provider + "/"):
+            return f"{provider}/{model}"
+    return model
 
 
 def _completion_tokens(local_vars: dict[str, Any], answer: str) -> dict[str, int]:

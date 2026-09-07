@@ -2131,6 +2131,128 @@ def test_redirect_patch_starts_a_new_card_for_active_turn_redirect():
     ast.parse(patched)
 
 
+def test_queued_followup_decomposed_context_preserves_old_source_identity(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    seen = []
+    async def emit(local_vars, *, event_name):
+        seen.append(hook_runtime.build_event(event_name, local_vars))
+        return True
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    source = SimpleNamespace(platform="feishu", chat_id="oc_topic", thread_id="omt_topic", _hfc_turn_id="om_old")
+    event = SimpleNamespace(source=source, message_id="om_new", reply_to_message_id="om_root")
+    context = SimpleNamespace(source=source, event_message_id="om_old")
+    block = "".join(patcher._render_queued_followup_hook_block("    ", "\n"))
+    namespace = {}
+    exec("async def run(source, next_source, pending_event, turn_ctx):\n"
+         "    result = {'interrupted': True}\n" + block + "    return next_source\n", namespace)
+    next_source = asyncio.run(namespace["run"](source, source, event, context))
+    assert [item["event"] for item in seen] == ["message.failed", "message.started"]
+    assert source._hfc_turn_id == "om_old"
+    assert next_source is not source
+    assert next_source._hfc_turn_id == "om_new"
+    assert seen[-1]["data"]["reply_to_message_id"] == "om_root"
+    assert "redirect_followup" not in seen[-1]["data"]
+
+
+def test_redirect_without_verified_source_does_not_strand_current_card(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    seen = []
+    async def emit(local_vars, *, event_name):
+        seen.append(local_vars)
+        return True
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="oc_topic"), message_id="om_new")
+    namespace = {}
+    block = "".join(patcher._render_redirect_hook_block("    ", "\n"))
+    exec("async def run(event, running_agent):\n    redirected = True\n" + block, namespace)
+    asyncio.run(namespace["run"](event, SimpleNamespace()))
+    assert seen == []
+    agent = SimpleNamespace()
+    assert hook_runtime.bind_agent_turn_identity(agent, SimpleNamespace(
+        platform="feishu", chat_id="oc_topic", _hfc_turn_id="om_current"))
+    asyncio.run(namespace["run"](event, agent))
+    assert seen[0]["redirect_from_turn_id"] == "om_current"
+
+
+def test_queued_completion_decomposed_context_emits_and_suppresses_native(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    seen = []
+    async def emit(local_vars, *, event_name):
+        seen.append(hook_runtime.build_event(event_name, local_vars))
+        return True
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    source = SimpleNamespace(platform="feishu", chat_id="oc_topic", thread_id="omt_topic", _hfc_turn_id="om_old")
+    context = SimpleNamespace(source=source, event_message_id="om_old")
+    block = "".join(patcher._render_queued_complete_hook_block("    ", "\n"))
+    namespace = {}
+    exec("async def run(turn_ctx):\n"
+         "    first_response = 'finished'\n    _already_streamed = False\n    result = {}\n"
+         + block + "    return _already_streamed\n", namespace)
+    assert asyncio.run(namespace["run"](context)) is True
+    assert seen[0]["turn_id"] == "om_old"
+    assert seen[0]["data"]["answer"] == "finished"
+
+
+def test_stable_callbacks_bind_exact_source_for_decomposed_redirect(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    source = SimpleNamespace(platform="feishu", profile="team", chat_id="oc_topic", thread_id="omt_topic", _hfc_turn_id="om_current")
+    agent = SimpleNamespace()
+    namespace = {"agent": agent, "ctx": SimpleNamespace(source=source)}
+    block = "".join(patcher._render_turn_context_hook_block(
+        patcher._render_stable_tool_lifecycle_hook_block, "", "\n"))
+    exec(block, namespace)
+    incoming_source = SimpleNamespace(platform="feishu", profile="team", chat_id="oc_topic", thread_id="omt_topic")
+    assert hook_runtime.redirect_turn_id_for_agent(agent, incoming_source) == "om_current"
+    seen = []
+    async def emit(local_vars, *, event_name):
+        seen.append(hook_runtime.build_event(event_name, local_vars))
+        return True
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    fixture = '''async def _resolve_busy_steer_or_redirect(self, event, session_key, running_agent):
+    redirected = self._try_agent_verb(running_agent, "redirect", event.text, session_key)
+    return self._BusySteerOutcome(redirected=redirected)
+'''
+    patched = patcher._apply_redirect_patch(fixture)
+    assert patcher.REDIRECT_PATCH_BEGIN in patched
+    assert patcher._apply_redirect_patch(patched) == patched
+    assert patcher.remove_patch(patched) == fixture
+    exec(patched, namespace)
+    runner = SimpleNamespace(_try_agent_verb=lambda *args: True, _BusySteerOutcome=SimpleNamespace)
+    event = SimpleNamespace(source=incoming_source, message_id="om_redirect", text="next")
+    asyncio.run(namespace["_resolve_busy_steer_or_redirect"](runner, event, "session", agent))
+    assert seen[0]["data"]["redirect_from_turn_id"] == "om_current"
+    assert seen[0]["turn_id"] == "om_redirect"
+    assert source._hfc_turn_id == "om_current"
+    assert not hasattr(incoming_source, "_hfc_turn_id")
+
+
+def test_cached_agent_binding_rejects_other_scope_and_missing_new_turn():
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    agent = SimpleNamespace()
+    source = SimpleNamespace(platform="feishu", profile="team", chat_id="oc_topic", thread_id="omt_topic", _hfc_turn_id="om_current")
+    assert hook_runtime.bind_agent_turn_identity(agent, source)
+    for field, value in (("chat_id", "oc_other"), ("thread_id", "omt_other"), ("profile", "other"), ("platform", "slack")):
+        other = SimpleNamespace(**{**vars(source), field: value})
+        assert hook_runtime.redirect_turn_id_for_agent(agent, other) == ""
+    unknown = SimpleNamespace(platform="feishu", profile="team", chat_id="oc_topic", thread_id="omt_topic", message_id="om_reply_anchor")
+    assert not hook_runtime.bind_agent_turn_identity(agent, unknown)
+    assert hook_runtime.redirect_turn_id_for_agent(agent, source) == ""
+
+
 def test_hfc_command_patch_enforces_maintenance_admission_before_commands():
     block = "".join(patcher._render_hfc_command_hook_block("    ", "\n"))
 
@@ -2139,6 +2261,87 @@ def test_hfc_command_patch_enforces_maintenance_admission_before_commands():
     assert admission < command
     assert "if await _hfc_enforce_maintenance_admission(locals()):" in block
     ast.parse("async def patched(self, event):\n" + block)
+
+
+def test_queued_final_completion_is_once_for_deepest_turn(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    seen = []
+    async def emit(local_vars, *, event_name):
+        seen.append(hook_runtime.build_event(event_name, local_vars))
+        return True
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    namespace = {}
+    block = "".join(patcher._render_queued_final_hook_block("    ", "\n"))
+    exec("async def run(next_source, pending_event, followup_result):\n    next_message_id = None\n"
+         + block + "    return followup_result\n", namespace)
+    source = SimpleNamespace(platform="feishu", chat_id="oc_topic", _hfc_turn_id="om_new")
+    event = SimpleNamespace(message_id="om_new")
+    result = asyncio.run(namespace["run"](source, event, {"final_response": "last answer"}))
+    assert result["_hfc_queued_final_delivered"] is True
+    assert seen[0]["turn_id"] == "om_new"
+    assert seen[0]["event"] == "message.completed"
+    asyncio.run(namespace["run"](source, event, result))
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("failure", ["rejected", "exception"])
+@pytest.mark.parametrize("answer", ["FINAL ANSWER", "FINAL ANSWER\nMEDIA:/tmp/example.png"])
+def test_queued_final_failure_preserves_native_answer_without_completing_old_turn(monkeypatch, failure, answer):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    seen = []
+    async def emit(local_vars, *, event_name):
+        payload = hook_runtime.build_event(event_name, local_vars)
+        seen.append(payload)
+        if len(seen) > 1:
+            pytest.fail("queued failure must not emit completion for an ancestor turn")
+        if failure == "exception":
+            raise RuntimeError("network unavailable")
+        return False
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    monkeypatch.setattr(hook_runtime, "can_stage_exact_base_completion", lambda _: False)
+    namespace = {}
+    queued_block = "".join(patcher._render_queued_final_hook_block("    ", "\n"))
+    outer_block = "".join(patcher._render_complete_hook_block_with_reply_anchor("    ", "\n"))
+    exec("async def queued(next_source, pending_event, followup_result):\n    next_message_id = None\n"
+         + queued_block + "    return followup_result\n", namespace)
+    exec("async def outer(self, event, source, agent_result):\n    response = agent_result['final_response']\n    _response_time = 1\n"
+         + outer_block + "    return response\n", namespace)
+    old = SimpleNamespace(platform="feishu", chat_id="oc_topic", _hfc_turn_id="om_old", message_id="om_old")
+    new = SimpleNamespace(platform="feishu", chat_id="oc_topic", _hfc_turn_id="om_new", message_id="om_new")
+    result = asyncio.run(namespace["queued"](new, SimpleNamespace(message_id="om_new"), {"final_response": answer}))
+    assert result["_hfc_queued_final_attempted"] is True
+    assert not result.get("_hfc_queued_final_delivered")
+    # An ancestor's recursive queue frame must also preserve the deepest
+    # failed attempt instead of trying to deliver the answer to its own turn.
+    result = asyncio.run(namespace["queued"](old, SimpleNamespace(message_id="om_old"), result))
+    runner = SimpleNamespace(_reply_anchor_for_event=lambda event: event.message_id)
+    native_response = asyncio.run(namespace["outer"](runner, SimpleNamespace(source=old, message_id="om_old"), old, result))
+    assert native_response == answer
+    assert len(seen) == 1
+    assert seen[0]["turn_id"] == "om_new"
+
+
+def test_queued_delivered_final_is_not_sent_again_by_outer_handler(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_feishu_card import hook_runtime
+
+    async def emit(*args, **kwargs):
+        raise AssertionError("already delivered queued answer was emitted again")
+    monkeypatch.setattr(hook_runtime, "emit_from_hermes_locals_async", emit)
+    namespace = {}
+    block = "".join(patcher._render_complete_hook_block("    ", "\n"))
+    exec("async def run(source):\n    response = 'last answer'\n    _response_time = 1\n"
+         "    agent_result = {'_hfc_queued_final_delivered': True}\n"
+         + block + "    return response\n", namespace)
+    source = SimpleNamespace(platform="feishu", chat_id="oc_topic", _hfc_turn_id="om_old")
+    assert asyncio.run(namespace["run"](source)) is None
 
 
 _EXACT_BASE_SOURCE = '''class BasePlatformAdapter:

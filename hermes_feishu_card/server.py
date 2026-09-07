@@ -6429,6 +6429,7 @@ def _render_session_card_result_for_app(
         interaction_mode=interaction_mode,
         interaction_profile_id=interaction_profile_id,
         show_reasoning=_safe_bool(card_config.get("show_reasoning"), True),
+        reasoning_format=card_config.get("reasoning_format", "panel"),
         timeline_expanded=_safe_bool(card_config.get("timeline_expanded"), False),
         max_timeline_items=_safe_positive_int(
             card_config.get("max_timeline_items"), 12
@@ -6911,6 +6912,21 @@ async def _abandon_stale_sessions_for_chat(
     # Extract profile_id prefix from new_session_key (format: "profile:msg_id")
     new_profile = new_session_key.split(":", 1)[0] if ":" in new_session_key else ""
     new_conversation_id = event.conversation_id
+    # A redirect may move callbacks for one explicitly identified source turn.
+    # Conversation membership (or a quoted message) alone is not evidence that
+    # every historical turn belongs to this redirect.
+    redirect_source_key = None
+    if alias_to_session_key:
+        data = event.data if isinstance(event.data, dict) else {}
+        source_turn = data.get("redirect_from_turn_id")
+        source_message = data.get("redirect_from_message_id")
+        source_id = source_turn or source_message
+        if isinstance(source_id, str) and source_id.strip():
+            redirect_source_key = _session_key_for_message_id(event, source_id.strip())
+            if not source_turn:
+                redirect_source_key = app[SESSION_ALIASES_KEY].get(
+                    redirect_source_key, redirect_source_key
+                )
 
     stale_keys = []
     for key, sess in sessions.items():
@@ -6920,7 +6936,7 @@ async def _abandon_stale_sessions_for_chat(
             continue
         if sess.conversation_id != new_conversation_id:
             continue
-        if sess.status in {"completed", "failed"} and not alias_to_session_key:
+        if sess.status in {"completed", "failed"} and key != redirect_source_key:
             continue
         if sess.delivery_kind == "notice":
             continue
@@ -6935,7 +6951,7 @@ async def _abandon_stale_sessions_for_chat(
         if sess is None:
             continue
         already_terminal = sess.status in {"completed", "failed"}
-        if alias_to_session_key:
+        if alias_to_session_key and key == redirect_source_key:
             app[SESSION_ALIASES_KEY][key] = alias_to_session_key
             app[REDIRECT_SESSION_ALIASES_KEY][key] = alias_to_session_key
             for alias_key, canonical_key in tuple(app[SESSION_ALIASES_KEY].items()):

@@ -1,4 +1,4 @@
-# Hermes facade 拆分适配（fork）
+# Hermes facade 拆分适配
 
 本页记录针对 Hermes `79445a496c` 源码布局的 Legacy patcher 适配。
 源码拆分本身不构成 native hook 能力证明；`MIN_SUPPORTED_VERSION`、固定 tag
@@ -51,10 +51,30 @@ backup/manifest；恢复锁文件遵循原有 recovery 行为保留。任意受�
 已知原始文件替换了 owned hook 时可 repair，`--no-repair` 阻止自动修复。
 兼容的无 marker 源码更新需要显式 `--accept-hermes-upgrade`。
 
-V4 不伪造 V1/V2 或固定 tag V3 ownership，也不自动迁移这些旧 manifest。
+Hermes 升级到拆分布局后，旧 V1/V2 manifest 与 backup 可能保留，而源码中的 hook
+已被 updater/autostash 移走。doctor/status 会提示需要显式执行：
+
+```bash
+hermes-feishu-card install --hermes-dir /path/to/hermes-agent --accept-hermes-upgrade --yes
+hermes gateway start
+```
+
+迁移逐一验证旧路径、backup hash、已有 hook 的 patched hash 和可逆性。只有当前受管
+文件完全匹配旧 ownership，或是不含 HFC marker 的新源码，且新布局整体可编译、可逆时
+才允许迁移；新 manifest/backup 记录升级后的源码，卸载不会把旧 monolithic Gateway
+覆盖回新版 facade。`--no-repair` 仍会拒绝迁移。未知 backup、用户修改的 hook、缺失或
+损坏 ownership 均拒绝。仅凭没有 marker 不足以自动修复，仍需显式接受源码升级。
+
+HFC renderer 升级时，已安装文件先以 manifest 的 patched hash 和 backup 的 original
+hash 确认 ownership，再更新 hook 与 manifest；restore 不依赖新 renderer 能重建旧 hook。
+Windows 显式 install 复用既有 portable writer，验证目录、文件 identity 与内容 hash，
+失败时保留无法安全删除的新建证据。自动 recovery 与删除 ownership backup 的 restore
+仍要求目录句柄能力，在缺少该能力的平台会明确拒绝。
+
+固定 tag V3 还拥有 Hermes plugin 配置，必须先用其专用 installer 验证/还原，不能用
+V1/V2 的源码迁移方式跳过配置 ownership。
 `integrity.mode=safe` 的 Git provenance 自动修复仍要求原有严格证据；当前 V4 没有
 这份 provenance，必须拒绝自动升级修复，不能把普通多文件 fingerprint 当成授权。
-跨布局或未来 HFC renderer 变化时，先用原 installer 验证/还原旧 ownership，再安装新版本。
 
 ## 验证与后续维护
 
@@ -69,6 +89,5 @@ python -m pytest -q
 git diff --check
 ```
 
-本适配尚属 fork 未发布改动。未来上游 HFC release 覆盖此布局时，应比较锚点、
-renderer 和 manifest 迁移行为后移除重复实现；`ac45e40` 的 20-year timeout 改动
-独立保留，不随此兼容补丁或上游版本切换而隐式重置。
+此适配吸收 PR #257 的拆分布局实现；维护时应继续比较上游锚点、renderer 和 manifest
+迁移行为。上游或用户的独立 timeout 设置不属于该补丁的 ownership。

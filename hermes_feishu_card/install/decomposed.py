@@ -107,7 +107,71 @@ def render(sources, strategy="gateway_run_013_plus"):
     return rendered
 
 
-def _inspect(root):
+def _remove_target(target, raw):
+    text = raw.decode("utf-8")
+    if target == "gateway/platforms/base.py":
+        return patcher.remove_base_patch(text).encode("utf-8")
+    if target.startswith("cron/"):
+        return patcher.remove_cron_patch(text).encode("utf-8")
+    return patcher.remove_patch(text).encode("utf-8")
+
+
+def _legacy_upgrade_sources(snapshot, sources, manifest):
+    """Verify old ownership before an explicitly accepted layout transition.
+
+    An upstream updater may replace all three legacy targets while retaining
+    the install manifest/backups (including when it autostashes the hooks).
+    Preserve the new source, never restore the old monolithic Gateway over it.
+    V3 also owns plugin configuration, so it requires its dedicated uninstaller.
+    """
+    from .manifest import validate_install_manifest
+    version = validate_install_manifest(manifest)
+    if version not in {1, 2}:
+        raise ValueError("legacy layout migration requires verified V1/V2 ownership; "
+                         "restore V3 ownership with its original installer first")
+    groups = (
+        ("gateway/run.py", "run_py", "backup", "backup_sha256", "patched_sha256"),
+        ("cron/scheduler.py", "cron_py", "cron_backup", "cron_backup_sha256", "cron_patched_sha256"),
+        ("gateway/platforms/base.py", "base_py", "base_backup", "base_backup_sha256", "base_patched_sha256"),
+    )
+    owned = set()
+    originals = dict(sources)
+    for target, path_key, backup_key, original_key, patched_key in groups:
+        if path_key not in manifest and target != "gateway/run.py":
+            continue
+        if (not isinstance(manifest.get(path_key), str)
+                or manifest[path_key].replace("\\", "/") != target
+                or not isinstance(manifest.get(backup_key), str)
+                or manifest[backup_key].replace("\\", "/") != target + BACKUP_SUFFIX):
+            raise ValueError("legacy ownership path mismatch; refusing layout migration")
+        for key in (original_key, patched_key):
+            digest = manifest.get(key)
+            if (not isinstance(digest, str) or len(digest) != 64
+                    or any(c not in "0123456789abcdef" for c in digest)):
+                raise ValueError("legacy ownership hash missing; refusing layout migration")
+        backup = snapshot[target + BACKUP_SUFFIX]
+        if (backup is None or sha256(backup).hexdigest() != manifest[original_key]
+                or b"HERMES_FEISHU_CARD_" in backup or target not in sources):
+            raise ValueError("legacy backup missing or changed; refusing layout migration")
+        compile(backup, target, "exec")
+        current = sources[target]
+        if sha256(current).hexdigest() == manifest[patched_key]:
+            if _remove_target(target, current) != backup:
+                raise ValueError("legacy owned hook is not reversible")
+            originals[target] = backup
+        elif b"HERMES_FEISHU_CARD_" in current:
+            raise ValueError("legacy source drift; refusing layout migration")
+        owned.add(target)
+    for target in SOURCE_TARGETS:
+        if target not in owned:
+            if snapshot[target + BACKUP_SUFFIX] is not None:
+                raise ValueError("unowned backup exists; refusing layout migration")
+            if target in sources and b"HERMES_FEISHU_CARD_" in sources[target]:
+                raise ValueError("unowned hook exists; refusing layout migration")
+    return originals
+
+
+def _inspect(root, *, render_hooks=True):
     snapshot = _snapshot(root)
     sources = {name: snapshot[name] for name in SOURCE_TARGETS if snapshot[name] is not None}
     raw_manifest = snapshot[MANIFEST_NAME]
@@ -118,25 +182,32 @@ def _inspect(root):
             raise ValueError("decomposed hooks have no manifest; refusing mutation")
         return snapshot, sources, None, "clean"
     manifest = json.loads(raw_manifest)
+    if not isinstance(manifest, dict):
+        raise ValueError("invalid decomposed ownership manifest")
+    if manifest.get("manifest_version") != MANIFEST_VERSION:
+        originals = _legacy_upgrade_sources(snapshot, sources, manifest)
+        return snapshot, originals, render(originals) if render_hooks else None, "stale_unpatched"
     validate_manifest(manifest)
     if set(manifest["targets"]) != set(sources):
         raise ValueError("decomposed source target set changed")
     originals = {}
     for target, row in manifest["targets"].items():
         backup = snapshot[target + BACKUP_SUFFIX]
-        if backup is None or sha256(backup).hexdigest() != row["original_sha256"]:
+        if (backup is None or sha256(backup).hexdigest() != row["original_sha256"]
+                or b"HERMES_FEISHU_CARD_" in backup):
             raise ValueError(f"{target}: backup missing or changed")
+        compile(backup, target, "exec")
         originals[target] = backup
     if any(snapshot[name + BACKUP_SUFFIX] is not None for name in SOURCE_TARGETS if name not in originals):
         raise ValueError("unowned decomposed backup exists")
-    rendered = render(originals)
     clean_targets = []
     replacements = {}
     for target, raw in sources.items():
         row = manifest["targets"][target]
-        if sha256(rendered[target]).hexdigest() != row["patched_sha256"]:
-            raise ValueError(f"{target}: patch implementation differs from owned manifest")
-        if raw == rendered[target]:
+        if sha256(raw).hexdigest() == row["patched_sha256"]:
+            # The manifest binds the entire installed file to its verified
+            # original backup. Do not ask today's renderer/remover to recognize
+            # yesterday's hook body: that would make upgrades non-restorable.
             continue
         if raw == originals[target]:
             clean_targets.append(target)
@@ -146,9 +217,13 @@ def _inspect(root):
             raise ValueError(f"{target}: source drift; refusing mutation")
     if replacements:
         originals = {**originals, **replacements}
-        rendered = render(originals)
+        rendered = render(originals) if render_hooks else None
         return snapshot, originals, rendered, "stale_unpatched"
-    return snapshot, originals, rendered, "owned_incomplete" if clean_targets else "installed"
+    rendered = render(originals) if render_hooks else None
+    renderer_changed = rendered is not None and any(
+        sha256(raw).hexdigest() != manifest["targets"][target]["patched_sha256"]
+        for target, raw in rendered.items())
+    return snapshot, originals, rendered, "owned_incomplete" if clean_targets or renderer_changed else "installed"
 
 
 def plan(detection, *, accept_hermes_upgrade=False):
@@ -158,7 +233,13 @@ def plan(detection, *, accept_hermes_upgrade=False):
         fingerprint = _fingerprint(snapshot)
         executable = state == "owned_incomplete" or (state == "stale_unpatched" and accept_hermes_upgrade and detection.supported)
         actions = ("restore_owned_hooks",) if state == "owned_incomplete" else ("accept_hermes_upgrade",) if state == "stale_unpatched" else ()
-        return RecoveryPlan(detection.root, state, executable, fingerprint, actions, ())
+        findings = ()
+        if state == "stale_unpatched":
+            findings = (RecoveryFinding("hermes_upgrade_hooks_missing", "warning",
+                        "Hermes source changed without owned hooks (an updater/autostash may remove them). "
+                        "Use install --accept-hermes-upgrade --yes after reviewing the upgrade; "
+                        "restart Gateway after successful repair."),)
+        return RecoveryPlan(detection.root, state, executable, fingerprint, actions, findings)
     except (OSError, ValueError, UnicodeError):
         try:
             fingerprint = _fingerprint(_snapshot(detection.root))
@@ -170,8 +251,7 @@ def plan(detection, *, accept_hermes_upgrade=False):
 
 def install(detection, *, no_repair=False, expected_fingerprint=None, accept_hermes_upgrade=False):
     from .detect import detect_hermes
-    from .recovery import _root_lock, _commit_recovery_changes, _require_secure_dirfd_transactions
-    _require_secure_dirfd_transactions()
+    from .recovery import _root_lock, _commit_recovery_changes, _secure_dirfd_transactions_supported
     with _root_lock(detection.root):
         snapshot, originals, rendered, state = _inspect(detection.root)
         if expected_fingerprint and _fingerprint(snapshot) != expected_fingerprint:
@@ -203,8 +283,22 @@ def install(detection, *, no_repair=False, expected_fingerprint=None, accept_her
         if state in {"clean", "stale_unpatched"}:
             changes = [(detection.root / (name + BACKUP_SUFFIX), raw.decode("utf-8"))
                        for name, raw in originals.items()] + changes
-            changes.append((detection.root / MANIFEST_NAME, json.dumps(manifest, indent=2) + "\n"))
-        _commit_recovery_changes(detection, fresh, changes, accept_hermes_upgrade=accept_hermes_upgrade)
+        changes.append((detection.root / MANIFEST_NAME, json.dumps(manifest, indent=2) + "\n"))
+        if _secure_dirfd_transactions_supported():
+            _commit_recovery_changes(detection, fresh, changes, accept_hermes_upgrade=accept_hermes_upgrade)
+        else:
+            # Explicit installation on Windows uses the same verified portable
+            # writer as the monolithic installer. Automatic recovery and backup
+            # deletion retain their stronger directory-handle requirement.
+            from ..cli import _snapshot_restore_evidence, _write_targets_portably
+            evidence = {name: detection.root / name for name in
+                        (*SOURCE_TARGETS, *(n + BACKUP_SUFFIX for n in SOURCE_TARGETS), MANIFEST_NAME)}
+            identities, directories = _snapshot_restore_evidence(detection.root, evidence)
+            if _fingerprint(_snapshot(detection.root)) != fresh.fingerprint:
+                raise ValueError("decomposed evidence changed before portable install")
+            _write_targets_portably(changes, expected_identities=identities,
+                                    expected_directories=directories,
+                                    preserve_earlier_writes_on_rollback_failure=True)
         _inspect(detection.root)
         return True
 
@@ -213,7 +307,7 @@ def restore(detection):
     from .recovery import _root_lock, _commit_recovery_changes, _require_secure_dirfd_transactions
     _require_secure_dirfd_transactions()
     with _root_lock(detection.root):
-        snapshot, originals, _, state = _inspect(detection.root)
+        snapshot, originals, _, state = _inspect(detection.root, render_hooks=False)
         if state == "clean":
             return
         if state == "stale_unpatched":

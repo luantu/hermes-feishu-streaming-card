@@ -26,6 +26,8 @@ QUEUED_COMPLETE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_BEGIN"
 QUEUED_COMPLETE_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_END"
 QUEUED_FOLLOWUP_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_FOLLOWUP_PATCH_BEGIN"
 QUEUED_FOLLOWUP_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_FOLLOWUP_PATCH_END"
+QUEUED_FINAL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_FINAL_PATCH_BEGIN"
+QUEUED_FINAL_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_FINAL_PATCH_END"
 REDIRECT_PATCH_BEGIN = "# HERMES_FEISHU_CARD_REDIRECT_PATCH_BEGIN"
 REDIRECT_PATCH_END = "# HERMES_FEISHU_CARD_REDIRECT_PATCH_END"
 TOOL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_TOOL_PATCH_BEGIN"
@@ -169,6 +171,8 @@ def apply_patch(
 
 
 def _apply_turn_callbacks(content: str, *, strategy: str) -> str:
+    from .provider_route import apply_provider_route_patch
+    content = apply_provider_route_patch(content)
     content = _apply_stable_tool_lifecycle_patch(content)
     content = _apply_callback_patch(
         content,
@@ -448,7 +452,10 @@ def _apply_queued_complete_patch(content: str) -> str:
 
     current_target = "if _intentional_silence:"
     for index, line in enumerate(lines):
-        if _strip_line_ending(line).strip() != current_target:
+        if _strip_line_ending(line).strip() not in {
+            current_target,
+            "if self._is_intentional_silence(_delivery_result, first_response):",
+        }:
             continue
         lookback = lines[max(0, index - 48) : index]
         if not any("first_response = _delivery_result.get(" in item for item in lookback):
@@ -463,6 +470,7 @@ def _apply_queued_complete_patch(content: str) -> str:
 
 
 def _apply_queued_followup_patch(content: str) -> str:
+    content = _apply_queued_final_patch(content)
     owned_block = _find_simple_marker_block(
         content,
         QUEUED_FOLLOWUP_PATCH_BEGIN,
@@ -498,6 +506,27 @@ def _apply_queued_followup_patch(content: str) -> str:
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
+def _apply_queued_final_patch(content: str) -> str:
+    owned = _find_simple_marker_block(content, QUEUED_FINAL_PATCH_BEGIN,
+                                      QUEUED_FINAL_PATCH_END, "queued final patch markers")
+    lines = content.splitlines(keepends=True)
+    if owned is not None:
+        begin, end = owned
+        indent = _leading_whitespace(_strip_line_ending(lines[begin]))
+        newline = _line_ending(lines[begin]) or _detect_newline(content)
+        return "".join(lines[:begin] + _render_queued_final_hook_block(indent, newline) + lines[end + 1:])
+    for node in ast.walk(_parse_content(content)):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "followup_result"
+                and isinstance(node.value, ast.Await) and isinstance(node.value.value, ast.Call)
+                and isinstance(node.value.value.func, ast.Attribute)
+                and node.value.value.func.attr == "_run_agent"):
+            indent = _leading_whitespace(_strip_line_ending(lines[node.lineno - 1]))
+            newline = _line_ending(lines[node.lineno - 1]) or _detect_newline(content)
+            return "".join(lines[:node.end_lineno] + _render_queued_final_hook_block(indent, newline) + lines[node.end_lineno:])
+    return content
+
+
 def _apply_redirect_patch(content: str) -> str:
     owned_block = _find_simple_marker_block(
         content,
@@ -516,6 +545,31 @@ def _apply_redirect_patch(content: str) -> str:
         return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
 
     lines = content.splitlines(keepends=True)
+    # Hermes 0.21 moved redirect into its own outcome-returning helper.
+    for owner in ast.walk(_parse_content(content)):
+        if not isinstance(owner, ast.AsyncFunctionDef) or owner.name != "_resolve_busy_steer_or_redirect":
+            continue
+        proven_redirect = any(
+            isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "redirected"
+            and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "_try_agent_verb" and len(node.value.args) == 4
+            and isinstance(node.value.args[0], ast.Name) and node.value.args[0].id == "running_agent"
+            and isinstance(node.value.args[1], ast.Constant) and node.value.args[1].value == "redirect"
+            for node in ast.walk(owner)
+        )
+        if not proven_redirect:
+            continue
+        targets = [node for node in owner.body if isinstance(node, ast.Return)
+                   and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
+                   and node.value.func.attr == "_BusySteerOutcome"
+                   and any(kw.arg == "redirected" and isinstance(kw.value, ast.Name)
+                           and kw.value.id == "redirected" for kw in node.value.keywords)]
+        if len(targets) == 1:
+            index = targets[0].lineno - 1
+            indent = _leading_whitespace(_strip_line_ending(lines[index]))
+            newline = _line_ending(lines[index]) or _detect_newline(content)
+            return "".join(lines[:index] + _render_redirect_hook_block(indent, newline) + lines[index:])
     for index, line in enumerate(lines):
         stripped = _strip_line_ending(line).strip()
         if stripped not in {"if not steered and not redirected:", "if not redirected:"}:
@@ -745,6 +799,8 @@ def _apply_hfc_command_patch(content: str) -> str:
 
 def remove_patch(content: str) -> str:
     """Remove the owned Feishu card hook block from patched Hermes content."""
+    from .provider_route import remove_provider_route_patch
+    content = remove_provider_route_patch(content)
     content = _remove_simple_owned_patch(
         content, TURN_TIMING_PATCH_BEGIN, TURN_TIMING_PATCH_END,
         _render_turn_timing_hook_block, "turn timing patch markers")
@@ -839,6 +895,13 @@ def remove_patch(content: str) -> str:
         STATUS_PATCH_END,
         _render_status_hook_block,
         "status callback patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        QUEUED_FINAL_PATCH_BEGIN,
+        QUEUED_FINAL_PATCH_END,
+        _render_queued_final_hook_block,
+        "queued final patch markers",
     )
     content = _remove_simple_owned_patch(
         content,
@@ -2861,6 +2924,16 @@ def _render_complete_hook_block(indent: str, newline: str):
         f"{deeper_indent}    \"max_tokens\": agent_result.get(\"context_length\", 0),{newline}",
         f"{deeper_indent}}},{newline}",
         f"{inner_indent}}}{newline}",
+        f"{inner_indent}if agent_result.get(\"_hfc_queued_final_attempted\") is True and agent_result.get(\"_hfc_queued_final_delivered\") is not True:{newline}",
+        # The outer handler still owns the original turn. A failed queued
+        # final must fall back with its complete response, including media,
+        # rather than completing that old, already-terminal card again.
+        f"{deeper_indent}return response{newline}",
+        f"{inner_indent}if agent_result.get(\"_hfc_queued_final_delivered\") is True:{newline}",
+        f"{deeper_indent}_hfc_queued_preview = _hfc_build_event(\"message.completed\", _hfc_completed_locals, preview=True){newline}",
+        f"{deeper_indent}if _hfc_queued_preview and _hfc_queued_preview.get(\"data\", {{}}).get(\"native_delivery\") == \"required\":{newline}",
+        f"{deepest_indent}return _hfc_media_only(response){newline}",
+        f"{deeper_indent}return None{newline}",
         f"{inner_indent}_hfc_exact_staged = False{newline}",
         f"{inner_indent}if _hfc_can_stage_exact(_hfc_completed_locals):{newline}",
         f"{deeper_indent}_hfc_exact_staged = await _hfc_stage_exact(_hfc_completed_locals){newline}",
@@ -3042,8 +3115,13 @@ def _render_queued_complete_hook_block(indent: str, newline: str):
             f"import native_media_only_response as _hfc_media_only{newline}"
         ),
         f"{inner_indent}if first_response and not _already_streamed:{newline}",
+        f"{deeper_indent}_hfc_turn_ctx = locals().get(\"turn_ctx\"){newline}",
+        f"{deeper_indent}_hfc_source = locals().get(\"source\") or getattr(_hfc_turn_ctx, \"source\", None){newline}",
+        f"{deeper_indent}_hfc_message_id = locals().get(\"event_message_id\") or getattr(_hfc_turn_ctx, \"event_message_id\", None){newline}",
         f"{deeper_indent}_hfc_completed_locals = {{{newline}",
         f"{deeper_indent}    **locals(),{newline}",
+        f"{deeper_indent}    \"source\": _hfc_source,{newline}",
+        f"{deeper_indent}    \"message_id\": _hfc_message_id,{newline}",
         f"{deeper_indent}    \"answer\": first_response,{newline}",
         f"{deeper_indent}    \"duration\": result.get(\"duration\", 0.0) if isinstance(result, dict) else 0.0,{newline}",
         f"{deeper_indent}    \"model\": result.get(\"model\", \"\") if isinstance(result, dict) else \"\",{newline}",
@@ -3064,7 +3142,7 @@ def _render_queued_complete_hook_block(indent: str, newline: str):
         f"{deeper_indent}    _hfc_attachments = _hfc_completed_data.get(\"attachments\", []){newline}",
         f"{deeper_indent}    _hfc_native_delivery = _hfc_completed_data.get(\"native_delivery\", \"required\" if _hfc_attachments else \"allowed\"){newline}",
         f"{deeper_indent}_hfc_card_delivered = await _hfc_emit_async(_hfc_completed_locals, event_name=\"message.completed\"){newline}",
-        f"{deeper_indent}_hfc_platform = getattr(source.platform, \"value\", source.platform){newline}",
+        f"{deeper_indent}_hfc_platform = getattr(getattr(_hfc_source, \"platform\", None), \"value\", getattr(_hfc_source, \"platform\", None)){newline}",
         f"{deeper_indent}if str(_hfc_platform).lower() == \"feishu\" and _hfc_card_delivered and _hfc_native_delivery == \"required\":{newline}",
         f"{deeper_indent}    first_response = _hfc_media_only(first_response){newline}",
         f"{deeper_indent}if _hfc_should_suppress(_hfc_platform, _hfc_card_delivered, _hfc_attachments, _hfc_native_delivery):{newline}",
@@ -3086,9 +3164,10 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
             f"import emit_from_hermes_locals_async as _hfc_emit_async{newline}"
         ),
         f"{inner_indent}if pending_event is not None:{newline}",
+        f"{deeper_indent}_hfc_turn_ctx = locals().get(\"turn_ctx\"){newline}",
         f"{deeper_indent}_hfc_followup_message_id = str(getattr(pending_event, \"message_id\", \"\") or \"\"){newline}",
-        f"{deeper_indent}_hfc_original_message_id = str(event_message_id or getattr(pending_event, \"reply_to_message_id\", \"\") or \"\"){newline}",
-        f"{deeper_indent}_hfc_was_interrupted = bool(locals().get(\"was_interrupted\")){newline}",
+        f"{deeper_indent}_hfc_original_message_id = str(locals().get(\"event_message_id\") or getattr(_hfc_turn_ctx, \"event_message_id\", None) or \"\"){newline}",
+        f"{deeper_indent}_hfc_was_interrupted = bool(locals().get(\"was_interrupted\") or (result.get(\"interrupted\") if isinstance(result, dict) else False)){newline}",
         f"{deeper_indent}if _hfc_was_interrupted and _hfc_original_message_id:{newline}",
         (
             f"{deepest_indent}await _hfc_emit_async({{"
@@ -3096,16 +3175,36 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
             f"\"message_id\": _hfc_original_message_id, \"error\": \"用户已打断当前任务\"}}, event_name=\"message.failed\"){newline}"
         ),
         f"{deeper_indent}if _hfc_followup_message_id:{newline}",
+        f"{deepest_indent}from copy import copy as _hfc_copy{newline}",
+        f"{deepest_indent}next_source = _hfc_copy(next_source){newline}",
         (
             f"{deepest_indent}await _hfc_emit_async({{"
             f"\"source\": next_source, \"event\": pending_event, \"message\": pending_event, "
             f"\"chat_id\": getattr(next_source, \"chat_id\", None), "
             f"\"message_id\": _hfc_followup_message_id, "
-            f"\"reply_to_message_id\": _hfc_original_message_id or getattr(pending_event, \"reply_to_message_id\", \"\") or _hfc_followup_message_id, "
-            f"\"redirect_followup\": True}}, event_name=\"message.started\"){newline}"
+            f"\"reply_to_message_id\": getattr(pending_event, \"reply_to_message_id\", \"\") or _hfc_followup_message_id"
+            f"}}, event_name=\"message.started\"){newline}"
         ),
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{QUEUED_FOLLOWUP_PATCH_END}{newline}",
+    ]
+
+
+def _render_queued_final_hook_block(indent: str, newline: str):
+    inner = _child_indent(indent)
+    deeper = _child_indent(inner)
+    return [
+        f"{indent}{QUEUED_FINAL_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        f"{inner}from hermes_feishu_card.hook_runtime import emit_from_hermes_locals_async as _hfc_emit_async{newline}",
+        f"{inner}if pending_event is not None and isinstance(followup_result, dict) and not followup_result.get(\"_hfc_queued_final_delivered\") and not followup_result.get(\"_hfc_queued_final_attempted\"):{newline}",
+        f"{deeper}followup_result = {{**followup_result, \"_hfc_queued_final_attempted\": True}}{newline}",
+        f"{deeper}_hfc_final_locals = {{\"source\": next_source, \"message_id\": getattr(pending_event, \"message_id\", None) or next_message_id, \"answer\": followup_result.get(\"final_response\", \"\"), \"error\": followup_result.get(\"error\") or \"任务已中断\", \"agent_result\": followup_result}}{newline}",
+        f"{deeper}_hfc_final_event_name = \"message.failed\" if followup_result.get(\"failed\") or followup_result.get(\"interrupted\") else \"message.completed\"{newline}",
+        f"{deeper}if await _hfc_emit_async(_hfc_final_locals, event_name=_hfc_final_event_name):{newline}",
+        f"{deeper}    followup_result = {{**followup_result, \"_hfc_queued_final_delivered\": True}}{newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{QUEUED_FINAL_PATCH_END}{newline}",
     ]
 
 
@@ -3122,13 +3221,20 @@ def _render_redirect_hook_block(indent: str, newline: str):
         ),
         f"{inner_indent}if bool(locals().get(\"redirected\")):{newline}",
         f"{deeper_indent}_hfc_redirect_message_id = str(getattr(event, \"message_id\", \"\") or \"\"){newline}",
-        f"{deeper_indent}if _hfc_redirect_message_id:{newline}",
+        f"{deeper_indent}from hermes_feishu_card.hook_runtime import redirect_turn_id_for_agent as _hfc_redirect_turn{newline}",
+        f"{deeper_indent}_hfc_redirect_from_turn_id = _hfc_redirect_turn(locals().get(\"running_agent\"), event.source){newline}",
+        # Unknown callback ownership must retain the current card. Emitting a
+        # fresh started event would abandon it and strand its future callbacks.
+        f"{deeper_indent}if _hfc_redirect_message_id and _hfc_redirect_from_turn_id:{newline}",
+        f"{deepest_indent}from copy import copy as _hfc_copy{newline}",
+        f"{deepest_indent}_hfc_redirect_source = _hfc_copy(event.source){newline}",
         (
             f"{deepest_indent}await _hfc_emit_async({{"
-            f"\"source\": event.source, \"event\": event, \"message\": event, "
+            f"\"source\": _hfc_redirect_source, \"event\": event, \"message\": event, "
             f"\"chat_id\": getattr(event.source, \"chat_id\", None), "
             f"\"message_id\": _hfc_redirect_message_id, "
             f"\"reply_to_message_id\": getattr(event, \"reply_to_message_id\", \"\") or _hfc_redirect_message_id, "
+            f"\"redirect_from_turn_id\": _hfc_redirect_from_turn_id, "
             f"\"redirect_followup\": True}}, event_name=\"message.started\"){newline}"
         ),
         *_render_hook_exception_handler(indent, newline),
@@ -3218,6 +3324,7 @@ def _render_turn_context_hook_block(renderer, indent: str, newline: str):
     """Adapt a legacy closure hook to Hermes' ``TurnRunner`` context seam."""
     block = renderer(indent, newline)
     replacements = (
+        ("_hfc_bind_agent_turn(agent, source)", "_hfc_bind_agent_turn(agent, _hfc_turn_ctx.source)"),
         ("_run_still_current()", "_hfc_turn_ctx._run_still_current()"),
         ('"source": source,', '"source": _hfc_turn_ctx.source,'),
         (
@@ -3307,6 +3414,8 @@ def _render_stable_tool_lifecycle_hook_block(indent: str, newline: str):
         f"{indent}_hfc_stable_tool_callbacks_available = [False]{newline}",
         f"{indent}_hfc_pending_tool_previews = {{}}{newline}",
         f"{indent}try:{newline}",
+        f"{inner_indent}from hermes_feishu_card.hook_runtime import bind_agent_turn_identity as _hfc_bind_agent_turn{newline}",
+        f"{inner_indent}_hfc_bind_agent_turn(agent, source){newline}",
         (
             f"{inner_indent}from hermes_feishu_card.hook_runtime "
             f"import emit_from_hermes_locals_threadsafe as _hfc_emit_stable_threadsafe{newline}"
@@ -3897,6 +4006,8 @@ def apply_gateway_fragment(content: str, target: str, *, strategy="gateway_run_0
         content = _apply_complete_patch(content, strategy=strategy)
         content = _apply_turn_timing_patch(content)
     content = _apply_queued_complete_patch(content)
+    content = _apply_queued_followup_patch(content)
+    content = _apply_redirect_patch(content)
     for apply in (_apply_command_card_adapter_patch, _apply_hfc_command_patch,
                   _apply_slash_confirm_patch, _apply_command_card_startup_patch,
                   _apply_native_redelivery_patch, _apply_platform_notice_patch):

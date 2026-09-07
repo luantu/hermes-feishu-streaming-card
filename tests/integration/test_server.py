@@ -902,6 +902,7 @@ async def test_redirect_followup_aliases_interrupted_card_to_new_card(client):
         {
             "reply_to_message_id": "om_redirect_prompt",
             "redirect_followup": True,
+            "redirect_from_message_id": "om_old_turn",
         },
         conversation_id="omt_topic",
         message_id="om_redirect_turn",
@@ -950,6 +951,7 @@ async def test_redirect_followup_aliases_interrupted_turn_id_stream_to_new_card(
         {
             "reply_to_message_id": "om_redirect_prompt",
             "redirect_followup": True,
+            "redirect_from_turn_id": "turn-old-runtime",
         },
         conversation_id="omt_topic",
         message_id="om_redirect_turn",
@@ -1015,6 +1017,7 @@ async def test_redirect_followup_recovers_turn_terminalized_before_redirect(clie
         {
             "reply_to_message_id": "om_deep_search_user",
             "redirect_followup": True,
+            "redirect_from_turn_id": "turn-old-runtime",
         },
         conversation_id="omt_topic",
         message_id="om_redirect_user",
@@ -1076,6 +1079,7 @@ async def test_redirect_followup_receives_legacy_completion_on_original_anchor(c
         {
             "reply_to_message_id": "om_original_question",
             "redirect_followup": True,
+            "redirect_from_message_id": "om_original_question",
         },
         conversation_id="omt_topic",
         message_id="om_redirect_user",
@@ -1138,6 +1142,7 @@ async def test_redirect_followup_hook_payload_aliases_terminalized_card(client):
             "message_id": "om_redirect_user",
             "reply_to_message_id": "om_original_question",
             "redirect_followup": True,
+            "redirect_from_message_id": "om_original_question",
         },
     )
     assert redirect_started is not None
@@ -1149,6 +1154,42 @@ async def test_redirect_followup_hook_payload_aliases_terminalized_card(client):
     assert first.status == terminal.status == redirect.status == 200
     assert test_client.app[SESSION_ALIASES_KEY]["default:om_original_question"] == "default:om_redirect_user"
     assert test_client.app[REDIRECT_SESSION_ALIASES_KEY]["default:om_original_question"] == "default:om_redirect_user"
+
+
+async def test_redirect_does_not_move_unrelated_historical_turn(client):
+    test_client, _ = client
+    common = {"chat_id": "oc_topic", "conversation_id": "omt_topic", "thread_id": "omt_topic"}
+    for message, turn in (("om_history", "turn-history"), ("om_active", "turn-active")):
+        await test_client.post("/events", json=event_payload(
+            "message.started", 0, message_id=message, turn_id=turn, **common))
+        await test_client.post("/events", json=event_payload(
+            "message.completed", 1, {"answer": message}, message_id=message, turn_id=turn, **common))
+    await test_client.post("/events", json=event_payload(
+        "message.started", 0,
+        {"redirect_followup": True, "redirect_from_turn_id": "turn-active"},
+        message_id="om_redirect", turn_id="turn-redirect", **common))
+    await test_client.post("/events", json=event_payload(
+        "message.completed", 2, {"answer": "STALE HISTORY"},
+        message_id="om_history", turn_id="turn-history", **common))
+    assert "turn-history" not in test_client.app[REDIRECT_SESSION_ALIASES_KEY]
+    assert test_client.app[SESSIONS_KEY]["turn-redirect"].answer_text == ""
+    await test_client.post("/events", json=event_payload(
+        "message.completed", 2, {"answer": "redirect answer"},
+        message_id="om_active", turn_id="turn-active", **common))
+    assert test_client.app[SESSIONS_KEY]["turn-redirect"].answer_text == "redirect answer"
+
+
+async def test_redirect_without_source_identity_cannot_alias_explicit_turn(client):
+    test_client, _ = client
+    await test_client.post("/events", json=event_payload(
+        "message.started", 0, message_id="om_old", turn_id="turn-old"))
+    await test_client.post("/events", json=event_payload(
+        "message.started", 0, {"redirect_followup": True, "reply_to_message_id": "om_old"},
+        message_id="om_new", turn_id="turn-new"))
+    assert not test_client.app[REDIRECT_SESSION_ALIASES_KEY]
+    await test_client.post("/events", json=event_payload(
+        "answer.delta", 1, {"text": "late old output"}, message_id="om_old", turn_id="turn-old"))
+    assert test_client.app[SESSIONS_KEY]["turn-new"].answer_text == ""
 
 
 async def test_error_response_is_replayed_without_retrying_delivery(tmp_path):
@@ -8359,6 +8400,25 @@ async def test_completion_notify_rejects_spoofed_sender_and_failed_send_is_retry
         )
         assert feishu_client.texts == []
         assert app[SESSIONS_KEY]["hermes-message-2"].completion_notify_state == "idle"
+    finally:
+        await test_client.close()
+
+
+async def test_card_config_reasoning_code_reaches_live_renderer():
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config={"reasoning_format": "code"})
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    try:
+        await test_client.post("/events", json=event_payload("message.started", 0))
+        await test_client.post("/events", json=event_payload("answer.delta", 1, {"text": "检查参数后执行"}))
+        await test_client.post("/events", json=event_payload("tool.updated", 2, {"tool_id": "t", "name": "terminal", "status": "completed"}))
+        await test_client.post("/events", json=event_payload("message.completed", 3, {"answer": "处理完成"}))
+        await wait_for_card_update(feishu_client, "处理完成")
+        elements = feishu_client.updated[-1][1]["body"]["elements"]
+        reasoning = next(item for item in elements if "reasoningentry" in item.get("element_id", ""))
+        assert "```text\n检查参数后执行\n```" in reasoning["content"]
+        assert any(item.get("tag") == "collapsible_panel" for item in elements)
     finally:
         await test_client.close()
 

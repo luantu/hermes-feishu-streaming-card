@@ -1,5 +1,6 @@
 """Executable contracts for the 79445a496c facade layout (fully offline)."""
 import asyncio
+from hashlib import sha256
 import json
 import logging
 from pathlib import Path
@@ -425,3 +426,112 @@ def test_install_rechecks_version_gate_and_recovery_binds_version(hermes):
         decomposed.install(detection)
     assert sources(hermes) == before
     assert not (hermes / decomposed.MANIFEST_NAME).exists()
+
+
+def _write_legacy_upgrade_evidence(hermes, version=2):
+    fixture_root = Path(__file__).parents[1] / "fixtures"
+    old_targets = {
+        "gateway/run.py": (fixture_root / "hermes_v2026_4_23/gateway/run.py", "run_py", ""),
+        "cron/scheduler.py": (fixture_root / "hermes_cron/scheduler.py", "cron_py", "cron_"),
+        "gateway/platforms/base.py": (fixture_root / "hermes_exact_base.py", "base_py", "base_"),
+    }
+    manifest = {"manifest_version": version}
+    for target, (fixture, path_key, prefix) in old_targets.items():
+        raw = fixture.read_bytes()
+        text = raw.decode()
+        patched = (patcher.apply_patch(text) if target == "gateway/run.py" else
+                   patcher.apply_cron_patch(text) if target.startswith("cron/") else
+                   patcher.apply_base_patch(text)).encode()
+        (hermes / (target + decomposed.BACKUP_SUFFIX)).write_bytes(raw)
+        manifest.update({path_key: target, prefix + "backup": target + decomposed.BACKUP_SUFFIX,
+                         prefix + "backup_sha256": sha256(raw).hexdigest(),
+                         prefix + "patched_sha256": sha256(patched).hexdigest()})
+    (hermes / decomposed.MANIFEST_NAME).write_text(json.dumps(manifest))
+    return manifest
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_updater_layout_migration_requires_acceptance_and_restores_new_source(hermes, version):
+    original = sources(hermes)
+    _write_legacy_upgrade_evidence(hermes, version)
+    detection = detect_hermes(hermes)
+    plan = recovery.plan_recovery(detection)
+    assert plan.state == "stale_unpatched" and not plan.executable
+    report = cli._diagnose_install_state(detection)
+    assert "autostash" in report["message"]
+    assert "--accept-hermes-upgrade" in report["repair_command"]
+    with pytest.raises(ValueError, match="accept-hermes-upgrade"):
+        decomposed.install(detection)
+    with pytest.raises(ValueError, match="no-repair"):
+        decomposed.install(detection, no_repair=True, accept_hermes_upgrade=True)
+    assert sources(hermes) == original
+    approved = recovery.plan_recovery(detection, accept_hermes_upgrade=True)
+    assert approved.executable
+    recovery.execute_recovery(detection, expected_fingerprint=approved.fingerprint,
+                              accept_hermes_upgrade=True)
+    assert json.loads((hermes / decomposed.MANIFEST_NAME).read_text())["manifest_version"] == 4
+    assert recovery.plan_recovery(detect_hermes(hermes)).state == "installed"
+    decomposed.restore(detect_hermes(hermes))
+    assert sources(hermes) == original
+
+
+@pytest.mark.parametrize("damage", ["backup_hash", "backup_path", "patched_user_edit", "orphan_backup"])
+def test_legacy_layout_migration_rejects_unverified_ownership(hermes, damage):
+    manifest = _write_legacy_upgrade_evidence(hermes)
+    if damage == "backup_hash":
+        manifest["backup_sha256"] = "0" * 64
+    elif damage == "backup_path":
+        manifest["backup"] = "../run.py.hermes_feishu_card.bak"
+    elif damage == "patched_user_edit":
+        target = hermes / "gateway/run.py"
+        target.write_bytes(target.read_bytes() + b"\n# HERMES_FEISHU_CARD_USER_EDIT\n")
+    else:
+        (hermes / ("gateway/run_busy.py" + decomposed.BACKUP_SUFFIX)).write_bytes(b"unowned\n")
+    (hermes / decomposed.MANIFEST_NAME).write_text(json.dumps(manifest))
+    before = sources(hermes)
+    assert recovery.plan_recovery(detect_hermes(hermes), accept_hermes_upgrade=True).state == "refused"
+    with pytest.raises(ValueError):
+        decomposed.install(detect_hermes(hermes), accept_hermes_upgrade=True)
+    assert sources(hermes) == before
+
+
+def test_owned_restore_does_not_depend_on_current_renderer(hermes, monkeypatch):
+    before = sources(hermes)
+    decomposed.install(detect_hermes(hermes))
+    monkeypatch.setattr(decomposed, "render", lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("future renderer")))
+    decomposed.restore(detect_hermes(hermes))
+    assert sources(hermes) == before
+
+
+def test_renderer_upgrade_refreshes_manifest_without_losing_originals(hermes):
+    before = sources(hermes)
+    decomposed.install(detect_hermes(hermes))
+    # PR #257's original approval block lacked this session binding. Its old
+    # marker form is understood by the remover, but its full-file hash differs
+    # from the current renderer. Recreate that real historical owned state.
+    target = "gateway/run_turn_runner.py"
+    path = hermes / target
+    raw = path.read_bytes()
+    previous = b"".join(line for line in raw.splitlines(keepends=True)
+                        if not line.strip().startswith(b"_approval_session_key = ctx.session_key"))
+    assert previous != raw
+    path.write_bytes(previous)
+    manifest_path = hermes / decomposed.MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest["targets"][target]["patched_sha256"] = sha256(previous).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    assert recovery.plan_recovery(detect_hermes(hermes)).state == "owned_incomplete"
+    assert decomposed.install(detect_hermes(hermes))
+    assert recovery.plan_recovery(detect_hermes(hermes)).state == "installed"
+    assert not decomposed.install(detect_hermes(hermes))
+    decomposed.restore(detect_hermes(hermes))
+    assert sources(hermes) == before
+
+
+def test_explicit_install_uses_verified_portable_writer_without_dirfd(hermes, monkeypatch):
+    monkeypatch.setattr(recovery, "_secure_dirfd_transactions_supported", lambda: False)
+    assert decomposed.install(detect_hermes(hermes))
+    assert recovery.plan_recovery(detect_hermes(hermes)).state == "installed"
+    assert not decomposed.install(detect_hermes(hermes))
+    with pytest.raises(ValueError, match="directory-relative"):
+        decomposed.restore(detect_hermes(hermes))
