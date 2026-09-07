@@ -7606,6 +7606,27 @@ def test_build_cron_event_from_feishu_job_origin():
     ]["attachments"]
 
 
+def test_build_cron_event_uses_origin_message_as_topic_reply_anchor():
+    payload = hook_runtime.build_cron_event(
+        {
+            "job": {
+                "id": "job-topic",
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_cron",
+                    "thread_id": "omt_topic",
+                    "message_id": "om_create",
+                },
+            },
+            "delivery_content": "定时结果",
+        }
+    )
+
+    assert payload["conversation_id"] == "omt_topic"
+    assert payload["thread_id"] == "omt_topic"
+    assert payload["data"]["reply_to_message_id"] == "om_create"
+
+
 def test_build_cron_event_extracts_chat_id_from_deliver_string():
     payload = hook_runtime.build_cron_event(
         {
@@ -9271,6 +9292,49 @@ async def test_adapter_thread_create_without_reply_anchor_falls_back_to_chat_cre
 
     assert reply_result.success is True
     assert adapter.raw_calls[-1][2] == "thread"
+
+
+@pytest.mark.asyncio
+async def test_adapter_metadata_reply_anchor_preserves_topic_thread_placement():
+    adapter = _NativeAckAdapter()
+    runner = SimpleNamespace(adapters={"feishu": adapter})
+    assert hook_runtime.install_feishu_command_card_adapter_methods(runner)
+
+    result = await adapter.send(
+        "oc_native",
+        "queued reply",
+        metadata={
+            "thread_id": "omt_topic",
+            "reply_to_message_id": "om_parent",
+        },
+    )
+
+    assert result.success is True
+    assert adapter.raw_calls == [
+        ("{\"text\": \"queue\"}", "text", "thread", "random-reply"),
+        ("{\"text\": \"d rep\"}", "text", "thread", "random-reply"),
+        ("{\"text\": \"ly\"}", "text", "thread", "random-reply"),
+    ]
+
+
+def test_build_started_event_preserves_redirect_followup_marker():
+    payload = hook_runtime.build_event(
+        "message.started",
+        {
+            "source": SimpleNamespace(
+                platform="feishu",
+                chat_id="oc_topic",
+                thread_id="omt_topic",
+            ),
+            "chat_id": "oc_topic",
+            "message_id": "om_redirect",
+            "reply_to_message_id": "om_original",
+            "redirect_followup": True,
+        },
+    )
+
+    assert payload is not None
+    assert payload["data"]["redirect_followup"] is True
 
 
 def _install_native_ack_context(

@@ -5887,8 +5887,17 @@ async def _hfc_send_raw_message_with_native_handoff_route(self: Any, **kwargs: A
         raise RuntimeError("original Feishu raw send unavailable")
     metadata = kwargs.get("metadata")
     thread_id = _metadata_thread_id(metadata if isinstance(metadata, dict) else None)
+    reply_to = str(kwargs.get("reply_to") or "").strip()
+    if not reply_to and thread_id:
+        metadata_reply_to = _metadata_reply_to(
+            metadata if isinstance(metadata, dict) else None
+        )
+        if metadata_reply_to:
+            kwargs = dict(kwargs)
+            kwargs["reply_to"] = metadata_reply_to
+            reply_to = metadata_reply_to
     send_kwargs = kwargs
-    if thread_id and not kwargs.get("reply_to"):
+    if thread_id and not reply_to:
         # Feishu's create API accepts chat_id but not thread_id. Preserve the
         # logical topic binding for native-handoff identity/UUID derivation,
         # while making the actual unanchored create fall back to the parent chat.
@@ -5899,9 +5908,9 @@ async def _hfc_send_raw_message_with_native_handoff_route(self: Any, **kwargs: A
     if _HFC_NATIVE_HANDOFF_SEND_TRACKER.get() is None:
         return await original(self, **send_kwargs)
     if thread_id:
-        route = "thread-reply" if kwargs.get("reply_to") else "thread-create"
+        route = "thread-reply" if reply_to else "thread-create"
     else:
-        route = "reply" if kwargs.get("reply_to") else "create"
+        route = "reply" if reply_to else "create"
     token = _HFC_NATIVE_HANDOFF_ROUTE.set(route)
     try:
         return await original(self, **send_kwargs)
@@ -9266,6 +9275,11 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
     origin_platform = str(origin.get("platform") or "").strip().lower()
     origin_chat_id = origin.get("chat_id") if origin_platform == "feishu" else ""
     origin_thread_id = origin.get("thread_id") if origin_platform == "feishu" else ""
+    origin_message_id = (
+        str(origin.get("message_id") or "").strip()
+        if origin_platform == "feishu"
+        else ""
+    )
     chat_id = str(
         resolved_chat_id
         or _deliver_chat_id(job.get("deliver"))
@@ -9308,6 +9322,11 @@ def build_cron_event(local_vars: dict[str, Any]) -> dict[str, Any] | None:
         "data": {
             "answer": content,
             "delivery_kind": "cron",
+            **(
+                {"reply_to_message_id": origin_message_id}
+                if origin_message_id
+                else {}
+            ),
             "profile_id": profile_id,
             "profile_source": profile_source,
             "attachments": attachments,
@@ -9813,6 +9832,8 @@ def _event_data(
                 value = _first_attr_string(local_vars.get("event"), (reply_key,))
             if value:
                 data[reply_key] = value
+        if local_vars.get("redirect_followup") is True:
+            data["redirect_followup"] = True
         return data
     return {}
 
