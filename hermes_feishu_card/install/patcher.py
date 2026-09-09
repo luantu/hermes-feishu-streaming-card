@@ -314,8 +314,11 @@ def apply_base_patch(
     no_text_renderer = (_render_decomposed_base_no_text_hook_block
                         if _has_decomposed_base(tree) else _render_exact_base_no_text_hook_block)
     no_text_hook = no_text_renderer(no_text_indent, newline)
-    final_renderer = (_render_decomposed_base_final_hook_block
-                      if _has_decomposed_base(tree) else _render_exact_base_final_delivery_hook_block)
+    final_renderer = (_render_decomposed_base_final_hook_block_ledgered
+                      if _has_decomposed_ledgered_base(tree)
+                      else _render_decomposed_base_final_hook_block
+                      if _has_decomposed_base(tree)
+                      else _render_exact_base_final_delivery_hook_block)
     final_hook = final_renderer(final_indent, newline)
 
     # Insert bottom-up so the earlier location is not shifted by the later
@@ -2667,6 +2670,7 @@ def _find_owned_exact_base_blocks(content: str, *, strict: bool):
         if lines[final[0] : final[1] + 1] not in (
             _render_exact_base_final_delivery_hook_block(final_indent, final_newline),
             _render_decomposed_base_final_hook_block(final_indent, final_newline),
+            _render_decomposed_base_final_hook_block_ledgered(final_indent, final_newline),
         ):
             raise ValueError("corrupt exact base patch markers")
     return no_text, final
@@ -4150,21 +4154,57 @@ def _find_decomposed_base_patch_locations(tree, lines):
     restored = exact(extract, 'text_content = _recovered')
     result = exact(extract, 'return _ExtractedResponse(text_content=text_content, images=images, media_files=media_files, local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)')
     ordered([em, fm, ei, strip, el, fl, recovered, restored, result])
-    adapter = exact(send, 'delivery_adapter = self._final_delivery_adapter(event.source)')
-    ledger = exact(send, '_obligation_id = await self._record_delivery_obligation(event, session_key, text_content, delivery_adapter, is_ephemeral_response)')
-    final_send = exact(send, 'result = await delivery_adapter._send_with_retry(chat_id=event.source.chat_id, content=text_content, reply_to=_reply_anchor_for_event(event), metadata=metadata)')
-    delivered = exact(send, 'record_delivery(result)')
-    finalized = exact(send, 'if _obligation_id is not None:\n    await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)')
-    if not all(n in send.body for n in (adapter, ledger, final_send, delivered, finalized)):
-        raise ValueError(error)
-    ordered([adapter, ledger, final_send, delivered, finalized])
+    # Hermes bf53ff0 moved the ledger bracket from ``_send_final_text`` into
+    # ``send_final_ledgered`` (the ``ledger_message_id`` refactor). Both layouts
+    # keep the same record→send→finalize ordering, so accept either, strictly.
+    ledgered = next((n for n in cls.body
+                     if isinstance(n, ast.AsyncFunctionDef) and n.name == "send_final_ledgered"),
+                    None)
+    if ledgered is not None:
+        args = ledgered.args
+        if (tuple(a.arg for a in (*args.posonlyargs, *args.args))
+                != ("self", "event", "session_key", "text_content", "metadata")
+                or tuple(a.arg for a in args.kwonlyargs) != ("reply_to", "is_ephemeral_response")
+                or args.vararg is not None or args.kwarg is not None):
+            raise ValueError(error)
+        # The delegating wrapper must stay the only record_delivery lane.
+        exact(send, 'result, delivery_adapter = await self.send_final_ledgered(event, session_key, text_content, metadata, reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)')
+        exact(send, 'record_delivery(result)')
+        adapter = exact(ledgered, 'delivery_adapter = self._final_delivery_adapter(event.source)')
+        ledger = exact(ledgered, 'obligation_id = await self._record_delivery_obligation(event, session_key, text_content, delivery_adapter, is_ephemeral_response)')
+        final_send = exact(ledgered, 'result = await delivery_adapter._send_with_retry(chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)')
+        finalized = exact(ledgered, 'if obligation_id is not None:\n    await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)')
+        if not all(n in ledgered.body for n in (adapter, ledger, final_send, finalized)):
+            raise ValueError(error)
+        ordered([adapter, ledger, final_send, finalized])
+    else:
+        adapter = exact(send, 'delivery_adapter = self._final_delivery_adapter(event.source)')
+        ledger = exact(send, '_obligation_id = await self._record_delivery_obligation(event, session_key, text_content, delivery_adapter, is_ephemeral_response)')
+        final_send = exact(send, 'result = await delivery_adapter._send_with_retry(chat_id=event.source.chat_id, content=text_content, reply_to=_reply_anchor_for_event(event), metadata=metadata)')
+        delivered = exact(send, 'record_delivery(result)')
+        finalized = exact(send, 'if _obligation_id is not None:\n    await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)')
+        if not all(n in send.body for n in (adapter, ledger, final_send, delivered, finalized)):
+            raise ValueError(error)
+        ordered([adapter, ledger, final_send, delivered, finalized])
     source = exact(record, 'source = event.source')
-    computed = exact(record, 'obligation_id = compute_obligation_id(session_key, str(getattr(event, "message_id", "") or ""), text_content)')
+    def unique_or_none(scope, source_text):
+        expected = ast.parse(source_text).body[0]
+        matches = [n for n in ast.walk(scope) if ast.dump(n) == ast.dump(expected)]
+        return matches[0] if len(matches) == 1 else None
+    ledger_id = unique_or_none(record, '_ledger_id = getattr(event, "ledger_message_id", None)')
+    ledger_default = unique_or_none(record, 'if _ledger_id is None:\n    _ledger_id = getattr(event, "message_id", "")')
+    if ledger_id is not None and ledger_default is not None:
+        computed = exact(record, 'obligation_id = compute_obligation_id(session_key, str(_ledger_id or ""), text_content)')
+        record_nodes = [source, ledger_id, ledger_default, computed]
+    else:
+        computed = exact(record, 'obligation_id = compute_obligation_id(session_key, str(getattr(event, "message_id", "") or ""), text_content)')
+        record_nodes = [source, computed]
     recorded = exact(record, 'await asyncio.to_thread(record_obligation, obligation_id=obligation_id, session_key=session_key, platform=str(getattr(source.platform, "value", source.platform)), chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None), content=text_content, adapter_profile=getattr(delivery_adapter, "_owner_profile", None))')
     attempting = exact(record, 'await asyncio.to_thread(mark_attempting, obligation_id)')
     returned = exact(record, 'return obligation_id')
-    ordered([source, computed, recorded, attempting, returned])
-    tries = [n for n in record.body if isinstance(n, ast.Try) and all(x in n.body for x in (source, computed, recorded, attempting, returned))]
+    record_nodes += [recorded, attempting, returned]
+    ordered(record_nodes)
+    tries = [n for n in record.body if isinstance(n, ast.Try) and all(x in n.body for x in record_nodes)]
     if len(tries) != 1:
         raise ValueError(error)
     exact(finish, 'if getattr(result, "success", False):\n    await asyncio.to_thread(mark_delivered, obligation_id)\n    return')
@@ -4178,6 +4218,26 @@ def _render_decomposed_base_final_hook_block(indent, newline):
     block = [line.replace("prepare_exact_base_final_delivery as", "prepare_decomposed_base_final_delivery as")
              .replace("_final_thread_metadata", "metadata") for line in block]
     block.insert(2, f'{_child_indent(indent)}_reply_anchor = _reply_anchor_for_event(event){newline}')
+    return block
+
+
+def _has_decomposed_ledgered_base(tree):
+    """True when the ledger bracket lives in ``send_final_ledgered`` (Hermes bf53ff0+)."""
+    return any(isinstance(c, ast.ClassDef) and c.name == "BasePlatformAdapter"
+               and any(isinstance(n, ast.AsyncFunctionDef) and n.name == "send_final_ledgered" for n in c.body)
+               for c in tree.body)
+
+
+def _render_decomposed_base_final_hook_block_ledgered(indent, newline):
+    block = _render_exact_base_final_delivery_hook_block(indent, newline)
+    block = [line.replace("prepare_exact_base_final_delivery as", "prepare_decomposed_base_final_delivery as")
+             .replace("delivery_adapter, text_content, _reply_anchor, "
+                      "_final_thread_metadata = await ",
+                      "delivery_adapter, text_content, reply_to, metadata = await ")
+             .replace("_final_thread_metadata", "metadata")
+             .replace('"obligation_id": _obligation_id,', '"obligation_id": obligation_id,')
+             .replace('"reply_to": _reply_anchor,', '"reply_to": reply_to,')
+             for line in block]
     return block
 
 

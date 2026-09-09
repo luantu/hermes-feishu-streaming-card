@@ -2068,12 +2068,25 @@ def _exact_base_delivery_hook_available() -> bool:
         names = set(getattr(code, "co_names", ()) or ())
         if {"prepare_exact_base_final_delivery", "finalize_exact_base_no_text"}.issubset(names):
             return True
-        send = getattr(BasePlatformAdapter, "_send_final_text", None)
-        send_names = set(getattr(getattr(send, "__code__", None), "co_names", ()))
-        return {"capture_decomposed_base_context", "finalize_exact_base_no_text", "_send_final_text"}.issubset(names) and {
+        process_scope_ready = {
+            "capture_decomposed_base_context",
+            "finalize_exact_base_no_text",
+            "_send_final_text",
+        }.issubset(names)
+        if not process_scope_ready:
+            return False
+        # Hermes bf53ff0 moved the ledger bracket into ``send_final_ledgered``;
+        # the owned prepare hook lives there instead of ``_send_final_text``.
+        ledgered = getattr(BasePlatformAdapter, "send_final_ledgered", None)
+        if ledgered is not None:
+            bracket_names = set(getattr(getattr(ledgered, "__code__", None), "co_names", ()))
+        else:
+            send = getattr(BasePlatformAdapter, "_send_final_text", None)
+            bracket_names = set(getattr(getattr(send, "__code__", None), "co_names", ()))
+        return {
             "prepare_decomposed_base_final_delivery", "_record_delivery_obligation",
             "_send_with_retry", "_finalize_delivery_obligation",
-        }.issubset(send_names)
+        }.issubset(bracket_names)
     except Exception:
         return False
 

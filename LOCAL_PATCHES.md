@@ -3,9 +3,46 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.4.4 合并后（2026-09-09，merge commit 6a34842）
+> 最后更新：Hermes bf53ff0 ledgered base 契约适配（2026-09-09，本地扩展）
 
 ---
+
+## 〇-A、install 契约适配：Hermes bf53ff0 ledgered base（本地扩展，上游暂无对应版本）
+
+Hermes `0.21.1 / bf53ff0`（2026-09-09）把 base.py 的投递账本括号从 `_send_final_text`
+重构进新方法 `send_final_ledgered(self, event, session_key, text_content, metadata, *,
+reply_to, is_ephemeral_response)`，并在 `_record_delivery_obligation` 中引入
+`ledger_message_id` 三语句取 ID 形态。上游 v4.4.4 的 decomposed base 契约只认旧内联
+形态，导致 install 被 `exact_base_delivery: unsupported` 硬门拒绝。本地扩展（保持旧
+形态兼容，双形态严格校验）：
+
+- `install/patcher.py::_find_decomposed_base_patch_locations`：
+  - 存在 `send_final_ledgered` 时走 ledgered 分支——严格校验其签名（kwonly
+    `reply_to`/`is_ephemeral_response`）、`_send_final_text` 委托调用与
+    `record_delivery(result)`、括号内 `delivery_adapter`/`obligation_id = await
+    self._record_delivery_obligation(...)`/`result = await
+    delivery_adapter._send_with_retry(..., reply_to=reply_to, ...)`/finalize If 语句，
+    全部精确 AST 匹配且有序；final hook 插入点取 `send_final_ledgered` 内
+    `_send_with_retry` 之前。
+  - 不存在 `send_final_ledgered` 时回退旧内联括号分支（行为不变）。
+  - `record` 方法的 `obligation_id = compute_obligation_id(...)` 同时接受旧单语句与
+    新 `_ledger_id` 三语句形态。
+- `install/patcher.py`：新增 `_has_decomposed_ledgered_base()` 形态判定 +
+  `_render_decomposed_base_final_hook_block_ledgered()`（rebind
+  `delivery_adapter, text_content, reply_to, metadata`、传
+  `"obligation_id": obligation_id`，不再注入 `_reply_anchor` 行）；接入
+  `apply_base_patch` renderer 选择与 `_find_owned_exact_base_blocks(strict=True)`
+  的已打补丁内容校验三元组。
+- `hook_runtime.py::_exact_base_delivery_hook_available`：bracket `co_names` 检查
+  按 `send_final_ledgered` 存在与否取自对应方法。
+- 测试/fixture：新增 `tests/fixtures/hermes_decomposed_ledgered/`（bf53ff0 契约摘录）、
+  `test_ledgered_base_patch_roundtrip_and_compile`、
+  `test_ledgered_cli_install_doctor_repeat_remove_roundtrip`、
+  `test_exact_base_delivery_hook_available_accepts_ledgered_bracket`、
+  `test_exact_base_delivery_hook_available_rejects_unpatched_ledgered_bracket`。
+
+> 上游发布对应适配（v4.4.5+）后应合并并移除本节本地差异；下次合并上游时用
+> `git merge-base` 实际确认基点。
 
 ## 〇、V4.4.2~V4.4.4 合并冲突保留记录（2026-09-09）
 

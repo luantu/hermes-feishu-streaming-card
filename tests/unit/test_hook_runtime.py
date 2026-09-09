@@ -8699,6 +8699,56 @@ def test_exact_base_staging_is_limited_to_unsent_feishu_final_text(
     assert hook_runtime.can_stage_exact_base_completion(local_vars) is expected
 
 
+def _install_fake_base_platform(monkeypatch, *, bracket_holder_names):
+    import sys as _sys
+    from types import ModuleType, SimpleNamespace
+
+    def code_holder(names):
+        return SimpleNamespace(__code__=SimpleNamespace(co_names=tuple(names)))
+
+    class BasePlatformAdapter:
+        pass
+
+    BasePlatformAdapter._process_message_background = code_holder(
+        ("capture_decomposed_base_context", "finalize_exact_base_no_text", "_send_final_text"))
+    BasePlatformAdapter._send_final_text = code_holder(("record_delivery",))
+    BasePlatformAdapter.send_final_ledgered = code_holder(bracket_holder_names)
+
+    module = ModuleType("gateway.platforms.base")
+    module.BasePlatformAdapter = BasePlatformAdapter
+    monkeypatch.setitem(_sys.modules, "gateway.platforms.base", module)
+
+
+@pytest.mark.parametrize(
+    "bracket_holder_names",
+    [
+        # Hermes bf53ff0 ledgered form: the owned bracket hook lives in
+        # send_final_ledgered alongside the native ledger calls.
+        (
+            "_final_delivery_adapter", "_record_delivery_obligation",
+            "_send_with_retry", "_finalize_delivery_obligation",
+            "logger", "prepare_decomposed_base_final_delivery",
+        ),
+    ],
+)
+def test_exact_base_delivery_hook_available_accepts_ledgered_bracket(
+    monkeypatch, bracket_holder_names
+):
+    _install_fake_base_platform(monkeypatch, bracket_holder_names=bracket_holder_names)
+    assert hook_runtime._exact_base_delivery_hook_available() is True
+
+
+def test_exact_base_delivery_hook_available_rejects_unpatched_ledgered_bracket(monkeypatch):
+    _install_fake_base_platform(
+        monkeypatch,
+        bracket_holder_names=(
+            "_final_delivery_adapter", "_record_delivery_obligation",
+            "_send_with_retry", "_finalize_delivery_obligation",
+        ),
+    )
+    assert hook_runtime._exact_base_delivery_hook_available() is False
+
+
 @pytest.mark.asyncio
 async def test_exact_base_completion_stages_terminal_without_posting(monkeypatch):
     posted = []

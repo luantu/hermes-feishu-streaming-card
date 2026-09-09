@@ -15,6 +15,7 @@ from hermes_feishu_card.install import decomposed, patcher, recovery
 from hermes_feishu_card.install.detect import detect_hermes
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/hermes_decomposed"
+LEDGERED_FIXTURE = Path(__file__).parents[1] / "fixtures/hermes_decomposed_ledgered"
 
 
 @pytest.fixture
@@ -22,6 +23,14 @@ def hermes(tmp_path):
     root = tmp_path / "hermes"
     shutil.copytree(FIXTURE, root, ignore=shutil.ignore_patterns("__pycache__"))
     (root / "VERSION").write_text("0.20.0\n")
+    return root
+
+
+@pytest.fixture
+def ledgered_hermes(tmp_path):
+    root = tmp_path / "hermes"
+    shutil.copytree(LEDGERED_FIXTURE, root, ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "VERSION").write_text("0.21.1\n")
     return root
 
 
@@ -56,6 +65,40 @@ def test_decomposed_cli_install_doctor_repeat_remove_roundtrip(hermes, monkeypat
     assert not list(hermes.rglob("*.hermes_feishu_card.bak"))
     assert not (hermes / decomposed.MANIFEST_NAME).exists()
     assert recovery.plan_recovery(detect_hermes(hermes)).state == "clean"
+
+
+def test_ledgered_base_patch_roundtrip_and_compile():
+    content = (LEDGERED_FIXTURE / "gateway/platforms/base.py").read_text(encoding="utf-8")
+    patched = patcher.apply_base_patch(content)
+    assert patcher.remove_base_patch(patched) == content
+    compile(patched, "base_ledgered_patched", "exec")
+    # The final delivery hook must target the ledgered scope's own names.
+    assert "delivery_adapter, text_content, reply_to, metadata = await" in patched
+    assert '"obligation_id": obligation_id,' in patched
+
+
+def test_ledgered_cli_install_doctor_repeat_remove_roundtrip(ledgered_hermes, monkeypatch):
+    monkeypatch.setattr(cli, "_ensure_hermes_runtime_package", lambda detection: None)
+    monkeypatch.setattr(cli, "_ensure_hermes_feishu_sdk", lambda detection: None)
+    before = sources(ledgered_hermes)
+    detection = detect_hermes(ledgered_hermes)
+    assert detection.supported and detection.compatibility == "full"
+    assert detection.capability_locations["exact_base_delivery"] == ("gateway/platforms/base.py",)
+    assert cli.main(["install", "--hermes-dir", str(ledgered_hermes), "--yes"]) == 0
+    installed = sources(ledgered_hermes)
+    assert {name for name in before if before[name] != installed[name]} == set(patcher.DECOMPOSED_TARGETS)
+    assert cli.main(["install", "--hermes-dir", str(ledgered_hermes), "--yes"]) == 0
+    assert installed == sources(ledgered_hermes)
+    detection = detect_hermes(ledgered_hermes)
+    assert cli._doctor_hermes_report(detection)["compatibility"] == "full"
+    assert cli._diagnose_install_state(detection)["status"] == "installed"
+    for name, raw in installed.items():
+        compile(raw, name, "exec")
+    assert cli.main(["uninstall", "--hermes-dir", str(ledgered_hermes), "--yes"]) == 0
+    assert sources(ledgered_hermes) == before
+    assert not list(ledgered_hermes.rglob("*.hermes_feishu_card.bak"))
+    assert not (ledgered_hermes / decomposed.MANIFEST_NAME).exists()
+    assert recovery.plan_recovery(detect_hermes(ledgered_hermes)).state == "clean"
 
 
 @pytest.mark.parametrize("target,old,new", [
