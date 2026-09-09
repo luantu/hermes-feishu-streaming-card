@@ -945,6 +945,21 @@ def remove_cron_patch(content: str) -> str:
     return _remove_cron_patch(content)
 
 
+def remove_cron_patch_lenient(content: str) -> str:
+    """Remove an older generated cron block without requiring its exact body."""
+    owned_block = _find_simple_marker_block(
+        content,
+        CRON_PATCH_BEGIN,
+        CRON_PATCH_END,
+        "cron patch markers",
+    )
+    if owned_block is None:
+        return content
+    lines = content.splitlines(keepends=True)
+    begin_index, end_index = owned_block
+    return "".join(lines[:begin_index] + lines[end_index + 1 :])
+
+
 def remove_patch_lenient(content: str) -> str:
     """Remove owned patch markers, accepting older generated block bodies."""
     owned_complete_block = _find_simple_marker_block(
@@ -959,6 +974,7 @@ def remove_patch_lenient(content: str) -> str:
         content = "".join(lines[:begin_index] + lines[end_index + 1 :])
 
     for begin_marker, end_marker in (
+        (PATCH_BEGIN, PATCH_END),
         (TURN_TIMING_PATCH_BEGIN, TURN_TIMING_PATCH_END),
         (STABLE_TOOL_PATCH_BEGIN, STABLE_TOOL_PATCH_END),
         (TOOL_PATCH_BEGIN, TOOL_PATCH_END),
@@ -4016,7 +4032,7 @@ def apply_gateway_fragment(content: str, target: str, *, strategy="gateway_run_0
 
 
 def _find_startup_boot_send(func):
-    if func.name != "_start_finish_wiring":
+    if func.name not in {"_start_finish_wiring", "start"}:
         return None
     return next((node for node in func.body if isinstance(node, ast.Expr)
                  and isinstance(node.value, ast.Await)

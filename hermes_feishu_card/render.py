@@ -341,7 +341,12 @@ def _render_card_unchecked(
         )
     tool_summary_content = (
         _render_tool_summary(session)
-        if not timeline_elements and not pending_approval and show_tool_summary
+        if (
+            not timeline_elements
+            and not pending_approval
+            and show_tool_summary
+            and session.tool_count
+        )
         else ""
     )
     show_footer_divider = bool(footer) or bool(tool_summary_content)
@@ -590,6 +595,9 @@ def _render_legacy_callback_card(
     description = normalize_stream_text(interaction.description).strip()
     if description:
         elements.append({"tag": "markdown", "content": description})
+
+    if interaction.kind in {"approval", "clarify"}:
+        elements.extend(_interaction_option_descriptions(interaction))
 
     mention = _interaction_mention_content(
         session,
@@ -938,6 +946,8 @@ def _render_interaction_elements(
         return elements
 
     if interaction.status == "pending":
+        if interaction.kind in {"approval", "clarify"}:
+            elements.extend(_interaction_option_descriptions(interaction))
         if interaction.multi_select:
             if mention:
                 hint = f"{mention} 请选择（可多选）"
@@ -1069,6 +1079,21 @@ def _interaction_callback_value(
     return value
 
 
+def _interaction_option_descriptions(interaction: Any) -> list[Dict[str, Any]]:
+    # Labels were plain_text on buttons. Preserve that meaning in the body:
+    # do not let Markdown links or tags hide any part of a decision.
+    lines = []
+    for index, option in enumerate(interaction.options, start=1):
+        label = re.sub(
+            r"([\\`*_{}\[\]()#+.!|>-])", r"\\\1",
+            html.escape(option.label, quote=False),
+        )
+        lines.append(f"{index}. {label}")
+    if not lines:
+        return []
+    return [{"tag": "markdown", "content": "\n\n".join(lines)}]
+
+
 def _render_choice_button(
     interaction: Any,
     index: int,
@@ -1083,7 +1108,10 @@ def _render_choice_button(
         # the submitted value stays the clean option value.
         "text": {
             "tag": "plain_text",
-            "content": f"{index + 1}. {option.label}",
+            "content": (
+                str(index + 1) if interaction.kind in {"approval", "clarify"}
+                else f"{index + 1}. {option.label}"
+            ),
         },
         "type": _button_type(option.style),
         "size": "medium",
@@ -1159,7 +1187,10 @@ def _render_multi_select_form(
         {
             "text": {
                 "tag": "plain_text",
-                "content": f"{index}. {option.label}",
+                "content": (
+                    str(index) if interaction.kind in {"approval", "clarify"}
+                    else f"{index}. {option.label}"
+                ),
             },
             "value": option.value,
         }
@@ -1248,7 +1279,6 @@ def _render_timeline_elements(
 ) -> list[Dict[str, Any]]:
     if not getattr(session, "timeline", None):
         return []
-    all_entries = session.timeline.snapshot()
     entries = _select_timeline_entries(all_entries, max_items=max_items)
     folded = max(0, len(all_entries) - len(entries))
     if not entries and not folded:

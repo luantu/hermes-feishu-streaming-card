@@ -393,6 +393,35 @@ def test_v019_startup_installs_uuid_wrapper_before_delivery_ledger_redelivery():
     assert patcher.remove_patch(patched) == content
 
 
+def test_current_startup_installs_feishu_route_wrapper_before_boot_notifications():
+    content = (
+        "class GatewayRunner:\n"
+        "    async def start(self):\n"
+        "        planned = True\n"
+        "        await self._await_startup_boot_sends(\n"
+        "            planned_restart_notification_pending=planned,\n"
+        "        )\n"
+        "        watchers = process_registry.pending_watchers\n"
+        "        for watcher in watchers:\n"
+        "            self._run_process_watcher(watcher)\n"
+        "\n"
+        "    async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "        response = 'ok'\n"
+        "        _response_time = 1\n"
+        "        agent_result = {}\n"
+        "        return response\n"
+    )
+
+    patched = patcher.apply_patch(content, strategy="gateway_run_013_plus")
+
+    ast.parse(patched)
+    assert patched.index(patcher.COMMAND_CARD_STARTUP_PATCH_BEGIN) < patched.index(
+        "await self._await_startup_boot_sends("
+    )
+    assert patcher.apply_patch(patched, strategy="gateway_run_013_plus") == patched
+    assert patcher.remove_patch(patched) == content
+
+
 @pytest.mark.parametrize(
     "runner_name, watcher_call",
     [
@@ -752,6 +781,25 @@ def test_remove_patch_lenient_removes_previous_async_completion_hook_block():
 
     assert patcher.COMPLETE_PATCH_BEGIN not in restored
     assert "    return response\n" in restored
+
+
+def test_remove_patch_lenient_removes_previous_primary_hook_block():
+    content = """
+async def _handle_message_with_agent(message):
+    response = await run_agent(message)
+    return response
+"""
+    patched = patcher.apply_patch(content)
+    previous = patched.replace(
+        "        _hfc_emit(locals())\n",
+        "        _hfc_emit({**locals(), \"legacy\": True})\n",
+    )
+    assert previous != patched
+
+    with pytest.raises(ValueError, match="patch markers"):
+        patcher.remove_patch(previous)
+
+    assert patcher.remove_patch_lenient(previous) == content
 
 
 def test_remove_patch_removes_legacy_completion_hook_block():

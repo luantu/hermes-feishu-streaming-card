@@ -2,7 +2,7 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-当前发布候选为 `4.4.1`。本轮处理 Hermes 0.21 facade 拆分兼容、话题后续回复、单进程多 profile 路由、审批完整性和思考展示，并更新 CodeQL。聚焦自动化已通过；当前候选的完整测试、普通 wheel 验证及 GitHub CI 以本轮发布记录为准。真实 Feishu/Lark 客户端复测尚未执行，旧版本的真实 smoke 不代表本轮验收。release PR、exact merge SHA、public tag/install 与 Release assets 只有完成后才会标记通过。自动化不冒充平台验收。
+当前发布候选为 `4.4.4`。本轮修复 Hermes 关闭/重启通知从飞书 Topic 错投父群主会话，并让当前 Hermes `start()` 在 boot 通知前安装 HFC 路由 wrapper。聚焦自动化、本机生产 Hermes、真实飞书 Topic、完整测试、普通 wheel、GitHub CI、exact merge 与 Release assets 以最终发布记录为准。
 
 V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 
@@ -83,11 +83,23 @@ python3 -m hermes_feishu_card.cli restore --hermes-dir ~/.hermes/hermes-agent --
 
 真实飞书联调只能使用本机配置或环境变量提供 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`。不要把 App Secret、tenant token 或真实 chat_id 提交到仓库。公开演示截图入库前需要确认不包含敏感凭据和不可公开的会话内容。
 
-## V4.4.1 发布门禁
+## V4.4.4 发布门禁
 
-- 聚焦 render/config/hook-runtime：`726 passed`；renderer 与 mention 兼容复测：`221 passed`；server reasoning 配置接线：`2 passed`。
-- 文档与版本元数据：`101 passed`；普通 wheel、完整 pytest、GitHub CI 和发布资产结果由本轮最终验证补充。
-- 真实 Feishu/Lark 私聊、群聊、话题重启恢复、多 profile、审批手机/桌面阅读：待复测；不复用 V4.4.0 的 smoke 作为当前候选证据。
+- 当前 Hermes `start()` 启动顺序、Feishu Topic reply anchor、非 Feishu 元数据保持不变：**聚焦回归通过**。
+- 本机生产 Hermes 源码的 patch 迁移、幂等重装与逐字恢复：**只读往返验证通过**。
+- 聚焦 hot-file 回归：**`943 passed, 1 skipped`**；文档与包元数据：**`101 passed`**；完整 pytest：**`3533 passed, 9 skipped in 752.17s`**；`git diff --check`：**通过**。
+- PEP 517 sdist/wheel、全新 Python 3.12 venv 的普通 wheel `site-packages` 包/distribution `4.4.4`、唯一 Hermes plugin entrypoint、24 个 provenance slices 与 CLI help：**通过**。
+- 本机生产 Hermes 0.21.0 runtime venv 加载 4.4.4，官方 patcher 安装后仅 managed `gateway/run.py` 发生预期变化；sidecar/Gateway 重启并达到 `runtime_ready / integrity=safe`：**通过**。
+- 2026-09-08 真实飞书群 Topic `/restart` 的成功通知留在原 Topic，未落入父群主会话：**通过**。精确的活跃任务 shutdown 通知仍由同一 metadata wrapper 自动化覆盖。
+- GitHub CI、exact merge、annotated tag、public tagged install 与 Release assets/checksums：**待最终门禁登记**。
+
+## V4.4.3 发布门禁
+
+- 完整性、recovery、patcher、CLI install 扩展回归通过；固定 Hermes 源码测试需显式提供对应 snapshot 路径。
+- 空 timeline renderer 回归 `109 passed`；双 named bot/profile/topic 的实际 Hermes handler 回归 `12 passed`。
+- 本机生产 Hermes 0.21.0 候选 wheel、hook recovery、safe integrity snapshot、sidecar/Gateway 重启通过；sidecar 达到 `healthy / runtime_ready / integrity=safe`。
+- 真实飞书 DM smoke 与实际 Hermes 入站会话通过，发送和事件应用无失败。真实多 bot multiplex、审批手机/桌面阅读仍待对应环境复验。
+- 完整 pytest：**`3530 passed, 9 skipped in 843.13s`**；`git diff --check`：**通过**。PEP 517 sdist/wheel、全新 Python 3.12 venv 的 `site-packages` 包/distribution `4.4.3`、唯一 Hermes plugin entrypoint、24 个 provenance slices 与 CLI help：**通过**。GitHub CI、exact merge、tag 与发布资产结果由后续发布门禁补充。
 
 ## V4.4.0 发布门禁
 

@@ -3448,19 +3448,13 @@ def _hfc_native_feishu_command_cards_available(local_vars: dict[str, Any]) -> bo
         if _platform_name(local_vars, source_obj) != "feishu":
             return False
         runner = local_vars.get("self") or local_vars.get("runner")
-        adapters = getattr(runner, "adapters", None)
-        if not isinstance(adapters, dict):
+        adapter = _hfc_feishu_adapter_from_runner(runner, source_obj)
+        if adapter is None or not getattr(adapter, "_client", None):
             return False
-        for key, adapter in list(adapters.items()):
-            if not _is_feishu_adapter_key(key, adapter):
-                continue
-            if not getattr(adapter, "_client", None):
-                continue
-            if not hasattr(adapter, "_feishu_send_with_retry"):
-                continue
-            install_feishu_command_card_adapter_methods(runner)
-            return callable(getattr(adapter, "send_slash_confirm", None))
-        return False
+        if not hasattr(adapter, "_feishu_send_with_retry"):
+            return False
+        install_feishu_command_card_adapter_methods(runner)
+        return callable(getattr(adapter, "send_slash_confirm", None))
     except Exception:
         return False
 
@@ -4051,13 +4045,7 @@ async def _hfc_try_resume_picker(
         if not visible:
             return False
 
-        adapter = None
-        adapters = getattr(runner, "adapters", None)
-        if isinstance(adapters, dict):
-            for key, candidate in adapters.items():
-                if _is_feishu_adapter_key(key, candidate):
-                    adapter = candidate
-                    break
+        adapter = _hfc_feishu_adapter_from_runner(runner, source)
         if adapter is None or not getattr(adapter, "_client", None):
             return False
         send_picker = getattr(adapter, "send_resume_picker", None)
@@ -6636,16 +6624,49 @@ async def _hfc_deliver_platform_notice_with_card(
     return None
 
 
+def _hfc_registered_adapter_items(runner: Any) -> list[tuple[Any, Any]]:
+    """Include connected secondary transports without duplicating shared instances."""
+    registries = [getattr(runner, "adapters", None)]
+    profiles = getattr(runner, "_profile_adapters", None)
+    if isinstance(profiles, dict):
+        registries.extend(list(profiles.values()))
+    result = []
+    seen = set()
+    for registry in registries:
+        if not isinstance(registry, dict):
+            continue
+        for key, adapter in list(registry.items()):
+            if adapter is not None and id(adapter) not in seen:
+                seen.add(id(adapter))
+                result.append((key, adapter))
+    return result
+
+
 def _hfc_feishu_adapter_from_runner(runner: Any, source: Any) -> Any:
-    adapters = getattr(runner, "adapters", {})
+    if source is None or _platform_name({}, source) != "feishu":
+        return None
+    # Current Hermes validates retained transport provenance before profile lookup.
+    # A shared bot may own a turn routed to another profile; preserve that contract.
+    resolver = getattr(runner, "_adapter_for_source", None)
+    if callable(resolver):
+        try:
+            adapter = resolver(source)
+        except Exception:
+            return None
+        return adapter if adapter is not None and _is_feishu_adapter_key(None, adapter) else None
+    adapters = getattr(runner, "adapters", None)
+    profile = _first_attr_string(source, ("profile", "profile_id", "hermes_profile"))
+    if profile and profile != "default":
+        profiles = getattr(runner, "_profile_adapters", None)
+        if isinstance(profiles, dict) and profile in profiles:
+            adapters = profiles[profile]
+        elif profile != getattr(runner, "_primary_profile_name", None):
+            return None
     if not isinstance(adapters, dict):
         return None
-    adapter = adapters.get(getattr(source, "platform", None))
-    if adapter is not None:
-        return adapter
-    for key, candidate in list(adapters.items()):
-        if _is_feishu_adapter_key(key, candidate):
-            return candidate
+    for key, adapter in list(adapters.items()):
+        if _is_feishu_adapter_key(key, adapter):
+            return adapter
     return None
 
 
@@ -8868,6 +8889,10 @@ def request_approval_choice_from_hermes_locals(
         timeout_seconds=timeout_seconds,
         allow_custom_input=allow_custom_input,
     )
+    if isinstance(result, dict) and result.get("status") in {"failed", "timeout"}:
+        # The card was accepted. Expiry must resolve this approval safely,
+        # rather than return None and reopen native approval outside its topic.
+        return "deny"
     if isinstance(result, dict) and result.get("status") == "completed":
         choice = str(result.get("choice") or "").strip()
         allowed_choices = {str(option["value"]) for option in options}
@@ -8945,19 +8970,55 @@ def _hfc_install_policy_adapter_method(
     return True
 
 
+def _hfc_thread_metadata_for_target_with_feishu_reply_anchor(
+    self: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    original = getattr(
+        type(self),
+        "_hfc_original_thread_metadata_for_target",
+        None,
+    )
+    if not callable(original):
+        return None
+    metadata = original(self, *args, **kwargs)
+    platform = kwargs.get("platform", args[0] if len(args) > 0 else None)
+    thread_id = kwargs.get("thread_id", args[2] if len(args) > 2 else None)
+    reply_to_message_id = kwargs.get("reply_to_message_id")
+    platform_name = str(getattr(platform, "value", platform) or "").strip().lower()
+    thread = str(thread_id or "").strip()
+    reply_anchor = str(reply_to_message_id or "").strip()
+    if platform_name != "feishu" or not thread or not reply_anchor:
+        return metadata
+    routed = dict(metadata) if isinstance(metadata, dict) else {}
+    routed.setdefault("thread_id", thread)
+    routed.setdefault("reply_to_message_id", reply_anchor)
+    return routed
+
+
 def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) -> bool:
     try:
         _remember_gateway_runner(runner)
         _ensure_runtime_control_started()
         _install_delivery_ledger_mark_delivered_wrapper()
-        adapters = getattr(runner, "adapters", None)
-        if not isinstance(adapters, dict):
+        adapters = _hfc_registered_adapter_items(runner)
+        if not isinstance(getattr(runner, "adapters", None), dict) and not isinstance(
+            getattr(runner, "_profile_adapters", None), dict
+        ):
             if event is not None:
                 _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
             _HFC_FEISHU_NOTICE_CONTEXT.set(None)
             _HFC_FEISHU_DELIVERY_CONTEXT.set(None)
             return False
         runner_type = type(runner)
+        if callable(getattr(runner_type, "_thread_metadata_for_target", None)):
+            _hfc_install_policy_adapter_method(
+                runner_type,
+                method_name="_thread_metadata_for_target",
+                wrapper=_hfc_thread_metadata_for_target_with_feishu_reply_anchor,
+                original_name="_hfc_original_thread_metadata_for_target",
+            )
         _hfc_install_resume_picker_handler(runner_type)
         _hfc_install_compress_command_handler(runner_type)
         _hfc_install_update_command_handler(runner_type)
@@ -8994,7 +9055,7 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             _hfc_delivery_context_from_event(event) if event is not None else None
         )
         installed = False
-        for key, adapter in list(adapters.items()):
+        for key, adapter in adapters:
             if not _is_feishu_adapter_key(key, adapter):
                 continue
             adapter_type = type(adapter)
