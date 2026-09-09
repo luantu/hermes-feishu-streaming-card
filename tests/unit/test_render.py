@@ -62,6 +62,9 @@ def test_render_card_accepts_custom_header_title():
 
 
 def test_render_initial_running_card_shows_context_loading_without_empty_timeline():
+    # Fork divergence (LOCAL_PATCHES 1.4 + timeline loading placeholder):
+    # main content uses plain 生成中 text instead of spinner frames, and the
+    # timeline keeps the 等待工具事件… placeholder panel while loading.
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
 
     card = render_card(session)
@@ -71,13 +74,12 @@ def test_render_initial_running_card_shows_context_loading_without_empty_timelin
         for item in card["body"]["elements"]
         if item.get("element_id") == "main_content"
     )
-    assert any(frame in main["content"] for frame in _SPINNER_FRAMES)
-    assert "正在加载上下文…" in main["content"]
+    assert "生成中" in main["content"]
     assert card["header"]["title"]["content"] == "Hermes Agent"
     assert "subtitle" not in card["header"]
-    assert {"auxiliary_timeline", "tool_summary"}.isdisjoint({
+    assert "auxiliary_timeline" in {
         item.get("element_id") for item in card["body"]["elements"]
-    })
+    }
 
 
 def test_render_completed_card_omits_zero_tool_timeline():
@@ -783,6 +785,10 @@ def test_render_completed_card_places_attachment_summary_before_tools():
     session.tools = {
         "t1": ToolState("t1", "read_file", "completed", "pytest")
     }
+    # Fork (LOCAL_PATCHES 1.9): main_divider renders only when the footer or
+    # tool summary has content; give the footer a model so the divider exists
+    # and the ordering assertion stays meaningful.
+    session.model = "qwen3-max"
 
     card = render_card(session)
 

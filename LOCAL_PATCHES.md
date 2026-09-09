@@ -3,7 +3,52 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.3.7 合并后
+> 最后更新：V4.4.4 合并后（2026-09-09，merge commit 6a34842）
+
+---
+
+## 〇、V4.4.2~V4.4.4 合并冲突保留记录（2026-09-09）
+
+合并基点为 `aad9c03`（v4.4.1-issue-repairs 分支顶端；上游在 PR #260 合入 main 前
+对该分支有过追加提交，导致 merge-base 不在本地历史内——下次合并注意用
+`git merge-base` 实际确认，不要假设）。
+
+### 冲突 1：render.py tool_summary / divider 区域（`_render_card_unchecked`）
+- 保留本地 1.9：divider 仅在 `footer` 或 `tool_summary_content` 非空时渲染。
+- 吸收上游 v4.4.2 的 `session.tool_count` 门控，合并后条件为
+  `not timeline_elements and not pending_approval and show_tool_summary and session.tool_count`。
+
+### 冲突 2：render.py `_render_timeline_elements` 空记录分支
+- 保留本地行为：初始加载显示「等待工具事件…」占位；非加载且无记录时不渲染折叠条。
+- **主动移除**上游新增的 `if not all_entries: return []` 早退——它会杀掉加载占位；
+  上游"空 timeline 不渲染"的意图已由本地 `if not entries and not folded` 分支覆盖。
+
+### 冲突 3：tests/unit/test_render.py（4 处）
+- 均为"零工具无 timeline"断言，取本地文案断言 + 上游元素 ID 断言的并集。
+- 注意：`_timeline_panel` 的 element_id 是 `auxiliary_timeline`，若加载占位渲染，
+  上游式 `"auxiliary_timeline" not in str(card)` 断言会失败——相关测试的 session
+  均已有 thinking/answer 内容（非 initial loading），并集安全。
+- 另按本地行为适配两个上游新测试：
+  - `test_render_completed_card_places_attachment_summary_before_tools`：给 session
+    加 `model` 使 footer 非空，从而 divider 渲染、排序断言有意义（本地 1.9 divider
+    条件渲染，上游是无条件渲染）。
+  - `test_render_initial_running_card_shows_context_loading_without_empty_timeline`：
+    改为断言本地行为——main content 为"生成中"文字（本地 1.4，非 spinner）、
+    保留 `auxiliary_timeline` 加载占位面板（上游 v4.4.2 已删占位，fork 有意保留）。
+
+### 自动合并需复核的上游改动（已确认共存）
+- server.py：`interaction.requested` 预检（卡片超限时不 claim 决策，返回
+  `interaction_card_limit`）——与本地 emoji 删卡逻辑同函数不同区域，无冲突。
+- hook_runtime.py v4.4.4：新增 `_hfc_thread_metadata_for_target_with_feishu_reply_anchor`
+  wrapper（重启通知保留在话题内）。**已保留**：它只是透传 Hermes core 已有的
+  thread 元数据，不自行创建话题路由；sidecar 侧三锚点（`_thread_id_for_event`
+  恒 None、`_reply_to_message_id_for_event` 仅显式 om_、hook_runtime
+  `"conversation_id": chat_id` ×3）合并后逐项复核仍为禁用状态。
+- hook_runtime.py：adapter 注册表重构（`_hfc_registered_adapter_items`、
+  `_adapter_for_source` resolver、`_profile_adapters` 支持）、approval 过期改判 deny。
+- render.py：approval/clarify 选项按钮只显示序号 + 正文列选项说明（v4.4.2 交互可读性）。
+- cli.py / install：integrity 迁移快照校验、patcher lenient 移除 + `start` 锚点。
+- 版本：4.4.1 → 4.4.4（pyproject + `__init__.py`）。
 
 ---
 

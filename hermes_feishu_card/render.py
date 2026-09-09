@@ -1279,6 +1279,7 @@ def _render_timeline_elements(
 ) -> list[Dict[str, Any]]:
     if not getattr(session, "timeline", None):
         return []
+    all_entries = session.timeline.snapshot()
     entries = _select_timeline_entries(all_entries, max_items=max_items)
     folded = max(0, len(all_entries) - len(entries))
     if not entries and not folded:
