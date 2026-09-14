@@ -3,46 +3,53 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：Hermes bf53ff0 ledgered base 契约适配（2026-09-09，本地扩展）
+> 最后更新：V4.4.5 合并后（2026-09-14；merge commit 待提交）
 
 ---
 
-## 〇-A、install 契约适配：Hermes bf53ff0 ledgered base（本地扩展，上游暂无对应版本）
+## 〇-A、install 契约适配：Hermes bf53ff0 ledgered base（上游支持已吸收，本地边界仍保留）
 
 Hermes `0.21.1 / bf53ff0`（2026-09-09）把 base.py 的投递账本括号从 `_send_final_text`
 重构进新方法 `send_final_ledgered(self, event, session_key, text_content, metadata, *,
 reply_to, is_ephemeral_response)`，并在 `_record_delivery_obligation` 中引入
-`ledger_message_id` 三语句取 ID 形态。上游 v4.4.4 的 decomposed base 契约只认旧内联
-形态，导致 install 被 `exact_base_delivery: unsupported` 硬门拒绝。本地扩展（保持旧
-形态兼容，双形态严格校验）：
+`ledger_message_id` 三语句取 ID 形态。上游 v4.4.5 已加入同一类 split-ledger 支持；本次合并
+吸收上游更严格的 decomposed `send_final_ledgered` AST/bracket 校验，同时保留本地旧契约
+回退和双形态严格校验，不能因为上游已有同名能力就删除本地边界。
 
-- `install/patcher.py::_find_decomposed_base_patch_locations`：
-  - 存在 `send_final_ledgered` 时走 ledgered 分支——严格校验其签名（kwonly
-    `reply_to`/`is_ephemeral_response`）、`_send_final_text` 委托调用与
-    `record_delivery(result)`、括号内 `delivery_adapter`/`obligation_id = await
-    self._record_delivery_obligation(...)`/`result = await
-    delivery_adapter._send_with_retry(..., reply_to=reply_to, ...)`/finalize If 语句，
-    全部精确 AST 匹配且有序；final hook 插入点取 `send_final_ledgered` 内
-    `_send_with_retry` 之前。
-  - 不存在 `send_final_ledgered` 时回退旧内联括号分支（行为不变）。
-  - `record` 方法的 `obligation_id = compute_obligation_id(...)` 同时接受旧单语句与
-    新 `_ledger_id` 三语句形态。
-- `install/patcher.py`：新增 `_has_decomposed_ledgered_base()` 形态判定 +
-  `_render_decomposed_base_final_hook_block_ledgered()`（rebind
-  `delivery_adapter, text_content, reply_to, metadata`、传
-  `"obligation_id": obligation_id`，不再注入 `_reply_anchor` 行）；接入
-  `apply_base_patch` renderer 选择与 `_find_owned_exact_base_blocks(strict=True)`
-  的已打补丁内容校验三元组。
-- `hook_runtime.py::_exact_base_delivery_hook_available`：bracket `co_names` 检查
-  按 `send_final_ledgered` 存在与否取自对应方法。
-- 测试/fixture：新增 `tests/fixtures/hermes_decomposed_ledgered/`（bf53ff0 契约摘录）、
-  `test_ledgered_base_patch_roundtrip_and_compile`、
-  `test_ledgered_cli_install_doctor_repeat_remove_roundtrip`、
-  `test_exact_base_delivery_hook_available_accepts_ledgered_bracket`、
-  `test_exact_base_delivery_hook_available_rejects_unpatched_ledgered_bracket`。
+- `install/patcher.py::apply_base_patch` 的选择顺序：
+  - v4.4.5 split-ledger + decomposed 形态优先，使用上游严格校验和
+    `_render_decomposed_split_base_final_hook_block()`；非 decomposed 的 split 形态使用
+    `_render_split_base_final_delivery_hook_block()`。
+  - 本地 `_has_decomposed_ledgered_base()` 形态作为兼容回退，使用
+    `_render_decomposed_base_final_hook_block_ledgered()`；再回退到上游旧 decomposed
+    inline 形态和 legacy inline 形态。
+  - `send_final_ledgered` 契约严格校验其签名（kwonly `reply_to` /
+    `is_ephemeral_response`）、`_send_final_text` 委托调用、`record_delivery(result)`，以及
+    `delivery_adapter` → `_record_delivery_obligation(...)` → `_send_with_retry(...,
+    reply_to=reply_to, ...)` → finalize 的顺序；final hook 插入点仍在 ledger bracket 的
+    `_send_with_retry` 之前。参数、adapter、终态 guard 或控制流漂移继续 fail-closed。
+  - 不存在 `send_final_ledgered` 时保留旧内联括号分支（行为不变）；`record` 方法的
+    `compute_obligation_id(...)` 同时接受旧单语句与新的 `_ledger_id` 三语句形态。
+- `_find_owned_exact_base_blocks(strict=True)` 同时识别本地旧 ledgered、上游
+  split-ledger/decomposed 以及 legacy 模板；apply/remove/restore/doctor 必须逐字可逆，
+  不能用宽松 marker 识别替代 AST 契约验证。
+- `hook_runtime.py::_exact_base_delivery_hook_available` 的 bracket `co_names` 检查按
+  `send_final_ledgered` 是否存在选择对应方法；本地
+  `tests/fixtures/hermes_decomposed_ledgered/` 与测试继续覆盖 bf53ff0 旧形态，上游新增
+  `tests/fixtures/hermes_split_ledger_base.py` / `test_split_ledger_patcher.py` 覆盖新形态。
 
-> 上游发布对应适配（v4.4.5+）后应合并并移除本节本地差异；下次合并上游时用
-> `git merge-base` 实际确认基点。
+> v4.4.5 已提供对应 split-ledger 适配，但本地旧形态 fixture、严格回退和本地 Hermes
+> 运行时边界仍是 fork 维护的一部分；下次合并时必须同时检查两套契约及其可逆性。
+
+## 〇-B、V4.4.5 终态稳定性吸收记录（2026-09-14）
+
+- `hook_runtime._event_data()` 传递 Hermes completion 的 `failed` / `interrupted` /
+  `partial` / `completed=false` 结果标志。
+- `session.CardSession.apply()` 对未成功结果展示失败/中断/不完整提示，不再把带正文的
+  非成功结果误报为完成。
+- `server._abandon_stale_sessions_for_chat()` 将被新轮次替代的旧卡标为 `failed`，保留
+  已有正文并提示“本轮已被新对话替代，任务尚未确认完成”。晚到事件不翻转旧卡，也不污染新轮。
+
 
 ## 〇、V4.4.2~V4.4.4 合并冲突保留记录（2026-09-09）
 
