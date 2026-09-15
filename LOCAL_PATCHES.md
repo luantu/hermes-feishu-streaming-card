@@ -3,9 +3,36 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.4.5 合并后（2026-09-14；merge commit 待提交）
+> 最后更新：V4.4.6 合并后（2026-09-15，merge commit 58169a2）
 
 ---
+
+## 〇-B、V4.4.6 合并冲突保留记录（2026-09-15）
+
+合并基点 `f6be2d1`（v4.4.5）。v4.4.6 吸收了本 fork 〇-A 的 ledgered base 契约
+（`0a48d00` harden split ledger compatibility / `ee08f2e` accept Hermes 0.21.1
+`_deliver_attachments` record_delivery= kwarg），并为 Hermes 0.21.2+ 引入
+`terminal_delivery_state` 生命周期与 `_recover_terminal_card` 终态恢复。冲突 2 处：
+
+### 冲突 1：hook_runtime.py `_exact_base_delivery_hook_available`
+- 取上游侧：它覆盖本地 〇-A 的 ledgered 分支，并新增非 decomposed split-ledger
+  形态（`send_final_ledgered` + `prepare_exact_base_final_delivery`）。本地无独立行为需要保留。
+
+### 冲突 2：server.py 终态 PATCH 路径
+- 两者都保留：本地 `_card_log(PATCH)` 生命周期日志 + 多卡分卡发送（HEAD 侧），
+  叠加上游 `terminal_delivery_state = "delivered"` / `_recover_terminal_card`
+  恢复路径。顺序：日志 → 上游恢复 → 本地多卡发送。
+- 注意：〇-A 的 patcher.py 双形态契约已随 v4.4.5/v4.4.6 进入上游，本地不再有
+  patcher 差异；上游 v4.4.6 另引入 `_find_split_decomposed_base_patch_locations`。
+
+### 安装注意（Hermes 0.21.3）
+- Hermes 升级会留下陈旧 `.hermes_feishu_card_manifest` 与
+  `gateway/run.py.hermes_feishu_card.bak`，v4.4.6 的 ownership 校验会拒绝并报
+  `decomposed ownership cannot be verified` / `decomposed backup has no
+  manifest`。处理：确认 Hermes 侧 `git status` 干净后删除 manifest 与残留 .bak
+  再 `install --accept-hermes-upgrade`（2026-09-15 已执行成功）。
+- 0.21.3 上 `base_required: no`、`exact_delivery_contract: not_required`，运行时
+  hook 可用性检查通过。
 
 ## 〇-A、install 契约适配：Hermes bf53ff0 ledgered base（上游支持已吸收，本地边界仍保留）
 
