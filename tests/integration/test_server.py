@@ -7936,7 +7936,7 @@ async def test_v4_interaction_restores_cached_preview_on_stable_v2_card(client):
     assert feishu_client.updated[-1][0] == "feishu-message-1"
 
 
-async def test_interaction_promotion_preserves_session_thread_placement(client):
+async def test_interaction_promotion_ignores_session_thread_placement(client):
     test_client, feishu_client = client
 
     started = await test_client.post(
@@ -7970,7 +7970,9 @@ async def test_interaction_promotion_preserves_session_thread_placement(client):
 
     assert started.status == 200
     assert requested.status == 200
-    assert feishu_client.sent_reply_in_thread == [True, True]
+    # Fork policy (LOCAL_PATCHES 2.6): placement never becomes a topic reply;
+    # the explicit anchor is still honoured as a plain reply_to.
+    assert feishu_client.sent_reply_in_thread == [False, False]
     assert feishu_client.sent[-1][3] == "om_explicit_anchor"
 
 
@@ -8639,7 +8641,10 @@ async def test_message_started_sends_card_as_thread_reply(client):
     assert feishu_client.sent_reply_in_thread == [False]
 
 
-async def test_message_started_can_create_thread_from_reply_in_thread_flag(client):
+async def test_message_started_keeps_top_level_despite_reply_in_thread_flag(client):
+    # Fork policy (LOCAL_PATCHES 2.6): cards never become Feishu topic
+    # messages, even when the event carries reply_in_thread; an explicit
+    # reply anchor is still honoured as a plain reply_to.
     test_client, feishu_client = client
 
     started = await test_client.post(
@@ -8662,12 +8667,13 @@ async def test_message_started_can_create_thread_from_reply_in_thread_flag(clien
     assert feishu_client.sent[0][0] == "oc_abc"
     assert feishu_client.sent[0][2] is None
     assert feishu_client.sent[0][3] == "om_explicit_anchor"
-    assert feishu_client.sent_reply_in_thread == [True]
+    assert feishu_client.sent_reply_in_thread == [False]
 
 
-async def test_message_started_does_not_fall_back_to_top_level_without_thread_anchor(
+async def test_message_started_falls_back_to_top_level_without_thread_anchor(
     client,
 ):
+    # Fork policy: without an anchor the card still delivers top-level.
     test_client, feishu_client = client
 
     started = await test_client.post(
@@ -8681,8 +8687,10 @@ async def test_message_started_does_not_fall_back_to_top_level_without_thread_an
         ),
     )
 
-    assert started.status == 502
-    assert len(feishu_client.sent) == 0
+    assert started.status == 200
+    assert await started.json() == DELIVERED_RESPONSE
+    assert len(feishu_client.sent) == 1
+    assert feishu_client.sent_reply_in_thread == [False]
 
 
 async def test_message_started_uses_user_message_as_normal_chat_reply_anchor(client):
@@ -9373,7 +9381,8 @@ async def test_runtime_interaction_keeps_v2_owner_and_never_patches_legacy_card(
             "feishu-message-1": "v2",
             "feishu-message-2": "legacy",
         }
-        assert feishu_client.sent_reply_in_thread == [True, True]
+        # Fork policy (LOCAL_PATCHES 2.6): placement never becomes a topic reply.
+        assert feishu_client.sent_reply_in_thread == [False, False]
         action_value = interaction_buttons(feishu_client.sent[-1][1])[0]["value"]
 
         callback = await test_client.post(
@@ -10174,7 +10183,8 @@ async def test_interaction_promotion_failure_restores_session_for_retry(client):
     assert retried.status == 200
     assert (await retried.json())["applied"] is True
     assert len(feishu_client.sent) == 2
-    assert feishu_client.sent_reply_in_thread == [True, True]
+    # Fork policy (LOCAL_PATCHES 2.6): retry keeps top-level placement.
+    assert feishu_client.sent_reply_in_thread == [False, False]
 
 
 def test_interaction_operator_name_never_falls_back_to_feishu_ids():
@@ -13085,7 +13095,8 @@ async def test_topic_approval_expiry_updates_current_card_without_main_stream_se
     current_card_id = test_client.app[FEISHU_MESSAGE_IDS_KEY][session.message_id]
     sent_count = len(feishu_client.sent)
     assert all(item[3] == "om_topic_anchor" for item in feishu_client.sent)
-    assert all(feishu_client.sent_reply_in_thread)
+    # Fork policy (LOCAL_PATCHES 2.6): placement never becomes a topic reply.
+    assert not any(feishu_client.sent_reply_in_thread)
     assert await sidecar_server._expire_pending_interactions(test_client.app, now=400.0) == 1
     updated_id, card = await wait_for_card_update(feishu_client, "交互已过期")
     assert updated_id == current_card_id

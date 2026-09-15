@@ -4788,12 +4788,10 @@ def _reply_to_message_id_for_event(event: SidecarEvent) -> str | None:
 
 
 def _reply_in_thread_for_event(event: SidecarEvent) -> bool:
-    data = event.data if isinstance(event.data, dict) else {}
-    value = data.get("reply_in_thread")
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "1", "yes", "on"}
+    # Fork policy (LOCAL_PATCHES 2.6): card replies never become Feishu topic
+    # messages. Upstream honors event/session reply_in_thread placement; this
+    # fork keeps every card top-level, so the anchor is always disabled.
+    del event
     return False
 
 
@@ -5783,12 +5781,9 @@ async def _apply_event_locked(
             interaction.interaction_id if interaction is not None else "pending"
         )
         bot_id = message_bot_ids.get(session_key)
-        sticky_reply_to_message_id = (
-            session.reply_to_message_id
-            if session.reply_in_thread
-            and session.reply_to_message_id.startswith("om_")
-            else ""
-        )
+        # Fork policy (LOCAL_PATCHES 2.6): no sticky thread placement, so the
+        # sticky reply anchor stays empty even when a session recorded one.
+        sticky_reply_to_message_id = ""
         reply_to_message_id = (
             sticky_reply_to_message_id
             or _reply_to_message_id_for_event(incoming_event)
@@ -5825,10 +5820,7 @@ async def _apply_event_locked(
                 bot_id=bot_id,
                 thread_id=_thread_id_for_event(incoming_event),
                 reply_to_message_id=reply_to_message_id,
-                reply_in_thread=(
-                    _reply_in_thread_for_event(incoming_event)
-                    or session.reply_in_thread
-                ),
+                reply_in_thread=_reply_in_thread_for_event(incoming_event),
                 predecessor_message_id=feishu_message_id,
                 delivery_key=f"{session_key}:interaction:{interaction_id}",
             )
@@ -5843,10 +5835,7 @@ async def _apply_event_locked(
             bot_id,
             thread_id=_thread_id_for_event(incoming_event),
             reply_to_message_id=reply_to_message_id,
-            reply_in_thread=(
-                _reply_in_thread_for_event(incoming_event)
-                or session.reply_in_thread
-            ),
+            reply_in_thread=_reply_in_thread_for_event(incoming_event),
             delivery_key=f"{session_key}:interaction:{interaction_id}",
             delivery_kind="interaction",
         )

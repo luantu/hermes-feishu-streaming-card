@@ -203,6 +203,14 @@ reply_to, is_ephemeral_response)`，并在 `_record_delivery_obligation` 中引�
 - `_thread_id_for_event()` 恒 `return None`（禁 Feishu thread 路由）
 - `_reply_to_message_id_for_event()` 只返回显式 `om_` 开头的 `reply_to_message_id`，不自动推导
 - V4.3.x 新增 `_reply_in_thread_for_event()` 后仍保持上述本地策略：不根据 `event.message_id` 自动生成 reply anchor；`reply_in_thread` 不得绕过本地 thread 禁用策略
+- **2026-09-15 重新落实（v4.4.6 合并后）**：上游 0560183 在 `_event_data` 把 Hermes 侧
+  `reply_in_thread` 透传进事件数据，v4.4.6 又加 `session.reply_in_thread` 粘性话题
+  放置（sticky reply anchor），导致卡片再次变成话题消息。本地修复：
+  - `_reply_in_thread_for_event()` 恒 `return None`→恒 `False`（与 `_thread_id_for_event` 同构）；
+  - 两处发送点去掉 `or session.reply_in_thread` 粘性消费；
+  - sticky reply anchor 门控改为恒空（不因会话粘性带出 `om_` 锚点）。
+  - 显式 `om_` `reply_to_message_id` 仍按 2.6 作为普通 reply_to 保留。
+  - 已按本地行为适配 6 个上游话题放置测试（重命名 2 个 + 修正断言 4 处）。
 
 ### 2.7 GIF 上传 + 超时重发（遗留）
 - `UPLOADED_GIF_IMG_KEYS_KEY`、启动时 GIF 上传
