@@ -554,7 +554,7 @@ def test_apply_patch_installs_hygiene_notice_card_hook():
     assert patcher.HYGIENE_NOTICE_PATCH_BEGIN in patched
     assert "handle_platform_notice_from_hermes" in patched
     assert (
-        "if _hfc_handle_hygiene_notice(self, source, message):" in patched
+        "if _hfc_handle_hygiene_notice(self, source, message, force_independent=True):" in patched
     )
     assert patched.index(patcher.HYGIENE_NOTICE_PATCH_BEGIN) < patched.index(
         "_adapter = self._adapter_for_source(source)"

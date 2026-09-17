@@ -5320,6 +5320,7 @@ async def _hfc_send_system_notice_card(
     reply_to: str | None = None,
     metadata: dict[str, Any] | None = None,
     existing_message_id: str | None = None,
+    force_independent: bool = False,
 ) -> Any:
     notice = _hfc_classify_system_notice(content)
     if notice is None:
@@ -5334,7 +5335,7 @@ async def _hfc_send_system_notice_card(
         if not isinstance(context, dict):
             context = {}
         message_id = str(existing_message_id or context.get("message_id") or "").strip()
-        if message_id and not message_id.startswith("notice_"):
+        if message_id and not message_id.startswith("notice_") and not force_independent:
             anchored_scope = (
                 "independent"
                 if notice.get("notice_kind") == "background-task"
@@ -6601,7 +6602,9 @@ async def _hfc_edit_message_with_system_notice_card(self: Any, *args: Any, **kwa
     return _send_result(False, error="original Feishu edit_message unavailable")
 
 
-def handle_platform_notice_from_hermes(runner: Any, source: Any, content: str) -> bool:
+def handle_platform_notice_from_hermes(
+    runner: Any, source: Any, content: str, *, force_independent: bool = False,
+) -> bool:
     """Route Hermes native platform notices into Feishu cards before text fallback."""
     try:
         if _platform_name({}, source) != "feishu":
@@ -6622,6 +6625,7 @@ def handle_platform_notice_from_hermes(runner: Any, source: Any, content: str) -
             content=str(content or ""),
             reply_to=str(getattr(source, "message_id", "") or "").strip() or None,
             notice_context=_hfc_notice_context_from_source(source),
+            force_independent=force_independent,
         )
         return True
     except Exception as exc:
@@ -6701,6 +6705,7 @@ def _hfc_schedule_platform_notice_card(
     content: str,
     reply_to: str | None,
     notice_context: dict[str, str] | None,
+    force_independent: bool = False,
 ) -> None:
     async def send_notice() -> None:
         token = None
@@ -6713,6 +6718,7 @@ def _hfc_schedule_platform_notice_card(
                 content=content,
                 reply_to=reply_to,
                 metadata=None,
+                force_independent=force_independent,
             )
             if not getattr(notice_result, "success", False):
                 _hfc_warn(

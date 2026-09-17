@@ -781,7 +781,10 @@ def _render_hygiene_notice_hook_block(indent: str, newline: str):
             f"import handle_platform_notice_from_hermes as "
             f"_hfc_handle_hygiene_notice{newline}"
         ),
-        f"{inner_indent}if _hfc_handle_hygiene_notice(self, source, message):{newline}",
+        (
+            f"{inner_indent}if _hfc_handle_hygiene_notice("
+            f"self, source, message, force_independent=True):{newline}"
+        ),
         f"{inner_indent}    return None{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{HYGIENE_NOTICE_PATCH_END}{newline}",

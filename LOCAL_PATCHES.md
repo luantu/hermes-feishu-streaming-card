@@ -141,6 +141,13 @@ Hermes 的会话卫生压缩通知（如 zh `gateway.compress.turnhold_deferred`
   （`上下文压缩` / `压缩已中止` / `压缩模型` → `compression` 分类）；英文
   变体已被既有 `"context compression"` 规则覆盖。notice 卡经
   `_hfc_schedule_platform_notice_card` 投递（metadata=None，不进话题，符合 2.6）。
+- **2026-09-17 补充：强制独立极简卡。** 首版命中后因 source 携带 message_id
+  上下文，notice 被 `_hfc_send_system_notice_card` 锚定为 session 范围、只成为
+  当前流式卡 timeline 的辅助条目（完成后折叠不可见，用户感知为"消息消失"）。
+  现为三层链路（`_hfc_send_system_notice_card` / `_hfc_schedule_platform_notice_card` /
+  `handle_platform_notice_from_hermes`）增加 `force_independent` 开关，hygiene
+  hook 块固定传 `force_independent=True`，压缩通知始终以独立 notice 极简卡
+  投递（`notice_scope="independent"`，独立 message_id，按内容+锚点去重）。
 - 测试：`test_apply_patch_installs_hygiene_notice_card_hook`、
   `test_chinese_compression_notice_classification`、ledgered 往返断言；
   两个 fixture 的 `run_turn.py` 增加 `_hmwa_hygiene_notify` 方法。
