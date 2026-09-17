@@ -29,6 +29,15 @@ class GatewayTurnMixin:
             return None
         return response
 
+    async def _hmwa_hygiene_notify(self, source, meta, message, what):
+        """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
+        try:
+            _adapter = self._adapter_for_source(source)
+            if _adapter and source.chat_id:
+                await _adapter.send(source.chat_id, message, metadata=meta)
+        except Exception as _werr:
+            logger.warning("Failed to deliver %s to user: %s", what, _werr)
+
     async def _run_agent(self, event, source):
         return {"response": "answer"}
 

@@ -87,6 +87,7 @@ def test_ledgered_cli_install_doctor_repeat_remove_roundtrip(ledgered_hermes, mo
     assert cli.main(["install", "--hermes-dir", str(ledgered_hermes), "--yes"]) == 0
     installed = sources(ledgered_hermes)
     assert {name for name in before if before[name] != installed[name]} == set(patcher.DECOMPOSED_TARGETS)
+    assert b"HERMES_FEISHU_CARD_HYGIENE_NOTICE_PATCH_BEGIN" in installed["gateway/run_turn.py"]
     assert cli.main(["install", "--hermes-dir", str(ledgered_hermes), "--yes"]) == 0
     assert installed == sources(ledgered_hermes)
     detection = detect_hermes(ledgered_hermes)

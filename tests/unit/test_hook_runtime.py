@@ -3867,6 +3867,19 @@ def _install_background_notice_probe(
     return adapter, posted
 
 
+def test_chinese_compression_notice_classification():
+    deferred = hook_runtime._hfc_classify_system_notice(
+        "ℹ️ 上下文压缩已推迟 — 摘要仍在生成中。本回合将不压缩继续。"
+    )
+    assert deferred is not None
+    assert deferred["notice_kind"] == "compression"
+    aborted = hook_runtime._hfc_classify_system_notice(
+        "⚠️ 压缩已中止 (boom)。未删除任何消息 — 对话保持不变。"
+    )
+    assert aborted is not None
+    assert aborted["notice_kind"] == "compression"
+
+
 def test_background_process_notice_classification_and_stable_id():
     running = hook_runtime._hfc_classify_system_notice(
         "[Background process proc_109e6dc419af is still running~ "

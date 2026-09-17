@@ -527,6 +527,44 @@ def test_apply_patch_installs_platform_notice_card_hook():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_patch_installs_hygiene_notice_card_hook():
+    content = (
+        "class GatewayRunner:\n"
+        "    async def _handle_message(self, event):\n"
+        "        source = event.source\n"
+        "        return None\n"
+        "\n"
+        "    async def _hmwa_hygiene_notify(self, source, meta, message, what):\n"
+        "        try:\n"
+        "            _adapter = self._adapter_for_source(source)\n"
+        "            if _adapter and source.chat_id:\n"
+        "                await _adapter.send(source.chat_id, message, metadata=meta)\n"
+        "        except Exception as _werr:\n"
+        "            logger.warning('Failed to deliver %s to user: %s', what, _werr)\n"
+        "\n"
+        "    async def _handle_message_with_agent(self, event, source, _quick_key, run_generation):\n"
+        "        response = 'ok'\n"
+        "        _response_time = 1\n"
+        "        agent_result = {}\n"
+        "        return response\n"
+    )
+
+    patched = patcher.apply_gateway_fragment(content, "gateway/run_turn.py")
+
+    assert patcher.HYGIENE_NOTICE_PATCH_BEGIN in patched
+    assert "handle_platform_notice_from_hermes" in patched
+    assert (
+        "if _hfc_handle_hygiene_notice(self, source, message):" in patched
+    )
+    assert patched.index(patcher.HYGIENE_NOTICE_PATCH_BEGIN) < patched.index(
+        "_adapter = self._adapter_for_source(source)"
+    )
+    assert (
+        patcher.apply_gateway_fragment(patched, "gateway/run_turn.py") == patched
+    )
+    assert patcher.remove_patch(patched) == content
+
+
 def test_cron_marker_block_in_other_function_is_not_owned():
     content = (
         "def other():\n"

@@ -123,6 +123,32 @@ reply_to, is_ephemeral_response)`，并在 `_record_delivery_obligation` 中引�
 
 ---
 
+## 〇-C、hygiene 压缩通知收纳进 notice 极简卡（2026-09-15，本地新增补丁组）
+
+Hermes 的会话卫生压缩通知（如 zh `gateway.compress.turnhold_deferred`
+"ℹ️ 上下文压缩已推迟 — 摘要仍在生成中。本回合将不压缩继续。"）由
+`run_turn.py::_hmwa_hygiene_notify` 经适配器裸 `send()` 原生直发，绕开卡片链路，
+飞书原生文本样式过大。本地新增补丁组收纳进 notice 极简卡：
+
+- `install/patcher.py`：新增 `HYGIENE_NOTICE_PATCH_BEGIN/END` marker、
+  `_render_hygiene_notice_hook_block`、`_apply_hygiene_notice_patch`（锚定
+  `_hmwa_hygiene_notify` 函数体开头插入 hook，函数缺失则 no-op），接入
+  `apply_gateway_fragment`、`remove_patch`、`remove_patch_lenient` 元组与
+  run.py `LegacyTargetPatchAdapter.owned_markers`。
+  hook 块复用 `handle_platform_notice_from_hermes(self, source, message)`，
+  命中分类即 `return None` 抑制原生直发；未命中/异常 fail-open 回原生。
+- `hook_runtime.py::_hfc_classify_system_notice`：新增中文压缩通知匹配
+  （`上下文压缩` / `压缩已中止` / `压缩模型` → `compression` 分类）；英文
+  变体已被既有 `"context compression"` 规则覆盖。notice 卡经
+  `_hfc_schedule_platform_notice_card` 投递（metadata=None，不进话题，符合 2.6）。
+- 测试：`test_apply_patch_installs_hygiene_notice_card_hook`、
+  `test_chinese_compression_notice_classification`、ledgered 往返断言；
+  两个 fixture 的 `run_turn.py` 增加 `_hmwa_hygiene_notify` 方法。
+
+> 上游若自行实现同类通知卡片化，合并时以上游为准并移除本节差异。
+
+---
+
 ## 一、render.py
 
 ### 1.1 GIF 动画 footer

@@ -5218,6 +5218,19 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "notice_kind": "compression",
             "notice_id": _hfc_content_notice_id("compression", text),
         }
+    if (
+        "上下文压缩" in text
+        or "压缩已中止" in text
+        or "压缩模型" in text
+    ):
+        # zh locale compression notices (turnhold_deferred / aborted /
+        # aux_failed); English variants already match the rule above.
+        return {
+            "title": "上下文压缩提示",
+            "level": "info",
+            "notice_kind": "compression",
+            "notice_id": _hfc_content_notice_id("compression", text),
+        }
     if "gateway shutting down" in lowered or "gateway restart" in lowered:
         return {
             "title": "网关状态",
