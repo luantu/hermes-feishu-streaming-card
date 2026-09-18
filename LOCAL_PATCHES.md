@@ -148,6 +148,9 @@ Hermes 的会话卫生压缩通知（如 zh `gateway.compress.turnhold_deferred`
   `handle_platform_notice_from_hermes`）增加 `force_independent` 开关，hygiene
   hook 块固定传 `force_independent=True`，压缩通知始终以独立 notice 极简卡
   投递（`notice_scope="independent"`，独立 message_id，按内容+锚点去重）。
+  **补充（同日）**：force_independent 时 reply_to 置 None 并剥离 context 的
+  thread_id——通知卡不引用触发消息、不进话题（原生行为是独立一条消息，
+  引用会让它在会话里看起来像回复某条消息）。
 - 测试：`test_apply_patch_installs_hygiene_notice_card_hook`、
   `test_chinese_compression_notice_classification`、ledgered 往返断言；
   两个 fixture 的 `run_turn.py` 增加 `_hmwa_hygiene_notify` 方法。

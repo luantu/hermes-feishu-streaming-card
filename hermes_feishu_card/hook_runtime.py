@@ -6619,12 +6619,26 @@ def handle_platform_notice_from_hermes(
         adapter = _hfc_feishu_adapter_from_runner(runner, source)
         if adapter is None:
             return False
+        notice_context = _hfc_notice_context_from_source(source)
+        if force_independent and isinstance(notice_context, dict):
+            # Fork policy: a standalone notice card never quotes a message or
+            # lands in a topic, regardless of what triggered it. Keep
+            # message_id (dedup anchor) and profile_id (routing).
+            notice_context = {
+                key: value
+                for key, value in notice_context.items()
+                if key != "thread_id"
+            }
         _hfc_schedule_platform_notice_card(
             adapter=adapter,
             chat_id=chat_id,
             content=str(content or ""),
-            reply_to=str(getattr(source, "message_id", "") or "").strip() or None,
-            notice_context=_hfc_notice_context_from_source(source),
+            reply_to=(
+                None
+                if force_independent
+                else str(getattr(source, "message_id", "") or "").strip() or None
+            ),
+            notice_context=notice_context,
             force_independent=force_independent,
         )
         return True

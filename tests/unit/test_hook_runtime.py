@@ -3880,6 +3880,44 @@ def test_chinese_compression_notice_classification():
     assert aborted["notice_kind"] == "compression"
 
 
+def test_force_independent_notice_never_quotes_or_threads(monkeypatch):
+    captured = {}
+
+    def fake_schedule(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        hook_runtime, "_hfc_schedule_platform_notice_card", fake_schedule
+    )
+    monkeypatch.setattr(
+        hook_runtime, "_hfc_direct_card_allowed_sync", lambda chat_id: True
+    )
+    monkeypatch.setattr(
+        hook_runtime,
+        "_hfc_feishu_adapter_from_runner",
+        lambda runner, source: SimpleNamespace(),
+    )
+    source = SimpleNamespace(
+        platform="feishu",
+        chat_id="oc_abc",
+        message_id="om_trigger",
+        thread_id="omt_thread",
+    )
+    assert (
+        hook_runtime.handle_platform_notice_from_hermes(
+            SimpleNamespace(),
+            source,
+            "ℹ️ 上下文压缩已推迟 — 摘要仍在生成中。本回合将不压缩继续。",
+            force_independent=True,
+        )
+        is True
+    )
+    assert captured["reply_to"] is None
+    assert "thread_id" not in captured["notice_context"]
+    assert captured["notice_context"]["message_id"] == "om_trigger"
+    assert captured["force_independent"] is True
+
+
 def test_background_process_notice_classification_and_stable_id():
     running = hook_runtime._hfc_classify_system_notice(
         "[Background process proc_109e6dc419af is still running~ "
