@@ -3,7 +3,7 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.6.4 合并后（2026-09-20，merge commit 待提交）
+> 最后更新：V4.6.4 合并后（2026-09-20，merge commit cc4fe46）
 
 ---
 
@@ -63,6 +63,26 @@
 - **`hermes_feishu_card/assets/loading.gif`**：上游删除，本地 GIF footer 特性依赖 →
   从合并前 HEAD 恢复。
 - 并发会话 stash 改动（uniapi/ 等 provider 前缀归一化修复 + 测试）已随合并恢复并应用。
+
+### 合并中修复的一个真实 bug
+- `emit_from_hermes_locals_async` 本地日志直接访问 `order_identity.turn_id/turn_key`
+  属性，而上游测试用字符串 stub → AttributeError 被 `except Exception` 吞掉导致终态
+  投递静默失败。已改为 `getattr` 安全访问（真实环境行为不变），
+  `test_terminal_events_take_the_retrying_path` 通过。
+
+### 已知待甄别项（上游 v4.6 新功能场景，非本地回归）
+合并后完整测试 127 failed / 3940 passed / 18 skipped vs 基线 113 failed /
+3495 passed / 9 skipped。全部失败均在基线集合内，**另新增 6 个 integration 失败**
+（均为上游 v4.6 新功能测试，合并前不存在）：
+- `test_combined_stability.py::test_restart_does_not_refill_original_after_terminal_recovery_send`
+- `test_interaction_continuation.py::test_continuation_send_failure_keeps_original_content_and_does_not_retry_each_delta`
+- `test_legacy_owner_fallback.py::test_restored_legacy_owner_does_not_change_new_text_receipt_dialect[completed/failed]`
+- `test_server_notice_lifecycle.py::test_completion_notification_waits_for_success_and_keeps_the_receipt`
+- `test_server_notice_lifecycle.py::test_hook_registration_and_event_delivery_share_the_single_client_profile`
+
+特征：续答分段失败重试、跨进程 session_store 恢复、notice 生命周期收据——与本地
+2.3 同会话多卡收尾 / 2.5 会话释放 / 3.5 notice 分类过滤的交互有待甄别。不影响
+安装/现有路径（patcher 与既有功能测试全过）。下次合并前应逐项确认。
 
 
 
