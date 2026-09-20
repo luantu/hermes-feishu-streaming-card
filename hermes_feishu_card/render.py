@@ -2462,10 +2462,11 @@ def _render_footer(
             waiting.append(f"↑{_format_count(input_tokens)} · ↓{_format_count(output_tokens)}")
         return " · ".join(waiting)
     if session.status != "completed" and display_status != "completed" and not failed:
-        # Fork (LOCAL_PATCHES 1.1): while still in the bare initial loading state
-        # (no tool activity yet), prefer the animated GIF footer; once tools or an
-        # action phrase exist, the upstream information footer takes over.
-        if loading_gif_img_key and not session.tool_count and not _latest_running_action_phrase(session):
+        # Fork (LOCAL_PATCHES 1.1): the animated GIF plays for the whole
+        # thinking/running phase. The tool count, elapsed time and action
+        # phrase remain visible in the header (v4.6 "工具 #N · time"), so the
+        # footer keeps the animation the fork's users asked for.
+        if loading_gif_img_key:
             return _render_thinking_footer_gif(loading_gif_img_key)
         # A live clock: elapsed since the turn started, so a long silent stretch reads as
         # "it has been going 4 minutes" instead of an apparently frozen card. Feishu only
