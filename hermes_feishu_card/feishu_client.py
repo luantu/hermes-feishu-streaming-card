@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ import ssl
 import certifi
 
 from .card_limits import serialize_card_for_delivery
+
+logger = logging.getLogger(__name__)
 
 
 _RETRYABLE_HTTP_STATUSES = {429, 502, 503, 504}
@@ -158,6 +161,8 @@ class FeishuClient:
         self._trust_env = not _should_bypass_proxy(config.base_url)
         self._tenant_access_token: str | None = None
         self._tenant_access_token_expires_at = 0.0
+        from .cardkit import CardKitTransport
+        self.cardkit = CardKitTransport(self)
 
     def build_message_payload(
         self,
@@ -199,6 +204,51 @@ class FeishuClient:
         )
         return result.message_id
 
+    async def _resolve_thread_anchor(self, thread_id: str) -> str:
+        """Newest-known message inside ``thread_id``, usable as a reply anchor.
+
+        Feishu cannot address a topic directly: ``message.create`` takes a ``chat_id`` receive id
+        and, in a topic group, an unanchored create becomes a NEW topic instead of landing in the
+        existing one. The gateway adapter already resolves an anchor for its own sends
+        (``_fetch_last_message_in_thread``); this client serves the sidecar's card deliveries
+        (notice and interaction cards) and did not — so a topic-bound card that arrived without a
+        reply anchor (a heartbeat/notice whose event carried ``thread_id`` but no
+        ``reply_to_message_id``) started its own topic and detached from the conversation.
+
+        Returns ``""`` on any failure so the caller keeps its previous routing, and logs why:
+        the failure path used to be silent, which is why this went unnoticed for so long.
+        """
+        if not thread_id:
+            return ""
+        try:
+            token = await self._tenant_token()
+            body = await self._request_json(
+                "GET",
+                "/im/v1/messages",
+                token=token,
+                params={
+                    "container_id_type": "thread",
+                    "container_id": thread_id,
+                    "page_size": "1",
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "[feishu-card] thread anchor lookup failed: thread_hash=%s error_kind=%s",
+                sha256(thread_id.encode()).hexdigest()[:12], type(exc).__name__
+            )
+            return ""
+        items = (body.get("data") or {}).get("items") or []
+        for item in items:
+            message_id = item.get("message_id") if isinstance(item, dict) else None
+            if isinstance(message_id, str) and message_id.startswith("om_"):
+                return message_id
+        logger.warning(
+            "[feishu-card] no anchor inside topic: thread_hash=%s; unanchored fallback",
+            sha256(thread_id.encode()).hexdigest()[:12],
+        )
+        return ""
+
     async def send_card_delivery(
         self,
         chat_id: str,
@@ -208,6 +258,10 @@ class FeishuClient:
         delivery_uuid: Optional[str] = None,
         reply_in_thread: bool = False,
     ) -> FeishuSendResult:
+        if thread_id and not reply_to_message_id:
+            # A topic-bound card MUST reply to a message inside the topic; without an anchor the
+            # create below silently starts a new topic.
+            reply_to_message_id = await self._resolve_thread_anchor(thread_id) or None
         if reply_in_thread and not reply_to_message_id:
             raise ValueError("reply_to_message_id is required for reply_in_thread")
         if delivery_uuid is not None:
@@ -215,6 +269,20 @@ class FeishuClient:
                 raise ValueError("delivery_uuid must be a non-empty string")
             if len(delivery_uuid) > 50:
                 raise ValueError("delivery_uuid must not exceed 50 characters")
+
+        if not isinstance(chat_id, str) or not chat_id.strip():
+            raise ValueError("chat_id is required")
+        if not isinstance(card, dict):
+            raise TypeError("card must be a dict")
+
+        if (isinstance(card, dict) and card.get("schema") == "2.0"
+                and isinstance(card.get("config"), dict)
+                and card["config"].get("streaming_mode") is True):
+            return await self.cardkit.send(
+                chat_id, card, thread_id=thread_id,
+                reply_to_message_id=reply_to_message_id,
+                reply_in_thread=reply_in_thread, delivery_uuid=delivery_uuid,
+            )
 
         payload = self.build_message_payload(
             chat_id,
@@ -296,6 +364,8 @@ class FeishuClient:
             raise ValueError("message_id is required")
         if not isinstance(card, dict):
             raise TypeError("card must be a dict")
+        if await self.cardkit.update(message_id, card):
+            return
         content = serialize_card_for_delivery(card)
         token = await self._tenant_token()
         await self._request_json(
@@ -303,6 +373,21 @@ class FeishuClient:
             f"/im/v1/messages/{quote(message_id, safe='')}",
             token=token,
             json_body={"content": content},
+        )
+
+    async def delete_message(self, message_id: str) -> None:
+        """Recall a message the bot itself posted.
+
+        Used to withdraw a dead approval card: once the runtime that asked for consent is gone,
+        the card can never be completed, and leaving it on screen invites a second dead click.
+        """
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise ValueError("message_id is required")
+        token = await self._tenant_token()
+        await self._request_json(
+            "DELETE",
+            f"/im/v1/messages/{quote(message_id, safe='')}",
+            token=token,
         )
 
     async def send_text_message(

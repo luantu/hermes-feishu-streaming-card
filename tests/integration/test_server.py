@@ -24,6 +24,7 @@ from hermes_feishu_card import server as sidecar_server
 from hermes_feishu_card.bots import RouteResult
 from hermes_feishu_card.card_limits import inspect_card_limits
 from hermes_feishu_card.events import SidecarEvent
+from hermes_feishu_card.metrics import SidecarMetrics
 from hermes_feishu_card.delivery_policy import ChatDeliveryPolicy
 from hermes_feishu_card.event_auth import (
     sign_event_request,
@@ -161,10 +162,12 @@ class FakeFeishuClient:
         self.sent = []
         self.sent_reply_in_thread = []
         self.updated = []
+        self.deleted = []
         self.texts = []
         self.texts_reply_in_thread = []
         self.operations = []
         self.fail_send = False
+        self.fail_delete = False
         self.fail_text = False
         self.send_delay = 0.0
         self.update_failures_remaining = 0
@@ -195,6 +198,12 @@ class FakeFeishuClient:
             raise RuntimeError(self.update_error_message)
         self.updated.append((message_id, card))
         self.operations.append("update")
+
+    async def delete_message(self, message_id):
+        if self.fail_delete:
+            raise RuntimeError("recall refused")
+        self.deleted.append(message_id)
+        self.operations.append("delete")
 
     async def send_text_message(
         self,
@@ -509,6 +518,11 @@ def interaction_buttons(card):
         root_elements = card.get("body", {}).get("elements", [])
     walk(root_elements)
     return found
+
+
+def cards_edited_into(feishu_client, message_id):
+    """Every card pushed onto *message_id* — empty while a card still holds its first content."""
+    return [card for edited_id, card in feishu_client.updated if edited_id == message_id]
 
 
 def operations_action_payload(
@@ -2155,7 +2169,11 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
     assert body["delivery"] == {"mode": "live"}
     assert body["event_auth_required"] is False
     assert body["active_sessions"] == 0
-    assert body["metrics"] == {
+    # Behavior contract, not a snapshot. This used to compare the WHOLE metrics payload against the
+    # literal below, which made every new counter a failure while catching nothing extra: the set
+    # comparison catches what matters (a counter that stops being reported), and the literal pins
+    # what this test is about — a fresh sidecar reports zero for everything it knows.
+    expected_metrics = {
         "events_received": 0,
         "events_applied": 0,
         "events_ignored": 0,
@@ -2218,7 +2236,15 @@ async def test_health_reports_healthy_status_and_active_sessions(client):
         "sessions_collected": 0,
         "zombie_sessions_collected": 0,
         "flush_controllers_collected": 0,
+        "ephemeral_recalls_scheduled": 0,
+        "ephemeral_recalls_completed": 0,
+        "ephemeral_recall_failures": 0,
     }
+    reported_metrics = body["metrics"]
+    assert set(reported_metrics) == set(SidecarMetrics().snapshot())
+    assert {
+        key: reported_metrics[key] for key in expected_metrics
+    } == expected_metrics
     assert body["reply_index"] == {"entries": 0, "last_lookup": {}}
     assert body["cron"] == {"cards_sent": 0, "fallbacks": 0}
     assert body["profile_diagnostics"] == {}
@@ -7839,9 +7865,15 @@ async def test_v4_runtime_header_and_interim_body_share_one_card(client):
         ),
     )
 
-    _, running = await wait_for_card_update(feishu_client, "正在读取：weather_client.py")
-    assert running["header"]["title"]["content"] == "Hermes Agent"
-    assert running["header"]["subtitle"]["content"] == "正在读取：weather_client.py"
+    _, running = await wait_for_card_update(feishu_client, "读取文件：weather_client.py")
+    # Maintainer note (contract change): was "⏳ 正在读取 · Hermes Agent". The user asked the title
+    # to lead with the session name and the running metrics; the action phrase then moved OFF the
+    # title onto the header's second row ("标题的正在使用之类的，放到第二行").
+    assert running["header"]["title"]["content"] == "⏳ Hermes Agent · 工具 #1"
+    assert running["header"]["subtitle"]["content"] == "读取文件：weather_client.py"
+    # The user asked the second row to name the concrete work, so the target IS in the header now
+    # (capped); it also still renders in the content-area tool row.
+    assert "读取文件：weather_client.py" in str(running)
     assert "我先检查天气客户端。" in str(running)
     assert all(
         message_id == "feishu-message-1"
@@ -7867,8 +7899,10 @@ async def test_v4_runtime_header_and_interim_body_share_one_card(client):
         feishu_client,
         "广州今天有短时阵雨。",
     )
-    assert completed["header"]["title"]["content"] == "Hermes Agent"
-    assert "正在读取：weather_client.py" not in str(completed["header"])
+    # Maintainer note (contract change): was "✅ Hermes Agent" — the completed title now carries
+    # duration + tool count too (duration 3.0 was posted above), phrase dropped.
+    assert completed["header"]["title"]["content"] == "✅ Hermes Agent · 工具 #1 · 3s"
+    assert "读取文件：weather_client.py" not in str(completed["header"])
     assert "gpt-5.5" in str(completed)
 
 
@@ -7930,8 +7964,11 @@ async def test_v4_interaction_restores_cached_preview_on_stable_v2_card(client):
 
     assert response.status == 200
     _, resumed = await wait_for_card_update(feishu_client, "已选择：允许一次")
-    assert resumed["header"]["title"]["content"] == "Hermes Agent"
-    assert resumed["header"]["subtitle"]["content"] == "正在读取：weather_client.py"
+    # Maintainer note (contract change): was "⏳ 正在读取 · Hermes Agent" — see the note in
+    # test_v4_runtime_header_and_interim_body_share_one_card. The phrase is the second row now.
+    assert resumed["header"]["title"]["content"] == "⏳ Hermes Agent · 工具 #1"
+    assert resumed["header"]["subtitle"]["content"] == "读取文件：weather_client.py"
+    assert "读取文件：weather_client.py" in str(resumed)
     assert len(feishu_client.sent) == 2
     assert feishu_client.updated[-1][0] == "feishu-message-1"
 
@@ -8045,13 +8082,16 @@ async def test_interaction_promotion_finalizes_predecessor_snapshot(client):
     snapshot = predecessor_snapshots[0]
     assert snapshot["header"] == {
         "template": "green",
-        "title": {"tag": "plain_text", "content": "Scoped Hermes Agent"},
+        # Maintainer note (contract change): the completed title carries the metrics too
+        # ("✅ Scoped Hermes Agent · 工具 #1"), per the user's request — see the note in
+        # test_v4_runtime_header_and_interim_body_share_one_card.
+        "title": {"tag": "plain_text", "content": "✅ Scoped Hermes Agent · 工具 #1"},
         "subtitle": {"tag": "plain_text", "content": "已转入交互卡片"},
     }
     assert snapshot["config"]["summary"]["content"] == "已转入交互卡片"
     assert "我先检查天气客户端。" in str(snapshot)
     assert "read_file" in str(snapshot)
-    assert "正在读取：weather_client.py" not in str(snapshot["header"])
+    assert "读取文件：weather_client.py" not in str(snapshot["header"])
     assert interaction_buttons(snapshot) == []
     assert "approval-handoff" not in str(snapshot)
 
@@ -8086,9 +8126,12 @@ async def test_v4_preview_burst_coalesces_and_late_preview_cannot_reopen_card(
         )
     assert all(response.status == 200 for response in responses)
 
-    _, running = await wait_for_card_update(feishu_client, "正在读取：file-15.py")
-    assert running["header"]["title"]["content"] == "Hermes Agent"
-    assert running["header"]["subtitle"]["content"] == "正在读取：file-15.py"
+    _, running = await wait_for_card_update(feishu_client, "读取文件：file-15.py")
+    # Maintainer note (contract change): was "⏳ 正在读取 · Hermes Agent" — the title now carries the
+    # tool count (15 updates = 15 tool calls here); the action phrase is the header's second row.
+    assert running["header"]["title"]["content"] == "⏳ Hermes Agent · 工具 #15"
+    assert running["header"]["subtitle"]["content"] == "读取文件：file-15.py"
+    assert "读取文件：file-15.py" in str(running)
 
     completed = await test_client.post(
         "/events",
@@ -8188,7 +8231,7 @@ async def test_completion_notify_updates_card_then_mentions_once_when_enabled(
     feishu_client = FakeFeishuClient()
     app = create_app(
         feishu_client,
-        card_config={"completion_notify": {"enabled": True}},
+        card_config={"completion_notify": {"placement": "message", "enabled": True}},
         native_handoff_store=NativeHandoffStore(tmp_path / "handoff-state"),
     )
     server = TestServer(app)
@@ -8227,7 +8270,7 @@ async def test_completion_notify_updates_card_then_mentions_once_when_enabled(
         assert feishu_client.texts == [
             (
                 "oc_abc",
-                '<at user_id="ou_sender-01"></at> ✅ 任务已完成（用时 1m5s）',
+                '<at user_id="ou_sender-01"></at> ✅ 本轮回复结束（用时 1m5s）',
                 "omt_thread",
                 "om_user_message",
             )
@@ -8246,7 +8289,7 @@ async def test_completion_notify_sends_plain_without_sender_when_mention_disable
     feishu_client = FakeFeishuClient()
     app = create_app(
         feishu_client,
-        card_config={"completion_notify": {"enabled": True, "mention": False}},
+        card_config={"completion_notify": {"placement": "message", "enabled": True, "mention": False}},
         native_handoff_store=NativeHandoffStore(tmp_path / "handoff-state"),
     )
     server = TestServer(app)
@@ -8278,7 +8321,7 @@ async def test_completion_notify_sends_plain_without_sender_when_mention_disable
         assert first.status == 200
         assert replay.status == 200
         assert feishu_client.texts == [
-            ("oc_abc", "✅ 任务已完成", "omt_thread", None)
+            ("oc_abc", "✅ 本轮回复结束", "omt_thread", None)
         ]
         session = app[SESSIONS_KEY]["hermes-message-1"]
         assert session.completion_notify_state == "sent"
@@ -8294,7 +8337,7 @@ async def test_completion_notify_rejects_invalid_sender_when_mention_enabled(
     feishu_client = FakeFeishuClient()
     app = create_app(
         feishu_client,
-        card_config={"completion_notify": {"enabled": True}},
+        card_config={"completion_notify": {"placement": "message", "enabled": True}},
         native_handoff_store=NativeHandoffStore(tmp_path / "handoff-state"),
     )
     server = TestServer(app)
@@ -8332,7 +8375,7 @@ async def test_completion_notify_preserves_reply_in_thread_without_thread_id(
     feishu_client = FakeFeishuClient()
     app = create_app(
         feishu_client,
-        card_config={"completion_notify": {"enabled": True}},
+        card_config={"completion_notify": {"placement": "message", "enabled": True}},
         native_handoff_store=NativeHandoffStore(tmp_path / "handoff-state"),
     )
     server = TestServer(app)
@@ -8368,7 +8411,7 @@ async def test_completion_notify_preserves_reply_in_thread_without_thread_id(
         assert feishu_client.texts == [
             (
                 "oc_abc",
-                '<at user_id="ou_sender-01"></at> ✅ 任务已完成',
+                '<at user_id="ou_sender-01"></at> ✅ 本轮回复结束',
                 None,
                 "om_user_message",
             )
@@ -8384,7 +8427,7 @@ async def test_completion_notify_rejects_spoofed_sender_and_failed_send_is_retry
     feishu_client = FakeFeishuClient()
     app = create_app(
         feishu_client,
-        card_config={"completion_notify": {"enabled": True}},
+        card_config={"completion_notify": {"placement": "message", "enabled": True}},
         native_handoff_store=NativeHandoffStore(tmp_path / "handoff-state"),
     )
     server = TestServer(app)
@@ -10491,7 +10534,9 @@ async def test_signed_sensitive_route_uses_raw_encoded_path_for_proof():
     assert body == {"ok": True, "summary": "encoded path"}
 
 
-async def test_zero_timeout_interaction_rejects_late_choice_and_refreshes_card(client):
+async def test_zero_timeout_approval_explains_expiry_without_reissuing_or_consenting(client):
+    """An expired non-pausable request stays expired and explains how to retry."""
+
     test_client, feishu_client = client
     await test_client.post("/events", json=event_payload("message.started", 0))
     requested = await test_client.post(
@@ -10512,6 +10557,7 @@ async def test_zero_timeout_interaction_rejects_late_choice_and_refreshes_card(c
     waiting_card = feishu_client.sent[-1][1]
     button = interaction_buttons(waiting_card)[0]
     action_value = button["value"]
+    cards_before = len(feishu_client.sent)
 
     callback = await test_client.post(
         "/card/actions",
@@ -10524,22 +10570,26 @@ async def test_zero_timeout_interaction_rejects_late_choice_and_refreshes_card(c
         },
     )
     callback_body = await callback.json()
+    session = test_client.app[SESSIONS_KEY]["hermes-message-1"]
+    interaction = session.active_interaction
     result = await test_client.get("/interactions/approval-expired")
     result_body = await result.json()
-    _message_id, expired_card = await wait_for_card_update(feishu_client, "交互已过期")
 
     assert callback.status == 409
-    assert callback_body["ok"] is False
-    assert callback_body["status"] == "failed"
-    assert callback_body["toast"] == {"type": "warning", "content": "交互已过期"}
-    assert callback_body["card"].get("schema") is None
-    assert "body" not in callback_body["card"]
-    assert "交互已过期" in str(callback_body["card"])
-    assert result.status == 200
-    assert result_body["status"] == "failed"
-    assert result_body["error"] == "交互已过期"
-    assert _message_id == "feishu-message-1"
-    assert "已选择" not in str(expired_card)
+    assert "重新发送原请求" in callback_body["toast"]["content"]
+    assert interaction.choice == "" and result_body["choice"] == ""
+    assert len(feishu_client.sent) == cards_before
+    assert not interaction_buttons(callback_body['card'])
+    assert (await test_client.post(
+        "/card/actions",
+        json={
+            "event": {
+                "operator": {"open_id": "ou_bailey", "name": "Bailey"},
+                "context": {"open_chat_id": "oc_abc"},
+                "action": {"value": action_value},
+            }
+        },
+    )).status == 404
 
 
 async def test_periodic_expiry_marks_pending_result_and_patches_existing_card(client):
@@ -10611,7 +10661,7 @@ async def test_card_config_customizes_header_title():
         await test_client.close()
 
     assert response.status == 200
-    assert feishu_client.sent[0][1]["header"]["title"]["content"] == "研发助手"
+    assert feishu_client.sent[0][1]["header"]["title"]["content"] == "⏳ 执行中 · 研发助手"
 
 
 async def test_invalid_event_returns_400_json(client):
@@ -10731,6 +10781,27 @@ async def test_independent_system_notice_without_started_sends_notice_card(clien
     assert feishu_client.updated == []
 
 
+def _retained_heartbeat_notice(text: str) -> dict:
+    """The heartbeat notice shape the SIDECAR still understands.
+
+    Maintainer note (contract change): ``hook_runtime._hfc_classify_system_notice`` no longer
+    returns a notice for any ⏳ status line — the whole family goes out as plain text now (see
+    tests/unit/test_hook_runtime.py::test_status_notice_family_is_plain_text_but_other_notices_still_are_cards),
+    so real traffic never sends this event any more. These sidecar tests keep exercising the
+    heartbeat branch of the notice-card machinery on purpose: that code still ships (it is upstream
+    code, and upstream's own classifier still emits this kind), and any caller that posts this shape
+    still gets a recallable heartbeat notice out of it.
+    """
+    assert text.startswith("⏳ Working — "), text
+    return {
+        "title": "运行中",
+        "level": "info",
+        "notice_kind": "heartbeat",
+        "notice_id": "heartbeat",
+        "notice_terminal": False,
+    }
+
+
 async def test_orphaned_heartbeats_update_one_running_notice_card(client):
     test_client, feishu_client = client
     texts = (
@@ -10741,8 +10812,7 @@ async def test_orphaned_heartbeats_update_one_running_notice_card(client):
     message_ids = []
 
     for sequence, text in enumerate(texts, start=1):
-        notice = hook_runtime._hfc_classify_system_notice(text)
-        assert notice is not None
+        notice = _retained_heartbeat_notice(text)
         message_id = hook_runtime._hfc_independent_notice_message_id(
             "oc_1", text, notice, anchor="om_user_task"
         )
@@ -10831,8 +10901,10 @@ async def test_compaction_notice_updates_existing_primary_card(client):
     assert len(feishu_client.sent) == 1
     await _wait_until(lambda: len(feishu_client.updated) == 1)
     updated_card = feishu_client.updated[0][1]
-    assert updated_card["header"]["title"]["content"] == "正在压缩上下文"
-    assert "subtitle" not in updated_card["header"]
+    # The phase no longer replaces the session title: the title still answers "is it still
+    # working?", and the phase renders beneath it.
+    assert updated_card["header"]["title"]["content"] == "⏳ 执行中 · Hermes Agent"
+    assert updated_card["header"]["subtitle"]["content"] == "正在压缩上下文"
 
 
 async def test_compaction_first_creates_topic_primary_card_and_continues_stream(client):
@@ -10856,7 +10928,7 @@ async def test_compaction_first_creates_topic_primary_card_and_continues_stream(
     assert len(feishu_client.sent) == 1
     assert feishu_client.sent[0][2] == conversation_id
     assert feishu_client.sent[0][3] == message_id
-    assert feishu_client.sent[0][1]["header"]["title"]["content"] == "正在压缩上下文"
+    assert feishu_client.sent[0][1]["header"]["title"]["content"] == "⏳ 执行中 · Hermes Agent"
     assert message_id in test_client.app[SESSIONS_KEY]
 
     continued = await test_client.post(
@@ -11437,7 +11509,8 @@ async def test_replayed_started_with_higher_sequence_does_not_block_later_delta(
     assert len(feishu_client.sent) == 1
     assert len(feishu_client.updated) == 1
     assert "后续增量" in str(feishu_client.updated[0][1])
-    assert "生成中" in str(feishu_client.updated[0][1])
+    assert "执行中" in str(feishu_client.updated[0][1])
+    assert "生成中" not in str(feishu_client.updated[0][1])
 
 
 async def test_delta_after_completed_does_not_update_again(client):
@@ -11519,7 +11592,7 @@ async def test_parallel_message_sessions_update_their_own_feishu_cards(client):
     assert set(updates_by_message) == {"feishu-message-1", "feishu-message-2"}
     assert any("第一条完成" in card for card in updates_by_message["feishu-message-1"])
     assert any(
-        '<font color="blue">' in card and "**search** · 进行中" in card
+        '<font color="blue">' in card and "**search** · #1 · 执行中" in card
         for card in updates_by_message["feishu-message-2"]
     )
 
@@ -11580,7 +11653,7 @@ async def test_terminal_event_with_stale_sequence_still_finalizes_card(client):
     assert await completed.json() == {"ok": True, "applied": True}
     await wait_for_card_update(feishu_client, "最终答案")
     assert "最终答案" in str(feishu_client.updated[-1][1])
-    assert "已完成" in str(feishu_client.updated[-1][1])
+    assert "本轮回复结束" in str(feishu_client.updated[-1][1])
 
 
 async def test_concurrent_streaming_deltas_share_message_update_window(client):
@@ -12273,7 +12346,7 @@ async def test_started_card_title_uses_bot_over_profile_and_global():
 
     assert response.status == 200
     sent_card = factory.clients["sales"].sent[0][1]
-    assert sent_card["header"]["title"]["content"] == "Sales Bot"
+    assert sent_card["header"]["title"]["content"] == "⏳ 执行中 · Sales Bot"
 
 
 async def test_session_card_config_preserves_base_text_size_roles_on_profile_override():
@@ -13135,3 +13208,711 @@ async def test_approval_preflight_uses_compact_card_even_after_long_answer(clien
     assert (await response.json())["applied"] is True
     assert interaction_buttons(feishu_client.sent[-1][1])[0]["value"]["choice"] == "once"
     assert not feishu_client.texts
+
+
+async def test_interaction_callback_ack_does_not_wait_for_blocked_feishu_patch(client, monkeypatch):
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'slow-patch-choice', 'kind': 'clarify', 'prompt': 'Choose',
+        'options': [{'label': 'A', 'value': 'a'}],
+    }))
+    value = interaction_buttons(feishu_client.sent[-1][1])[0]['value']
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    original = feishu_client.update_card_message
+
+    async def blocked(message_id, card):
+        await release.wait()
+        await original(message_id, card)
+        finished.set()
+
+    monkeypatch.setattr(feishu_client, 'update_card_message', blocked)
+    try:
+        response = await asyncio.wait_for(test_client.post('/card/actions', json={'event': {
+            'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+            'action': {'value': value},
+        }}), timeout=0.5)
+        assert response.status == 200
+        body = await response.json()
+        assert '已选择：A' in str(body['card'])
+        assert not finished.is_set()
+        result = await test_client.get('/interactions/slow-patch-choice')
+        assert (await result.json())['choice'] == 'a'
+    finally:
+        release.set()
+    await asyncio.wait_for(finished.wait(), 1)
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+async def test_cardkit_opt_in_reaches_live_renderer_and_closes_at_terminal(streaming):
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config={'streaming_mode': streaming, 'flush_interval_ms': 0})
+    async with TestClient(TestServer(app)) as test_client:
+        response = await test_client.post('/events', json=event_payload('message.started', 0))
+        assert response.status == 200
+        assert feishu_client.sent[0][1]['config'].get('streaming_mode', False) is streaming
+        await test_client.post('/events', json=event_payload('message.completed', 1, {'answer': 'complete tail'}))
+        await wait_for_card_update(feishu_client, 'complete tail')
+        assert feishu_client.updated[-1][1]['config'].get('streaming_mode', False) is False
+
+
+async def test_completion_mention_can_use_answer_card_without_extra_message():
+    feishu_client = FakeFeishuClient()
+    app = create_app(feishu_client, card_config={'completion_notify': {'enabled': True, 'placement': 'card'}})
+    async with TestClient(TestServer(app)) as test_client:
+        await test_client.post('/events', json=event_payload('message.started', 0, {'sender_open_id': 'ou_requester'}))
+        await test_client.post('/events', json=event_payload('message.completed', 1, {'answer': 'Answer tail'}))
+        await wait_for_card_update(feishu_client, 'Answer tail')
+        card = feishu_client.updated[-1][1]
+        body = next(item['content'] for item in card['body']['elements'] if item.get('element_id') == 'main_content')
+        assert body.startswith('<at id="ou_requester"></at>\n\nAnswer tail')
+        assert feishu_client.texts == []
+
+
+async def test_expired_approval_pauses_then_requires_fresh_explicit_consent(client):
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'pause-consent', 'kind': 'approval', 'prompt': 'Review operation',
+        'description': 'exact operation scope', 'pause_on_timeout': True, 'timeout_seconds': 300,
+        'options': [{'label': 'Allow once', 'value': 'once'}, {'label': 'Deny', 'value': 'deny'}],
+    }, thread_id='omt_topic'))
+    old_choice = interaction_buttons(feishu_client.sent[-1][1])[0]['value']
+    session = test_client.app[SESSIONS_KEY]['hermes-message-1']
+    interaction = session.active_interaction
+    assert interaction.feishu_message_id  # the approval card is tracked so it can be reused
+    cards_sent = len(feishu_client.sent)
+    interaction.requested_at -= 301
+    result = await test_client.get('/interactions/pause-consent')
+    assert (await result.json())['status'] == 'paused'
+    assert interaction.choice == ''
+    await _wait_until(lambda: cards_edited_into(feishu_client, interaction.feishu_message_id))
+    paused = cards_edited_into(feishu_client, interaction.feishu_message_id)[-1]
+    resume = interaction_buttons(paused)[0]['value']
+    assert 'exact operation scope' in str(paused)
+    assert resume['token'] != old_choice['token']
+    # Reuse, not a repeat: the paused notice refreshed the approval card instead of being posted
+    # as a second card the user would have to read twice (#314).
+    assert len(feishu_client.sent) == cards_sent
+
+    async def click(value):
+        return await test_client.post('/card/actions', json={'event': {
+            'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+            'action': {'value': value},
+        }})
+    assert (await click(old_choice)).status == 404
+    response = await click(resume)
+    assert response.status == 200
+    renewed = (await response.json())['card']
+    assert interaction.status == 'pending' and interaction.choice == ''
+    fresh_choice = interaction_buttons(renewed)[0]['value']
+    assert fresh_choice['token'] not in {old_choice['token'], resume['token']}
+    assert (await click(resume)).status == 404
+    assert (await click(fresh_choice)).status == 200
+    result = await test_client.get('/interactions/pause-consent')
+    assert (await result.json())['choice'] == 'once'
+
+
+async def test_resume_refreshes_in_place_when_the_dead_card_cannot_be_recalled(client):
+    """Recall is best-effort: a refused recall refreshes that card instead of orphaning it."""
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'pause-dead-recall-refused', 'kind': 'approval', 'prompt': 'Review',
+        'description': 'exact operation scope', 'pause_on_timeout': True, 'timeout_seconds': 300,
+        'options': [{'label': 'Allow once', 'value': 'once'}],
+    }, thread_id='omt_topic'))
+    session = test_client.app[SESSIONS_KEY]['hermes-message-1']
+    interaction = session.active_interaction
+    dead_card_id = interaction.feishu_message_id
+    interaction.requested_at -= 301
+    assert (await (await test_client.get('/interactions/pause-dead-recall-refused')).json())[
+        'status'
+    ] == 'paused'
+    await _wait_until(lambda: cards_edited_into(feishu_client, dead_card_id))
+    resume = interaction_buttons(cards_edited_into(feishu_client, dead_card_id)[-1])[0]['value']
+    cards_before = len(feishu_client.sent)
+    edits_before = len(cards_edited_into(feishu_client, dead_card_id))
+    feishu_client.fail_delete = True
+
+    interaction.last_waiter_poll_at -= 16  # stale by more than the runtime heartbeat window
+    response = await test_client.post('/card/actions', json={'event': {
+        'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+        'action': {'value': resume},
+    }})
+    assert response.status == 409
+    body = await response.json()
+    assert '重新发送原请求' in body['toast']['content']
+    assert not interaction_buttons(body['card'])
+    assert feishu_client.deleted == []
+    assert len(feishu_client.sent) == cards_before
+    assert interaction.feishu_message_id == dead_card_id
+    assert interaction.status == 'failed'
+
+
+async def test_any_option_on_an_expired_approval_reissues_it_instead_of_a_dead_button(client):
+    """The window closed while the card was on screen: every option leads back to a usable card.
+
+    Field report: clicking an option answered with a toast nobody understood ("暂未确认选择结果"),
+    the card never changed, and the approval could not be taken any more.
+    """
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'reissue-on-expired-option', 'kind': 'approval', 'prompt': 'Review',
+        'description': 'exact operation scope', 'pause_on_timeout': True, 'timeout_seconds': 300,
+        'options': [{'label': 'Allow once', 'value': 'once'}, {'label': 'Deny', 'value': 'deny'}],
+    }, thread_id='omt_topic'))
+    session = test_client.app[SESSIONS_KEY]['hermes-message-1']
+    interaction = session.active_interaction
+    expired_option = interaction_buttons(feishu_client.sent[-1][1])[0]['value']
+    dead_card_id = interaction.feishu_message_id
+    cards_before = len(feishu_client.sent)
+    interaction.last_waiter_poll_at = time.time()
+    interaction.requested_at -= 301  # the card is still on screen, its window is not
+
+    async def click(value):
+        return await test_client.post('/card/actions', json={'event': {
+            'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+            'action': {'value': value},
+        }})
+
+    response = await click(expired_option)
+    assert response.status == 200
+    assert '重新审批' in (await response.json())['toast']['content']
+    assert interaction.status == 'pending' and interaction.choice == ''
+    # Renewal is not consent: the withdrawn card's option decides nothing on replay.
+    assert (await click(expired_option)).status == 404
+    assert len(feishu_client.sent) == cards_before
+    assert feishu_client.deleted == []
+    assert interaction.feishu_message_id == dead_card_id
+
+
+async def test_expired_approval_without_pause_requires_a_new_request(client):
+    """A failed request cannot be resurrected by repainting its approval card."""
+
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'reissue-failed-approval', 'kind': 'approval', 'prompt': 'Review',
+        'description': 'exact operation scope', 'timeout_seconds': 300,
+        'options': [{'label': 'Allow once', 'value': 'once'}],
+    }, thread_id='omt_topic'))
+    session = test_client.app[SESSIONS_KEY]['hermes-message-1']
+    interaction = session.active_interaction
+    option = interaction_buttons(feishu_client.sent[-1][1])[0]['value']
+    cards_before = len(feishu_client.sent)
+    interaction.requested_at -= 301
+    assert (await (await test_client.get('/interactions/reissue-failed-approval')).json())[
+        'status'
+    ] == 'failed'
+
+    response = await test_client.post('/card/actions', json={'event': {
+        'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+        'action': {'value': option},
+    }})
+
+    assert response.status == 409
+    assert '重新发送原请求' in (await response.json())['toast']['content']
+    assert interaction.status == 'failed' and interaction.choice == ''
+    assert len(feishu_client.sent) == cards_before
+
+
+@pytest.mark.parametrize('outcome', ['not_sent', 'unknown'])
+async def test_paused_approval_notification_recovers_with_same_uuid(client, monkeypatch, outcome):
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'pause-retry', 'kind': 'approval', 'prompt': 'Review operation',
+        'pause_on_timeout': True, 'timeout_seconds': 300,
+        'options': [{'label': 'Allow once', 'value': 'once'}],
+    }))
+    attempts = []
+
+    async def delivery(chat_id, card, **kwargs):
+        attempts.append(kwargs.pop('delivery_uuid'))
+        if len(attempts) == 1:
+            raise FeishuAPIError('temporary send failure', outcome=outcome)
+        message_id = await feishu_client.send_card(chat_id, card, **kwargs)
+        return SimpleNamespace(message_id=message_id, retry_count=0)
+
+    monkeypatch.setattr(feishu_client, 'send_card_delivery', delivery, raising=False)
+    interaction = test_client.app[SESSIONS_KEY]['hermes-message-1'].active_interaction
+    # Exercise the fallback notice path: this approval's card was never recorded, so the notice is
+    # posted as its own message — whose retry must keep ONE delivery UUID and ONE consent token.
+    interaction.feishu_message_id = ''
+    interaction.requested_at -= 301
+    await test_client.get('/interactions/pause-retry')
+    await _wait_until(lambda: not test_client.app[sidecar_server.PAUSED_APPROVAL_TASKS_KEY])
+    token = interaction.callback_token
+    assert interaction.status == 'paused' and interaction.choice == ''
+    await test_client.get('/interactions/pause-retry')
+    assert len(attempts) == 1  # Backoff prevents polling from flooding Feishu.
+    interaction.pause_retry_after = 0
+    await test_client.get('/interactions/pause-retry')
+    await _wait_until(lambda: len(feishu_client.sent) == 3)
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    assert interaction.callback_token == token
+    resume = interaction_buttons(feishu_client.sent[-1][1])[0]['value']
+    response = await test_client.post('/card/actions', json={'event': {
+        'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+        'action': {'value': resume},
+    }})
+    assert response.status == 200
+    assert interaction.status == 'pending' and interaction.choice == ''
+    await test_client.get('/interactions/pause-retry')
+    assert len(attempts) == 2
+
+
+async def test_paused_approval_after_runtime_disappears_explains_expiry_without_consent(client):
+    """A stale waiter yields an explicit terminal card, without consent or replacement."""
+
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 0))
+    await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'pause-orphan', 'kind': 'approval', 'prompt': 'Review',
+        'pause_on_timeout': True, 'timeout_seconds': 300, 'options': [{'label': 'A', 'value': 'once'}],
+    }))
+    interaction = test_client.app[SESSIONS_KEY]['hermes-message-1'].active_interaction
+    interaction.requested_at -= 301
+    await test_client.get('/interactions/pause-orphan')
+    await _wait_until(lambda: cards_edited_into(feishu_client, interaction.feishu_message_id))
+    dead_card_id = interaction.feishu_message_id
+    resume = interaction_buttons(cards_edited_into(feishu_client, dead_card_id)[-1])[0]['value']
+    withdrawn_token = interaction.callback_token
+    cards_before = len(feishu_client.sent)
+    interaction.last_waiter_poll_at -= 16
+    response = await test_client.post('/card/actions', json={'event': {
+        'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'}, 'action': {'value': resume},
+    }})
+    assert response.status == 409
+    result = await response.json()
+    assert '重新发送原请求' in result['toast']['content']
+    assert not interaction_buttons(result['card'])
+    assert interaction.status == 'failed' and interaction.choice == ''
+    assert interaction.callback_token != withdrawn_token
+    assert feishu_client.deleted == []
+    assert len(feishu_client.sent) == cards_before
+    replay = await test_client.post('/card/actions', json={'event': {
+        'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'}, 'action': {'value': resume},
+    }})
+    assert replay.status == 404  # the withdrawn token can never complete the renewed approval
+    assert interaction.choice == ''
+
+
+async def test_live_gateway_approval_wait_survives_expiry_until_fresh_choice(client, monkeypatch):
+    test_client, feishu_client = client
+    hook_runtime.reset_runtime_state()
+    config = hook_runtime.RuntimeConfig(True, str(test_client.make_url('/events')), 0.5, 0, 240, 32)
+    monkeypatch.setattr(hook_runtime, 'load_runtime_config', lambda: config)
+    monkeypatch.setattr(hook_runtime, '_policy_gate_sync', lambda *args: SimpleNamespace(card=True))
+    alive = [True]
+    source = SimpleNamespace(platform='feishu', chat_id='oc_abc', thread_id='omt_live', message_id='om_live')
+    local_vars = {'source': source, 'event': SimpleNamespace(message_id='om_live'),
+                  'chat_id': 'oc_abc', 'conversation_id': 'oc_abc', 'message_id': 'om_live',
+                  '_run_still_current': lambda: alive[0]}
+    started = hook_runtime.build_event('message.started', local_vars)
+    assert (await test_client.post('/events', json=started)).status == 200
+    waiter = asyncio.create_task(asyncio.to_thread(
+        hook_runtime.request_approval_choice_from_hermes_locals, local_vars,
+        {'command': 'echo exact-scope', 'description': 'fixture operation'},
+        interaction_id='live-wait', timeout_seconds=300,
+    ))
+    try:
+        await _wait_until(lambda: len(feishu_client.sent) == 2)
+        session = next(s for s in test_client.app[SESSIONS_KEY].values() if s.active_interaction)
+        session.active_interaction.requested_at -= 301
+        await _wait_until(lambda: session.active_interaction.status == 'paused')
+        await _wait_until(lambda: cards_edited_into(feishu_client, session.active_interaction.feishu_message_id))
+        assert not waiter.done()
+        resume = interaction_buttons(
+            cards_edited_into(feishu_client, session.active_interaction.feishu_message_id)[-1]
+        )[0]['value']
+        async def choose(value):
+            return await test_client.post('/card/actions', json={'event': {
+                'context': {'open_chat_id': 'oc_abc'}, 'operator': {'open_id': 'ou_user'},
+                'action': {'value': value},
+            }})
+        renewed = await choose(resume)
+        assert renewed.status == 200
+        fresh = interaction_buttons((await renewed.json())['card'])[0]['value']
+        assert not waiter.done()
+        assert (await choose(fresh)).status == 200
+        assert await asyncio.wait_for(asyncio.shield(waiter), 3) == 'once'
+    finally:
+        alive[0] = False
+        await asyncio.wait_for(asyncio.shield(waiter), 3)
+
+
+async def test_paused_approval_keeps_initial_reply_anchor_without_started_event(client):
+    test_client, feishu_client = client
+    response = await test_client.post('/events', json=event_payload('interaction.requested', 1, {
+        'interaction_id': 'first-approval', 'kind': 'approval', 'prompt': 'Review',
+        'pause_on_timeout': True, 'timeout_seconds': 300,
+        'reply_to_message_id': 'om_inbound', 'reply_in_thread': True,
+        'options': [{'label': 'A', 'value': 'once'}],
+    }, message_id='om_first', thread_id='omt_thread'))
+    assert response.status == 200
+    session = test_client.app[SESSIONS_KEY]['om_first']
+    session.active_interaction.requested_at -= 301
+    # This approval's card was never recorded as delivered, so the notice has to be posted on its
+    # own — and it must still inherit the approval's place in the thread.
+    session.active_interaction.feishu_message_id = ''
+    await test_client.get('/interactions/first-approval')
+    await _wait_until(lambda: len(feishu_client.sent) == 2)
+    # Fork (LOCAL_PATCHES 2.6): thread routing is disabled — the notice is
+    # posted to the parent chat with the explicit reply anchor, not into the
+    # Feishu topic thread.
+    assert feishu_client.sent[-1][2:] == (None, 'om_inbound')
+    assert feishu_client.sent_reply_in_thread[-1] is True
+
+
+async def test_heartbeat_card_is_recalled_once_its_refreshes_stop(client, monkeypatch):
+    """A heartbeat is reassurance, not a permanent record.
+
+    The complaint was a ⏳ Working card lingering in the thread as noise. Every refresh re-arms the
+    recall deadline, so it survives while the agent is working; once refreshes stop (the turn
+    ended, or the run died) the card is recalled and its state dropped — otherwise the next
+    heartbeat would keep editing a message that no longer exists.
+    """
+    monkeypatch.setattr(sidecar_server, "HEARTBEAT_RECALL_SECONDS", 0.05)
+    test_client, feishu_client = client
+
+    text = "⏳ Working — 3 min — iteration 5/90, terminal"
+    notice = _retained_heartbeat_notice(text)
+    assert notice["notice_kind"] == "heartbeat"
+    message_id = hook_runtime._hfc_independent_notice_message_id(
+        "oc_1", text, notice, anchor="om_user_task"
+    )
+
+    response = await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            1,
+            {
+                **notice,
+                "content": text,
+                "notice_scope": "independent",
+                "delivery_kind": "notice",
+                "reply_to_message_id": "om_user_task",
+            },
+            message_id=message_id,
+        ),
+    )
+
+    assert response.status == 200
+    assert len(feishu_client.sent) == 1
+    delivered_message_id = f"feishu-message-{len(feishu_client.sent)}"
+
+    await _wait_until(lambda: feishu_client.deleted)
+    assert feishu_client.deleted == [delivered_message_id]
+    assert message_id not in test_client.app[SESSIONS_KEY]
+
+
+async def test_a_refreshed_heartbeat_pushes_its_recall_deadline_out(client, monkeypatch):
+    """While refreshes keep arriving the card stays; the deadline tracks the LAST update."""
+    monkeypatch.setattr(sidecar_server, "HEARTBEAT_RECALL_SECONDS", 0.2)
+    test_client, feishu_client = client
+
+    texts = (
+        "⏳ Working — 3 min — iteration 5/90, terminal",
+        "⏳ Working — 6 min — iteration 9/90, terminal",
+    )
+    message_id = ""
+    for sequence, text in enumerate(texts, start=1):
+        notice = _retained_heartbeat_notice(text)
+        message_id = hook_runtime._hfc_independent_notice_message_id(
+            "oc_1", text, notice, anchor="om_user_task"
+        )
+        await test_client.post(
+            "/events",
+            json=event_payload(
+                "system.notice",
+                sequence,
+                {
+                    **notice,
+                    "content": text,
+                    "notice_scope": "independent",
+                    "delivery_kind": "notice",
+                    "reply_to_message_id": "om_user_task",
+                },
+                message_id=message_id,
+            ),
+        )
+
+    # One card, edited in place — never a second card — and not recalled while refreshing.
+    assert len(feishu_client.sent) == 1
+    await _wait_until(lambda: len(feishu_client.updated) == 1)
+    assert feishu_client.deleted == []
+
+    await _wait_until(lambda: feishu_client.deleted)
+    assert feishu_client.deleted == [f"feishu-message-{len(feishu_client.sent)}"]
+
+
+async def test_refused_recall_keeps_the_heartbeat_card_usable(client, monkeypatch):
+    """Feishu may refuse a recall; then the card must stay, and its state must survive."""
+    monkeypatch.setattr(sidecar_server, "HEARTBEAT_RECALL_SECONDS", 0.05)
+    test_client, feishu_client = client
+    feishu_client.fail_delete = True
+
+    text = "⏳ Working — 3 min — iteration 5/90, terminal"
+    notice = _retained_heartbeat_notice(text)
+    message_id = hook_runtime._hfc_independent_notice_message_id(
+        "oc_1", text, notice, anchor="om_user_task"
+    )
+    await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            1,
+            {
+                **notice,
+                "content": text,
+                "notice_scope": "independent",
+                "delivery_kind": "notice",
+                "reply_to_message_id": "om_user_task",
+            },
+            message_id=message_id,
+        ),
+    )
+
+    await _REAL_ASYNCIO_SLEEP(0.2)
+    assert feishu_client.deleted == []
+    assert message_id in test_client.app[SESSIONS_KEY]
+
+async def test_session_heartbeat_never_recalls_final_answer(client, monkeypatch):
+    monkeypatch.setattr(sidecar_server, 'HEARTBEAT_RECALL_SECONDS', 0.03)
+    test_client, feishu_client = client
+    await test_client.post('/events', json=event_payload('message.started', 1, {}))
+    await test_client.post('/events', json=event_payload('system.notice', 2, {
+        'content': '⏳ Working — 3 min', 'notice_kind': 'heartbeat',
+        'notice_scope': 'session', 'notice_terminal': False,
+    }))
+    await test_client.post('/events', json=event_payload('message.completed', 3, {'answer': '完整答案'}))
+    await _REAL_ASYNCIO_SLEEP(0.15)
+    assert feishu_client.deleted == []
+    assert test_client.app[SESSIONS_KEY]
+
+
+async def test_an_independent_heartbeat_gets_its_own_card_and_spares_the_turn(client, monkeypatch):
+    """A heartbeat must not ride on the turn's card — only its own card can ever be withdrawn.
+
+    Production shape, and the reason this needs its own test: the heartbeat's status metadata
+    carries the user's message as `reply_to_message_id`, and the turn's session is live under that
+    very id. The reply_to alias would therefore hand the heartbeat the TURN's session key and fold
+    ⏳ Working into the turn's card. From there it can never be withdrawn — /recall/schedule refuses
+    an owned session card (409), and the card recall path wants delivery_kind=="notice" — so the
+    line stays in the thread for good, which is what the user reported ("变成卡片的时候好像不会
+    自动撤销了").
+
+    Asserted here: the heartbeat lands on its OWN card, its recall deletes only that card, and the
+    turn keeps rendering (its session, its card and its final answer all survive).
+    """
+    monkeypatch.setattr(sidecar_server, "HEARTBEAT_RECALL_SECONDS", 0.05)
+    test_client, feishu_client = client
+
+    # The turn owns the user's message id, and its card is the first thing sent.
+    await test_client.post(
+        "/events", json=event_payload("message.started", 1, {}, message_id="om_user_task")
+    )
+    assert len(feishu_client.sent) == 1
+
+    text = "⏳ Working — 18 min — iteration 39/150, terminal"
+    notice = _retained_heartbeat_notice(text)
+    heartbeat_id = hook_runtime._hfc_independent_notice_message_id(
+        "oc_abc", text, notice, anchor="om_user_task"
+    )
+
+    response = await test_client.post(
+        "/events",
+        json=event_payload(
+            "system.notice",
+            2,
+            {
+                **notice,
+                "content": text,
+                "notice_scope": "independent",
+                "delivery_kind": "notice",
+                "reply_to_message_id": "om_user_task",
+            },
+            message_id=heartbeat_id,
+        ),
+    )
+
+    assert response.status == 200
+    # A second, SEPARATE card: the heartbeat did not resolve onto the turn's session.
+    assert len(feishu_client.sent) == 2
+    assert heartbeat_id in test_client.app[SESSIONS_KEY]
+    assert "om_user_task" in test_client.app[SESSIONS_KEY]
+
+    # Its own recall fires; the turn's card is untouched.
+    await _wait_until(lambda: feishu_client.deleted)
+    assert feishu_client.deleted == ["feishu-message-2"]
+    assert heartbeat_id not in test_client.app[SESSIONS_KEY]
+    assert "om_user_task" in test_client.app[SESSIONS_KEY]
+
+    # ...and the turn still completes onto its own card.
+    await test_client.post(
+        "/events",
+        json=event_payload("message.completed", 3, {"answer": "完整答案"}, message_id="om_user_task"),
+    )
+    turn = test_client.app[SESSIONS_KEY]["om_user_task"]
+    assert turn.answer_text == "完整答案"
+
+
+async def test_recall_schedule_withdraws_a_message_once_its_delay_elapses(client):
+    """The gateway cannot delete its own Feishu messages, so it delegates the recall to the sidecar.
+
+    The busy path's redirect acknowledgement ("↪ Redirected current run") is read once and then only
+    clutter in the thread: the gateway patch captures its message id and asks for this recall.
+    """
+    test_client, feishu_client = client
+
+    response = await test_client.post(
+        "/recall/schedule",
+        json={"message_id": "om_redirect_ack", "delay_seconds": 0.05},
+    )
+
+    assert response.status == 200
+    body = await response.json()
+    assert body["ok"] is True
+    assert body["message_id"] == "om_redirect_ack"
+    # Nothing is withdrawn before the delay elapses — the user must still be able to read the
+    # acknowledgement while the corrected turn starts.
+    assert feishu_client.deleted == []
+    await _wait_until(lambda: feishu_client.deleted)
+    assert feishu_client.deleted == ["om_redirect_ack"]
+    assert test_client.app[METRICS_KEY].ephemeral_recalls_scheduled == 1
+    assert test_client.app[METRICS_KEY].ephemeral_recalls_completed == 1
+    assert test_client.app[METRICS_KEY].ephemeral_recall_failures == 0
+
+
+async def test_recall_schedule_clamps_the_delay_and_requires_a_message_id(client):
+    """A caller may not pin a deletion far into the future, and an empty id is a client error."""
+    test_client, feishu_client = client
+
+    response = await test_client.post("/recall/schedule", json={"message_id": "om_soon"})
+    assert response.status == 200
+    # No delay_seconds → the default, not zero: a recall racing the send could delete nothing.
+    assert (await response.json())["delay_seconds"] == sidecar_server.EPHEMERAL_RECALL_DEFAULT_SECONDS
+
+    response = await test_client.post(
+        "/recall/schedule", json={"message_id": "om_far", "delay_seconds": 10_000}
+    )
+    assert response.status == 200
+    assert (await response.json())["delay_seconds"] == sidecar_server.EPHEMERAL_RECALL_MAX_SECONDS
+
+    response = await test_client.post("/recall/schedule", json={"message_id": "   "})
+    assert response.status == 400
+    assert "message_id" in (await response.json())["error"]
+
+    response = await test_client.post(
+        "/recall/schedule", json={"message_id": "om_x", "delay_seconds": "soon"}
+    )
+    assert response.status == 400
+
+
+async def test_a_refused_recall_reports_why_it_was_refused(client, monkeypatch, caplog):
+    """A refusal must name the API's reason, not only the exception class.
+
+    Maintainer note (contract): ``_delete_card_for_app`` used to log the exception class alone, so a
+    live run with 12 of 44 recalls failing could not tell an API refusal from a message that had
+    already gone — and the metric could not either. ``FeishuAPIError`` carries
+    ``status_code``/``api_code`` and both must reach the log. The message id stays hashed: a recall
+    line must never put a real Feishu id in a log file.
+    """
+    test_client, feishu_client = client
+
+    async def _refuse(message_id):
+        raise FeishuAPIError("om_secret_id credential=private_token https://private.invalid/request", status_code=400, api_code=230011)
+
+    monkeypatch.setattr(feishu_client, "delete_message", _refuse)
+
+    response = await test_client.post(
+        "/recall/schedule", json={"message_id": "om_secret_id", "delay_seconds": 0.05}
+    )
+
+    assert response.status == 200
+    await _wait_until(lambda: test_client.app[METRICS_KEY].ephemeral_recall_failures)
+    assert "FeishuAPIError" in caplog.text
+    assert "230011" in caplog.text
+    assert "400" in caplog.text
+    assert "om_secret_id" not in caplog.text
+    assert "private_token" not in caplog.text
+    assert "private.invalid" not in caplog.text
+
+
+async def test_a_refused_recall_is_counted_and_leaves_the_message_alone(client):
+    """Feishu may refuse (missing scope, message too old): that is a counted best-effort miss."""
+    test_client, feishu_client = client
+    feishu_client.fail_delete = True
+
+    response = await test_client.post(
+        "/recall/schedule", json={"message_id": "om_stuck", "delay_seconds": 0.05}
+    )
+
+    assert response.status == 200
+    await _wait_until(lambda: test_client.app[METRICS_KEY].ephemeral_recall_failures)
+    assert feishu_client.deleted == []
+    assert test_client.app[METRICS_KEY].ephemeral_recalls_completed == 0
+
+@pytest.mark.parametrize('delay', ['nan', 'inf', '-inf'])
+async def test_recall_rejects_nonfinite_delays(client, delay):
+    http, fake = client
+    response = await http.post('/recall/schedule', json={'message_id':'om_ack', 'delay_seconds':delay})
+    assert response.status == 400
+    assert fake.deleted == []
+
+
+async def test_recall_deduplicates_and_bounds_pending_tasks(client, monkeypatch):
+    http, fake = client
+    monkeypatch.setattr(sidecar_server, 'EPHEMERAL_RECALL_MAX_PENDING', 1)
+    payload = {'message_id':'om_ack', 'delay_seconds':60}
+    assert (await http.post('/recall/schedule', json=payload)).status == 200
+    assert (await http.post('/recall/schedule', json=payload)).status == 200
+    assert len(http.app[sidecar_server.EPHEMERAL_RECALL_TASKS_KEY]) == 1
+    assert (await http.post('/recall/schedule', json={**payload,'message_id':'om_other'})).status == 429
+    assert http.app[METRICS_KEY].ephemeral_recalls_scheduled == 1
+
+
+async def test_recall_never_removes_owned_answer_even_after_schedule(client):
+    http, fake = client
+    http.app[FEISHU_MESSAGE_IDS_KEY]['fixture'] = 'om_owned'
+    response = await http.post('/recall/schedule', json={'message_id':'om_owned', 'delay_seconds':0})
+    assert response.status == 409
+    assert (await http.post('/recall/schedule', json={'message_id':'om_later', 'delay_seconds':0.03})).status == 200
+    http.app[FEISHU_MESSAGE_IDS_KEY]['fixture'] = 'om_later'
+    await _REAL_ASYNCIO_SLEEP(0.1)
+    assert fake.deleted == []
+
+
+@pytest.mark.parametrize('setting', [False, 'false', 0])
+@pytest.mark.parametrize('streaming', [False, True])
+async def test_stream_thinking_to_body_opt_out_reaches_http_renderer(setting, streaming):
+    client = FakeFeishuClient()
+    app = create_app(client, card_config={
+        'stream_thinking_to_body': setting, 'streaming_mode': streaming,
+        'flush_interval_ms': 0,
+    })
+    http = TestClient(TestServer(app))
+    await http.start_server()
+    try:
+        assert (await http.post('/events', json=event_payload('message.started', 0))).status == 200
+        thought = 'HTTP reasoning marker ' + '思考' * 15000
+        assert (await http.post('/events', json=event_payload('thinking.delta', 1, {'text': thought}))).status == 200
+        await wait_for_card_update(client, '实时思考')
+        card = client.updated[-1][1]
+        elements = card['body']['elements']
+        assert 'HTTP reasoning marker' not in '\n'.join(e.get('content', '') for e in elements)
+        panel = next(e for e in elements if e.get('element_id') == 'auxiliary_timeline')
+        assert 'HTTP reasoning marker' in str(panel)
+        assert inspect_card_limits(card).safe
+        assert len(client.sent) == 1
+        assert (await http.post('/events', json=event_payload('message.completed', 2, {'answer': 'HTTP final answer'}))).status == 200
+        await wait_for_card_update(client, 'HTTP final answer')
+        assert len(client.sent) == 1
+        assert 'HTTP reasoning marker' not in str(client.updated[-1][1])
+    finally:
+        await http.close()

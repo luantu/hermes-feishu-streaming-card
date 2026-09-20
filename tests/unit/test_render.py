@@ -1,4 +1,5 @@
 from hermes_feishu_card.card_limits import inspect_card_limits
+from hermes_feishu_card.model_names import normalize_model_name
 from hermes_feishu_card.render import (
     _SPINNER_FRAMES,
     _colored_model_label,
@@ -25,16 +26,23 @@ def test_render_thinking_card_keeps_runtime_status_only_in_footer():
     session.apply(event)
     card = render_card(session)
     assert card["schema"] == "2.0"
-    assert card["header"]["title"]["content"] == "Hermes Agent"
+    # Maintainer note (contract change): this used to assert "⏳ 执行中 · Hermes Agent" — the
+    # header carried the state word and nothing else. The user asked the title to also show the
+    # running time and tool count ("⏳ Sales Bot · 工具 #3 · 1m12s · 正在读取文件"), so the bare state
+    # word is replaced by metrics when there are any. What this test is actually about is
+    # unchanged: the runtime status stays out of the thinking text's way, and the header never
+    # leaks "正在思考"/"思考中".
+    assert card["header"]["title"]["content"] == "⏳ Hermes Agent · 工具 #1"
     assert "subtitle" not in card["header"]
     content = str(card)
     main = next(item for item in card["body"]["elements"] if item.get("element_id") == "main_content")
     assert main["content"] == "正在分析。"
     assert "正在思考" not in content
     assert "思考中" not in str(card["header"])
-    assert "生成中" in content
+    assert "执行中" in content
+    assert "生成中" not in content
     assert "正在分析。" in content
-    assert "思考与工具 · 1 次工具调用" in content
+    assert "思考过程" in content
 
 
 @pytest.mark.parametrize(
@@ -44,6 +52,10 @@ def test_render_thinking_card_keeps_runtime_status_only_in_footer():
 def test_footer_uses_reported_provider_without_duplicate_prefix(provider, model, expected):
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.status = "completed"
+    # A real metric is required for the metrics row to render at all: a card with NO metric now
+    # shows the state pill alone (the user asked for the "0s · Unknown · ↑0 · ↓0" line to go). This
+    # test is about the model/provider prefix rule, so it must supply a turn that reported something.
+    session.duration = 1
     session.provider = provider
     session.model = model
     card = render_card(session, footer_fields=["model"])
@@ -58,7 +70,7 @@ def test_render_card_accepts_custom_header_title():
 
     card = render_card(session, title="研发助手")
 
-    assert card["header"]["title"]["content"] == "研发助手"
+    assert card["header"]["title"]["content"] == "⏳ 执行中 · 研发助手"
 
 
 def test_render_initial_running_card_shows_context_loading_without_empty_timeline():
@@ -75,7 +87,7 @@ def test_render_initial_running_card_shows_context_loading_without_empty_timelin
         if item.get("element_id") == "main_content"
     )
     assert "生成中" in main["content"]
-    assert card["header"]["title"]["content"] == "Hermes Agent"
+    assert card["header"]["title"]["content"] == "⏳ 执行中 · Hermes Agent"
     assert "subtitle" not in card["header"]
     assert "auxiliary_timeline" in {
         item.get("element_id") for item in card["body"]["elements"]
@@ -96,6 +108,72 @@ def test_render_completed_card_omits_zero_tool_timeline():
     assert "不会公开的 raw thinking" not in str(card)
     assert "tool_summary" not in element_ids
     assert "auxiliary_timeline" not in str(card)
+
+
+def test_tool_activity_window_shows_the_current_step_and_the_one_before_it():
+    """Two rows, oldest first: the current step and the one it replaced.
+
+    Maintainer note (contract): the content area used to render a single row, so the moment a tool
+    was replaced the reader lost the previous step entirely — the user's report was that on a
+    changeover they could not tell what the previous command had been
+    (「如果更换的时候 不知道上一条执行的是什么」). Running tools are never dropped to make room; the
+    window is backfilled from the most recent finished ones instead.
+    """
+    from hermes_feishu_card.events import SidecarEvent
+    from hermes_feishu_card.render import (
+        _TOOL_ACTIVITY_WINDOW,
+        _render_tool_activity_elements,
+    )
+
+    def build(spec):
+        session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+        for sequence, (tool_id, status, created_at) in enumerate(spec, start=1):
+            session.apply(
+                SidecarEvent(
+                    schema_version="1",
+                    event="tool.updated",
+                    conversation_id="chat-1",
+                    message_id="msg-1",
+                    chat_id="oc_abc",
+                    platform="feishu",
+                    sequence=sequence,
+                    created_at=created_at,
+                    data={
+                        "tool_id": tool_id,
+                        "name": "terminal",
+                        "status": status,
+                        "detail": "pytest -q",
+                    },
+                )
+            )
+        return session
+
+    assert _TOOL_ACTIVITY_WINDOW == 2
+
+    rows = _render_tool_activity_elements(
+        build(
+            (
+                ("terminal-1", "completed", 1.0),
+                ("terminal-2", "completed", 2.0),
+                ("terminal-3", "running", 3.0),
+            )
+        ),
+        display_status="running",
+    )
+
+    assert [row["element_id"] for row in rows] == ["tool_activity_0", "tool_activity_1"]
+    # Oldest first, newest last — and the newest is the running one.
+    assert "#2" in rows[0]["content"]
+    assert "执行中" not in rows[0]["content"]
+    assert "#3" in rows[1]["content"]
+    assert "执行中" in rows[1]["content"]
+
+    # The window is a ceiling, not a quota: one tool still renders one row.
+    assert len(
+        _render_tool_activity_elements(
+            build((("terminal-1", "completed", 1.0),)), display_status="completed"
+        )
+    ) == 1
 
 
 def test_running_tool_without_model_text_removes_loading_placeholder_from_body():
@@ -123,7 +201,10 @@ def test_running_tool_without_model_text_removes_loading_placeholder_from_body()
 
     card = render_card(session)
 
-    assert card["header"]["subtitle"]["content"] == "正在执行终端：pytest -q"
+    row = next(
+        item for item in card["body"]["elements"]
+        if item.get("element_id") == "tool_activity_0"
+    )
     assert not any(
         str(item.get("element_id", "")).startswith("main_content")
         for item in card["body"]["elements"]
@@ -131,10 +212,10 @@ def test_running_tool_without_model_text_removes_loading_placeholder_from_body()
     assert "正在加载上下文…" not in str(card)
 
 
-def test_v4_running_card_uses_preview_title_and_public_interim_body():
+def test_v4_running_card_uses_state_title_and_public_interim_body():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.thinking_text = "我先检查天气客户端。"
-    session.latest_tool_preview = "正在读取：weather_client.py"
+    session.latest_tool_preview = "读取文件：weather_client.py"
 
     card = render_card(session, title="Hermes Agent")
     main = next(
@@ -148,8 +229,8 @@ def test_v4_running_card_uses_preview_title_and_public_interim_body():
         if item.get("element_id") == "footer"
     )
 
-    assert card["header"]["title"]["content"] == "Hermes Agent"
-    assert card["header"]["subtitle"]["content"] == "正在读取：weather_client.py"
+    assert card["header"]["title"]["content"] == "⏳ 执行中 · Hermes Agent"
+    assert "subtitle" not in card["header"]
     assert not any(
         element.get("element_id") == "runtime_summary"
         for element in card["body"]["elements"]
@@ -162,14 +243,14 @@ def test_v4_running_card_uses_preview_title_and_public_interim_body():
 def test_compaction_phase_replaces_header_title_and_hides_stale_tool_summary():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.thinking_text = "已保留的公开阶段说明"
-    session.latest_tool_preview = "正在读取：weather_client.py"
+    session.latest_tool_preview = "读取文件：weather_client.py"
     session.runtime_phase_text = "正在压缩上下文"
 
     card = render_card(session, title="研发助手")
 
-    assert card["header"]["title"]["content"] == "正在压缩上下文"
-    assert "subtitle" not in card["header"]
-    assert "正在读取：weather_client.py" not in str(card["header"])
+    assert card["header"]["title"]["content"] == "⏳ 执行中 · 研发助手"
+    assert card["header"]["subtitle"]["content"] == "正在压缩上下文"
+    assert "读取文件：weather_client.py" not in str(card["header"])
 
 
 def test_pending_interaction_has_priority_over_compaction_phase():
@@ -185,6 +266,58 @@ def test_pending_interaction_has_priority_over_compaction_phase():
 
     assert card["header"]["title"]["content"] == "待审批：允许继续执行吗？"
     assert "正在压缩上下文" not in str(card["header"])
+
+
+def test_an_interaction_with_its_own_card_is_not_rendered_into_the_turn_card():
+    """One approval must not appear as two cards.
+
+    Maintainer note (contract change): with a pending approval in callback mode, render_card used to
+    return the APPROVAL card shape for the session's own card as well — while the standalone approval
+    card had already been sent and recorded on the interaction as `feishu_message_id`. Two cards asked
+    the same question and only the standalone one accepted the click; the user reported that
+    double-track ("双轨审批卡"). Now the session card keeps its streaming shape, keeps the interaction
+    rows out of its body, and the header still announces the pending decision.
+    """
+    def _session(*, feishu_message_id: str) -> CardSession:
+        session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+        session.active_interaction = InteractionState(
+            interaction_id="approval-1",
+            kind="approval",
+            prompt="允许继续执行吗？",
+            description="rm -rf /tmp/build",
+            options=[
+                InteractionOption(label="允许", value="allow"),
+                InteractionOption(label="拒绝", value="deny"),
+            ],
+            feishu_message_id=feishu_message_id,
+        )
+        return session
+
+    def _elements(card) -> list[dict]:
+        return card.get("elements") or (card.get("body") or {}).get("elements") or []
+
+    def _has_approval_rail(card) -> bool:
+        # The approval rail's own tells: the authorisation hint, the button row, or its footer.
+        rendered = str(card)
+        return (
+            "请核对下方完整操作后" in rendered
+            or any(element.get("tag") == "action" for element in _elements(card))
+            or "等待选择…" in rendered
+        )
+
+    # Without a card of its own the approval rides on this card — the existing contract.
+    assert _has_approval_rail(render_card(_session(feishu_message_id=""), title="研发助手"))
+
+    # With its own card, this one stays a streaming card: no second question, no inert buttons.
+    card = render_card(_session(feishu_message_id="om_approval_card"), title="研发助手")
+    assert not _has_approval_rail(card)
+    assert [
+        element
+        for element in _elements(card)
+        if str(element.get("element_id", "")).startswith("interaction")
+    ] == []
+    # ...and the pending approval is still announced.
+    assert card["header"]["title"]["content"] == "待审批：允许继续执行吗？"
 
 
 def test_tool_activity_clears_compaction_and_restores_tool_subtitle():
@@ -214,8 +347,144 @@ def test_tool_activity_clears_compaction_and_restores_tool_subtitle():
     card = render_card(session, title="研发助手")
 
     assert session.runtime_phase_text == ""
-    assert card["header"]["title"]["content"] == "研发助手"
-    assert card["header"]["subtitle"]["content"] == "正在执行终端：pytest"
+    # The header's second row now names the CONCRETE work; the title stays an identity line.
+    # Maintainer note (contract change): the phrase used to lead the title ("⏳ 正在执行终端 ·
+    # 研发助手"), then sat LAST on the title line, then moved to the row beneath it. The user then
+    # asked for the concrete action there ("标题行这边的第二个行像工具行那样看到具体的工具动作"), so
+    # the sub-title carries phrase + target now, same source as the content-area tool row.
+    assert card["header"]["title"]["content"] == "⏳ 研发助手 · 工具 #1"
+    assert card["header"]["subtitle"]["content"] == "执行命令：pytest"
+    row = next(
+        item for item in card["body"]["elements"]
+        if item.get("element_id") == "tool_activity_0"
+    )
+    assert "pytest" in row["content"]
+
+
+def test_tool_row_names_the_work_when_only_the_arguments_are_known():
+    """A tool whose preview line is missing must still say what the agent is doing.
+
+    The stored detail is multi-line ("preview\\n参数: …\\n耗时: …" — see
+    session._tool_detail_from_event_data). When the preview line is absent the arguments used to be
+    discarded as "no target", so the row rendered as a bare "执行中 · terminal · #2" and the reader
+    could not tell what the running agent was doing. The arguments now carry the row instead.
+    """
+    from hermes_feishu_card.render import _tool_activity_row
+
+    tool = ToolState(
+        tool_id="t1",
+        name="terminal",
+        status="running",
+        detail='参数: {"command": "git status --short"}\n耗时: 12s',
+        ordinal=2,
+        started_at=0.0,
+    )
+
+    row = _tool_activity_row(tool, index=0, now=12.0)
+
+    assert "执行命令：git status --short" in row["content"]
+    # The arguments blob is an implementation detail of the event, not something to read.
+    assert '{"command"' not in row["content"]
+    # Meta lines have their own slot in the row (the elapsed time); they are not the target.
+    assert "耗时" not in row["content"]
+
+
+def test_tool_row_is_three_rows_status_then_action_then_parameters():
+    """Status / action / parameters get a row each — cramming them together reads as noise.
+
+    The user's report was that one joined line ("执行中 · terminal · #2 · 执行命令：pytest -q 参数: …")
+    is confusing ("不然都挤在一行 很混乱"). Row 1 is the status, row 2 the action, row 3 the parameters;
+    the parameter row only exists when the arguments carry something the action does not.
+    """
+    from hermes_feishu_card.render import _tool_activity_row
+
+    tool = ToolState(
+        tool_id="t1",
+        name="terminal",
+        status="running",
+        detail='参数: {"command": "pytest -q", "timeout": 120}',
+        ordinal=4,
+        # Epoch-sized: the duration is only added while a running tool has a start time, and a small
+        # value like 0.0 (or `now - 12` with a small `now`) is falsy and silently drops it.
+        started_at=1_000_000.0,
+    )
+
+    rows = _tool_activity_row(tool, index=0, now=1_000_012.0)["content"].splitlines()
+
+    assert len(rows) == 3
+    # The ordinal precedes the duration, matching the header ("工具 #N · 1m12s"): the count names the
+    # tool, the time qualifies it. Asserted as an ORDER, not just presence — presence alone would
+    # pass with the two swapped, which is exactly what the user reported ("时间调整到编号后面").
+    assert "terminal" in rows[0] and "#4" in rows[0] and "12s" in rows[0]
+    assert rows[0].index("#4") < rows[0].index("12s")
+    assert rows[0].endswith("12s")
+    assert "执行命令" not in rows[0]  # the action must not share the status row
+    assert rows[1] == "执行命令：pytest -q"
+    # The command named the work already, so only its siblings count as parameters.
+    assert rows[2] == "参数: timeout=120"
+
+
+def test_tool_row_drops_the_parameter_row_when_it_would_only_repeat_the_action():
+    """No fourth copy of the same value: a lone argument that named the work leaves no parameter row."""
+    from hermes_feishu_card.render import _tool_activity_row
+
+    tool = ToolState(
+        tool_id="t1",
+        name="read_file",
+        status="completed",
+        detail='参数: {"path": "/Users/mac/render.py"}',
+        ordinal=1,
+    )
+
+    rows = _tool_activity_row(tool, index=0, now=0.0)["content"].splitlines()
+
+    assert rows == [
+        "<text_tag color='green'>已完成</text_tag> · <text_tag color='neutral'>read_file</text_tag> · #1",
+        "读取文件：render.py",
+    ]
+
+
+def test_tool_row_reads_its_first_detail_line_only_and_never_repeats_the_phrase():
+    """One line, phrased once: a multi-line detail must not be flattened or phrased twice."""
+    from hermes_feishu_card.render import _tool_activity_row, _tool_activity_text
+
+    preview_and_meta = ToolState(
+        tool_id="t1",
+        name="terminal",
+        status="completed",
+        detail='pytest -q\n参数: {"command": "pytest -q"}\n耗时: 12s',
+    )
+    assert _tool_activity_text(preview_and_meta) == "执行命令：pytest -q"
+
+    already_phrased = ToolState(
+        tool_id="t2", name="terminal", status="completed", detail="执行命令：pytest -q"
+    )
+    assert _tool_activity_text(already_phrased) == "执行命令：pytest -q"
+
+    # A detail that is ONLY meta says nothing the row does not already say.
+    meta_only = ToolState(tool_id="t3", name="terminal", status="completed", detail="耗时: 12s")
+    assert _tool_activity_text(meta_only) == ""
+    row = _tool_activity_row(meta_only, index=0, now=0.0)
+    assert "耗时" not in row["content"]
+
+
+def test_unrecognised_tool_row_still_names_its_task():
+    """A plugin/MCP tool falls back to "使用 <tool>" — which must also carry the target.
+
+    "使用 delegate task" on its own is the same content-free row the targeted form exists to avoid;
+    the header is unaffected because it reads only the phrase before "：".
+    """
+    from hermes_feishu_card.render import _tool_activity_text
+
+    known = ToolState(
+        tool_id="t1", name="delegate_task", status="running", detail='参数: {"goal": "分析日志"}'
+    )
+    assert _tool_activity_text(known) == "分派子任务：分析日志"
+
+    unknown = ToolState(
+        tool_id="t2", name="mystery_tool", status="running", detail="参数: some raw text"
+    )
+    assert _tool_activity_text(unknown) == "使用 mystery tool：some raw text"
 
 
 def test_completed_card_never_renders_stale_compaction_phase():
@@ -226,7 +495,7 @@ def test_completed_card_never_renders_stale_compaction_phase():
 
     card = render_card(session, title="研发助手")
 
-    assert card["header"]["title"]["content"] == "研发助手"
+    assert card["header"]["title"]["content"] == "✅ 研发助手"
     assert "正在压缩上下文" not in str(card)
 
 
@@ -302,7 +571,7 @@ def test_multi_select_form_binds_submit_action_to_callback_token():
 
 def test_v4_completed_restores_configured_title_and_metrics():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
-    session.latest_tool_preview = "正在执行终端：pytest"
+    session.latest_tool_preview = "执行命令：pytest"
     session.status = "completed"
     session.answer_text = "最终答案"
     session.duration = 2.0
@@ -310,8 +579,12 @@ def test_v4_completed_restores_configured_title_and_metrics():
 
     card = render_card(session, title="研发助手")
 
-    assert card["header"]["title"]["content"] == "研发助手"
-    assert "正在执行终端：pytest" not in str(card["header"])
+    # Maintainer note (contract change): the completed title now also carries the metrics the user
+    # asked to see there ("✅ 研发助手 · 2s"), instead of the bare "✅ 研发助手". The point of this
+    # test is untouched: the CONFIGURED title is restored (the stale tool preview never comes back
+    # into the header), and duration/model stay visible somewhere ("2s"/"gpt-5.5" below).
+    assert card["header"]["title"]["content"] == "✅ 研发助手 · 2s"
+    assert "执行命令：pytest" not in str(card["header"])
     assert "2s" in str(card)
     assert "gpt-5.5" in str(card)
 
@@ -338,13 +611,45 @@ def test_v4_completed_reply_card_uses_only_native_feishu_quote_header():
     )
     assert "已完成 · " not in footer["content"]
     assert "11s" in footer["content"]
+    assert "本轮回复结束" not in footer["content"]
+
+
+def test_v4_plain_completed_reply_card_footer_claims_no_completion_note():
+    """A completed turn must not claim 本轮回复结束 in its footer.
+
+    This rail never had the note (the native-quote rail did), and since the user asked for the
+    footer to stop showing it at all, the assertion now guards both rails: the footer carries the
+    state and the metrics, never a completion line — a completed card that was never replied to
+    saying "回复结束" would claim a reply that never happened.
+    """
+
+    session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+
+    card = render_card(session, title="Hermes Agent")
+    footer_ids = {
+        item.get("element_id") for item in card["body"]["elements"]
+    }
+
+    # Fork (LOCAL_PATCHES 1.9): this completed card carries no metrics, so the
+    # empty footer is omitted entirely — which also guarantees the completion
+    # note can never appear in it.
+    assert "footer" not in footer_ids
 
 
 def test_v4_failed_retains_preview_and_status_only_footer():
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
-    session.latest_tool_preview = "正在读取：演示天气数据"
+    session.latest_tool_preview = "读取文件：演示天气数据"
     session.status = "failed"
     session.answer_text = "数据源暂时不可用。"
+    # A stopped run that reported metrics keeps its whole line — that is the contract this test
+    # protects. Metrics are supplied explicitly because a card with NONE now shows the pill alone:
+    # the "0s · Unknown · ↑0 · ↓0 · ctx 0/0 0%" row was the zero-noise the user asked to drop.
+    # Deliberately tokens + context rather than a duration: the HEADER also renders a duration, and
+    # this test pins the header to "⛔ Hermes Agent" exactly.
+    session.tokens = {"input_tokens": 100, "output_tokens": 20}
+    session.context = {"used_tokens": 1000, "max_tokens": 128000}
 
     card = render_card(session, title="Hermes Agent")
     footer = next(
@@ -353,10 +658,15 @@ def test_v4_failed_retains_preview_and_status_only_footer():
         if item.get("element_id") == "footer"
     )
 
-    assert card["header"]["title"]["content"] == "Hermes Agent"
-    assert card["header"]["subtitle"]["content"] == "正在读取：演示天气数据"
-    assert footer["content"] == "已停止"
-    assert "ctx " not in footer["content"]
+    assert card["header"]["title"]["content"] == "⛔ Hermes Agent"
+    assert "subtitle" not in card["header"]
+    # Maintainer note (contract change): this used to assert the footer was ONLY the 已停止 pill
+    # ("ctx " explicitly absent). The user asked a stopped card to keep its status information —
+    # that is how a reader sees WHERE the run stopped — so the pill now sits on top of the same
+    # fields a completed card shows.
+    assert footer["content"].startswith("<text_tag color='red'>已停止</text_tag>")
+    assert "ctx " in footer["content"]
+    assert "↑100" in footer["content"]
 
 
 def test_v4_missing_preview_keeps_configured_title():
@@ -365,7 +675,7 @@ def test_v4_missing_preview_keeps_configured_title():
 
     card = render_card(session, title="研发助手")
 
-    assert card["header"]["title"]["content"] == "研发助手"
+    assert card["header"]["title"]["content"] == "⏳ 执行中 · 研发助手"
 
 
 @pytest.mark.parametrize(
@@ -377,15 +687,34 @@ def test_v4_missing_preview_keeps_configured_title():
     ],
 )
 def test_v4_runtime_header_is_single_line_bounded_and_redacted(preview):
+    from hermes_feishu_card.events import SidecarEvent
+
     session = CardSession(conversation_id="c", message_id="m", chat_id="oc")
     session.latest_tool_preview = preview + ("x" * 300)
+    session.apply(
+        SidecarEvent(
+            schema_version="1",
+            event="tool.updated",
+            conversation_id="c",
+            message_id="m",
+            chat_id="oc",
+            platform="feishu",
+            sequence=1,
+            created_at=10.0,
+            data={
+                "tool_id": "terminal-1",
+                "name": "terminal",
+                "status": "running",
+                "detail": preview + ("x" * 300),
+            },
+        )
+    )
 
-    title = render_card(session)["header"]["subtitle"]["content"]
+    card = render_card(session)
+    rendered = str(card)
 
-    assert "\n" not in title
-    assert "unsafe" not in title
-    assert "[REDACTED]" in title
-    assert len(title) <= 120
+    assert "unsafe" not in rendered
+    assert "[REDACTED]" in rendered
 
 
 def test_render_completed_card_replaces_thinking():
@@ -395,7 +724,7 @@ def test_render_completed_card_replaces_thinking():
     session.status = "completed"
     card = render_card(session)
     content = str(card)
-    assert card["header"]["subtitle"]["content"] == "已完成"
+    assert card["header"]["subtitle"]["content"] == "本轮回复结束"
     assert "最终答案" in content
     assert "不会展示" not in content
 
@@ -418,7 +747,7 @@ def test_v3818_normal_completed_card_keeps_element_order_and_configured_footer()
     assert card["body"]["elements"][-1] == {
         "tag": "markdown",
         "element_id": "footer",
-        "content": "MiniMax M2.7 · 3s · ↓34",
+        "content": "<text_tag color='green'>已完成</text_tag> · MiniMax M2.7 · 3s · ↓34",
         "text_size": "x-small",
     }
 
@@ -432,10 +761,9 @@ def test_v3818_normal_failed_card_keeps_element_order_and_footer():
 
     assert [element["element_id"] for element in card["body"]["elements"]] == [
         "main_content",
-        "main_divider",
-        "footer",
     ]
-    assert card["body"]["elements"][-1]["content"] == "已停止"
+    # Fork (LOCAL_PATCHES 1.9): with no metrics at all, the empty footer and its
+    # divider are omitted entirely, so a bare failed card keeps only the body.
 
 
 @pytest.mark.parametrize(
@@ -451,6 +779,37 @@ def test_v3818_normal_failed_card_keeps_element_order_and_footer():
 )
 def test_model_footer_uses_sanitized_semantic_color(model, color, display):
     assert _colored_model_label(model) == f'<font color="{color}">{display}</font>'
+
+
+@pytest.mark.parametrize(
+    ("raw_model", "expected"),
+    [
+        ("gpt-5.6-luna", "GPT 5.6 Luna"),
+        ("uniapi/gpt-5.6-luna", "GPT 5.6 Luna"),
+        ("openai/gpt-5.6-luna", "GPT 5.6 Luna"),
+        ("origin-gpt-5.6-luna", "GPT 5.6 Luna"),
+        ("uniapi/deepseek-v4-pro", "DeepSeek V4 Pro"),
+        ("openai/o3-mini", "O3 Mini"),
+        ("uniapi/claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+        ("Tencent/hunyuan", "Tencent Hunyuan"),
+        ("deepseek/chat", "DeepSeek Chat"),
+        ("deepseek/reasoner", "DeepSeek R1"),
+    ],
+)
+def test_model_footer_keeps_family_after_provider_prefix(raw_model, expected):
+    assert normalize_model_name(raw_model) == expected
+
+
+def test_model_footer_shows_family_when_provider_prepended():
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.status = "completed"
+    session.answer_text = "最终答案"
+    session.duration = 3.0
+    session.provider = "uniapi"
+    session.model = "gpt-5.6-luna"
+    card = render_card(session, footer_fields=["model"])
+    footer = next(item for item in card["body"]["elements"] if item.get("element_id") == "footer")
+    assert "GPT 5.6 Luna" in footer["content"]
 
 
 def test_model_footer_escapes_unknown_and_malicious_model_names():
@@ -478,25 +837,50 @@ def test_model_footer_color_preserves_layout_order_and_configured_fields():
     assert card["body"]["elements"][-1] == {
         "tag": "markdown",
         "element_id": "footer",
-        "content": '<font color="blue">gpt-5.5</font> · 3s · ↓34',
+        "content": "<text_tag color='green'>已完成</text_tag> · <font color=\"blue\">gpt-5.5</font> · 3s · ↓34",
         "text_size": "x-small",
     }
 
 
-def test_model_footer_color_does_not_change_non_completed_or_empty_fields():
+def test_model_footer_color_applies_only_where_fields_render():
+    """The coloured model label belongs to the field set, not to every state.
+
+    Maintainer note (contract change): this was `..._does_not_change_non_completed_or_empty_fields`
+    and asserted a stopped card shows NO fields at all (that is how the old footer behaved — it
+    collapsed to the bare 已停止 pill). The user asked a stopped card to keep its status
+    information so others can see where the run stopped, so the stopped footer now renders the same
+    fields as a completed one, model colour included. What survives from the original intent: a
+    RUNNING footer shows no field set (so no coloured model there).
+
+    Second change: an empty field list with no reported metric now yields the pill ALONE. It used
+    to append a duration fallback, which printed "已完成 · 0s" for a card that simply never reported
+    a duration — the same zero-noise the user rejected ("为什么是 unknown。0。 如果这样的话感觉
+    不需要展示这一行"). "Hide every field" and "show one field anyway" cannot both be true.
+    """
     thinking = CardSession(conversation_id="c", message_id="m1", chat_id="oc")
     thinking.model = "gpt-5.5"
-    assert render_card(thinking)["body"]["elements"][-1]["content"].endswith("生成中")
+    running_footer = render_card(thinking)["body"]["elements"][-1]["content"]
+    assert "执行中" in running_footer
+    assert "gpt-5.5" not in running_footer
 
     failed = CardSession(conversation_id="c", message_id="m2", chat_id="oc")
     failed.status = "failed"
     failed.model = "gpt-5.5"
-    assert render_card(failed)["body"]["elements"][-1]["content"] == "已停止"
+    failed_footer = render_card(failed)["body"]["elements"][-1]["content"]
+    assert failed_footer.startswith("<text_tag color='red'>已停止</text_tag>")
+    assert '<font color="blue">GPT 5.5</font>' in failed_footer
 
     completed = CardSession(conversation_id="c", message_id="m3", chat_id="oc")
     completed.status = "completed"
     completed.model = "gpt-5.5"
-    assert render_card(completed, footer_fields=[])["body"]["elements"][-1]["content"] == "0s"
+    assert render_card(completed, footer_fields=[])["body"]["elements"][-1]["content"] == "<text_tag color='green'>已完成</text_tag>"
+
+    # A reported duration must still render when its field IS configured — the guard drops empty
+    # metrics, not real ones.
+    measured = CardSession(conversation_id="c", message_id="m4", chat_id="oc")
+    measured.status = "completed"
+    measured.duration = 92
+    assert "1m32s" in render_card(measured, footer_fields=["duration"])["body"]["elements"][-1]["content"]
 
 
 def test_progress_handoff_changes_only_header_status_from_completed_card():
@@ -513,7 +897,7 @@ def test_progress_handoff_changes_only_header_status_from_completed_card():
     inferred_card = render_card(inferred)
 
     assert completed_card["header"]["template"] == "green"
-    assert completed_card["header"]["subtitle"]["content"] == "已完成"
+    assert completed_card["header"]["subtitle"]["content"] == "本轮回复结束"
     assert inferred_card["header"]["template"] == "blue"
     assert "subtitle" not in inferred_card["header"]
     assert inferred_card["config"]["summary"]["content"] == "生成中"
@@ -709,7 +1093,11 @@ def test_render_completed_interaction_replaces_buttons_with_choice():
     assert "允许执行命令吗？" in visible
     assert "1. 允许一次" in visible
     assert "已选择：允许一次 by Bailey" in visible
-    assert "敏感命令详情" not in visible
+    # Contract change: the operation scope (the exact command) is RETAINED after the decision.
+    # Dropping it left the card unauditable — neither the approver nor anyone reviewing the chat
+    # afterwards could see what had actually been approved. The command is already visible while
+    # the approval is pending, so keeping it exposes nothing new to the chat.
+    assert "敏感命令详情" in visible
     assert not any(e.get("hover_tips") for e in card["body"]["elements"])
 
 
@@ -1157,7 +1545,6 @@ def test_render_failed_card_shows_error_without_thinking():
     assert card["config"]["summary"]["content"] == "处理失败"
     assert "处理出错" in content
     assert "不会展示" not in content
-    assert "已停止" in content
 
 
 def test_render_card_filters_think_tags_at_render_boundary():
@@ -1171,20 +1558,30 @@ def test_render_card_filters_think_tags_at_render_boundary():
 
 
 def test_render_completed_card_handles_empty_tokens_and_non_numeric_duration():
+    """No metrics reported → the state pill alone, never faked zeros.
+
+    Maintainer note (contract change): this footer used to render "0s · Unknown · ↑0 · ↓0 ·
+    ctx 0/0 0%" whenever a card held no metrics — which is every notice-only card (the gateway
+    restart notices) and every turn cut short before it reported. The user read that line as broken
+    data and asked for it to go ("为什么是 unknown。0。 如果这样的话感觉不需要展示这一行"), so empty
+    metrics are now omitted instead of drawn as zeros. The card must still survive the junk input
+    below without raising.
+    """
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.answer_text = "最终答案"
     session.status = "completed"
     session.duration = "bad"
     card = render_card(session)
-    content = str(card)
-    assert "0s" in content
-    assert "Unknown" in content
-    assert "↑0" in content
-    assert "↓0" in content
-    assert "ctx 0/0 0%" in content
+    footer = next(item for item in card["body"]["elements"] if item.get("element_id") == "footer")
+    assert "已完成" in footer["content"]
+    assert "Unknown" not in footer["content"]
+    assert "↑0" not in footer["content"]
+    assert "↓0" not in footer["content"]
+    assert "ctx 0/0 0%" not in footer["content"]
 
 
 def test_render_completed_card_handles_missing_token_stats():
+    """`tokens=None` must not fabricate a zeroed metrics row either."""
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.answer_text = "最终答案"
     session.status = "completed"
@@ -1194,6 +1591,64 @@ def test_render_completed_card_handles_missing_token_stats():
     assert "↑0" not in content
     assert "↓0" not in content
     assert "'footer'" not in content
+
+
+def test_subscription_usage_alone_keeps_the_footer_line():
+    """A quota-only card must not lose its usage line.
+
+    Regression guard for the empty-metrics guard above: the plan-quota field IS real data, so a card
+    reporting ONLY `subscription_usage` (no duration, model, tokens or tool count) still renders it.
+    Dropping it would hide the one number the footer was configured for.
+    """
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    session.answer_text = "最终答案"
+    session.status = "completed"
+    session.subscription_usage = "5h 26% · weekly 89%"
+    card = render_card(session, footer_fields=["duration", "subscription_usage"])
+    footer = next(item for item in card["body"]["elements"] if item.get("element_id") == "footer")
+    assert "5h 26% · weekly 89%" in footer["content"]
+
+
+def test_body_reasoning_reads_chronologically_while_the_panel_reads_newest_first():
+    """正文的思考按发生顺序读；折叠面板仍最新在前。
+
+    Maintainer note (contract change): the newest-first flip was applied to EVERY timeline entry,
+    so the reasoning blocks rendered into the CARD BODY came out bottom-up ("思考 3" above "思考 1")
+    while the panel below them read top-down. The user asked for the body to be chronological
+    ("正文的思考应该正序") and for the panel to stay newest-first ("Timeline 最好倒序一下"). One pass
+    now yields both orders: reasoning keeps its recorded order, panel-only entries are reversed.
+    """
+    from hermes_feishu_card.card_timeline import TimelineEntry
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    for number in (1, 2, 3):
+        session.timeline._entries.append(
+            TimelineEntry(
+                kind="reasoning",
+                title=f"思考 {number}",
+                status="completed",
+                content=f"第{number}段",
+            )
+        )
+    for tool_id, name in (("call-1", "terminal"), ("call-2", "web_search")):
+        session.timeline._entries.append(
+            TimelineEntry(
+                kind="tool", title=name, status="completed", detail="命令", tool_id=tool_id
+            )
+        )
+
+    elements = render_card(session, reasoning_format="code")["body"]["elements"]
+    body = " ".join(
+        item.get("content", "")
+        for item in elements
+        if "reasoningentry" in item.get("element_id", "")
+    )
+    assert body.index("第1段") < body.index("第2段") < body.index("第3段")
+
+    panel = next(item for item in elements if item.get("tag") == "collapsible_panel")
+    panel_text = " ".join(item.get("content", "") for item in panel["elements"])
+    assert "第1段" not in panel_text  # body thinking stays out of the collapsed panel
+    assert panel_text.index("web_search") < panel_text.index("terminal")
 
 
 def test_render_completed_card_footer_uses_compact_metrics_format():
@@ -1240,9 +1695,9 @@ def test_render_completed_card_footer_adds_configured_subscription_usage_only():
     default = render_card(session, footer_fields=["duration"])
 
     assert configured["body"]["elements"][-1]["content"] == (
-        "3s · 5h 26% · weekly 89%"
+        "<text_tag color='green'>已完成</text_tag> · 3s · 5h 26% · weekly 89%"
     )
-    assert default["body"]["elements"][-1]["content"] == "3s"
+    assert default["body"]["elements"][-1]["content"] == "<text_tag color='green'>已完成</text_tag> · 3s"
 
 
 def test_spinner_text_changes_over_time():
@@ -1266,15 +1721,26 @@ def test_footer_shows_spinner_not_static_for_thinking():
     session.status = "thinking"
     footer = _render_footer(session)
     assert footer != "生成中"  # 不再是静态文本
-    assert "生成中" in footer  # label 仍然包含
+    assert "执行中" in footer  # label 仍然包含
 
 
 def test_footer_still_static_for_failed():
+    """A stopped card's footer is static — no spinner — but keeps its status fields.
+
+    Maintainer note (contract change): this used to equal the bare 已停止 pill. The user asked the
+    state to survive a stop so a reader can see where the run ended, so the fields stay; what this
+    test guards (nothing animates) is asserted by the absence of a spinner frame.
+    """
     from hermes_feishu_card.session import CardSession
-    from hermes_feishu_card.render import _render_footer
+    from hermes_feishu_card.render import _SPINNER_FRAMES, _render_footer
     session = CardSession(conversation_id="c", message_id="m", chat_id="c")
     session.status = "failed"
-    assert _render_footer(session) == "已停止"
+    session.duration = 3.0
+
+    footer = _render_footer(session)
+
+    assert footer.startswith("<text_tag color='red'>已停止</text_tag>")
+    assert not any(frame in footer for frame in _SPINNER_FRAMES)
 
 
 def test_footer_treats_explicit_completed_snapshot_as_terminal():
@@ -1287,7 +1753,7 @@ def test_footer_treats_explicit_completed_snapshot_as_terminal():
     footer = _render_footer(session, display_status="completed")
 
     assert "生成中" not in footer
-    assert footer.startswith("1s · ")
+    assert footer.startswith("<text_tag color='green'>已完成</text_tag> · 1s · ")
 
 
 def test_waiting_footer_uses_absolute_remaining_deadline(monkeypatch):
@@ -1304,9 +1770,14 @@ def test_waiting_footer_uses_absolute_remaining_deadline(monkeypatch):
     )
     monkeypatch.setattr(render_module._time, "time", lambda: 160.0)
 
-    assert _render_footer(session, display_status="waiting") == (
-        "等待选择 · ⏳ 1 分钟后过期"
-    )
+    footer = _render_footer(session, display_status="waiting")
+
+    # Maintainer note (contract change): this used to pin the WHOLE line. The user asked for the
+    # consumption line to survive every state, so the tool count and elapsed time now lead the
+    # waiting footer too (see _render_footer). What this test protects is the deadline itself —
+    # an absolute remaining time, not a per-render re-computed one — so it anchors the tail.
+    assert footer.endswith("等待选择 · ⏳ 1 分钟后过期")
+    assert "工具 #" not in footer  # nothing ran, so no phantom tool count
 
 
 def test_render_card_compacts_tables_over_limit_by_default_without_losing_prose():
@@ -1634,7 +2105,7 @@ def test_render_timeline_styles_reasoning_and_tools_with_compact_hierarchy():
 
     assert reasoning["text_size"] == "small"
     assert tool["text_size"] == "x-small"
-    assert tool["content"].startswith('<font color="green">✓ **terminal**</font>')
+    assert tool["content"].startswith('<font color="green">✓ **terminal** · #1</font>')
     assert "gh release list" in tool["content"]
 
 
@@ -1702,15 +2173,17 @@ def test_render_tool_timeline_uses_compact_semantic_event_rows():
         for item in timeline["elements"]
         if str(item.get("element_id", "")).startswith("auxiliary_timeline_toolentry_")
     ]
-    completed, running, failed = (row["content"] for row in rows)
+    # Newest first (see test_render_timeline_reads_newest_first): the row for the LAST event leads, so
+    # the unpack order is the reverse of the order the events were applied in.
+    failed, running, completed = (row["content"] for row in rows)
 
-    assert completed.startswith('<font color="green">✓ **terminal** · 250ms</font>')
+    assert completed.startswith('<font color="green">✓ **terminal** · #1 · 250ms</font>')
     assert '<font color="grey">　参数: ' in completed
     assert "耗时:" not in completed
     assert running.startswith('<font color="blue">')
     assert any(frame in running for frame in _SPINNER_FRAMES)
-    assert "**edit_file** · 进行中" in running
-    assert failed.startswith('<font color="red">✕ **fetch** · 4s · 失败</font>')
+    assert "**edit_file** · #2 · 执行中" in running
+    assert failed.startswith('<font color="red">✕ **fetch** · #3 · 4s · 失败</font>')
     assert '<font color="grey">　失败: exit 1</font>' in failed
     assert all(not row["content"].startswith("> ") for row in rows)
     assert timeline["border"]["corner_radius"] == "8px"
@@ -1754,7 +2227,7 @@ def test_render_subagent_uses_dedicated_escaped_semantic_row():
     )
     content = subagent["content"]
     assert "子代理：研究 &lt;Lead&gt;" in content
-    assert "进行中" in content
+    assert "执行中" in content
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
     assert "<script>" not in content
     assert session.tool_count == 0
@@ -1800,7 +2273,7 @@ def test_render_subagent_distinguishes_lifecycle_statuses(status, expected):
     assert expected in subagent["content"]
     assert "子代理：research" in subagent["content"]
     if status == "interrupted":
-        assert "进行中" not in subagent["content"]
+        assert "执行中" not in subagent["content"]
 
 
 def test_render_tool_timeline_removes_all_duration_lines_from_detail():
@@ -1824,7 +2297,7 @@ def test_render_tool_timeline_removes_all_duration_lines_from_detail():
     )
     content = str(timeline)
 
-    assert "web_search** · 2.47s" in content
+    assert "web_search** · #1 · 2.47s" in content
     assert "搜索参数" in content
     assert "耗时:" not in content
 
@@ -1864,7 +2337,7 @@ def test_render_tool_timeline_recognizes_localized_terminal_status():
     )
 
     assert row["content"].startswith(
-        '<font color="green">✓ **读取资料**</font>'
+        '<font color="green">✓ **读取资料** · #1</font>'
     )
 
 
@@ -1893,12 +2366,14 @@ def test_render_timeline_styles_system_notices_as_compact_status_lines():
         )
     )
 
-    timeline = next(
-        item
-        for item in render_card(session, timeline_expanded=True)["body"]["elements"]
-        if item.get("element_id") == "auxiliary_timeline"
-    )
-    notice = next(item for item in timeline["elements"] if "上下文窗口提示" in item["content"])
+    # Contract change: a timeline holding ONLY notices no longer wraps them in the 思考与工具 panel
+    # — that produced a panel headed "思考与工具 · 0 次工具调用" over unrelated content. The notice
+    # keeps its compact quoted styling; it is a top-level element now. Notice styling inside the
+    # panel (when real think/tool work exists) stays covered by
+    # tests/unit/test_timeline_notice_panel.py.
+    elements = render_card(session, timeline_expanded=True)["body"]["elements"]
+    assert not any(item.get("tag") == "collapsible_panel" for item in elements)
+    notice = next(item for item in elements if "上下文窗口提示" in item.get("content", ""))
 
     assert notice["text_size"] == "x-small"
     assert notice["content"].startswith("> ")
@@ -2152,7 +2627,50 @@ def test_render_omits_redundant_tool_summary_when_timeline_is_visible():
 
     assert "auxiliary_timeline" in element_ids
     assert "tool_summary" not in element_ids
-    assert "思考与工具 · 1 次工具调用" in str(card)
+    assert "思考过程" in str(card)
+
+
+def test_render_timeline_reads_newest_first():
+    """The 思考过程 panel is ordered newest → oldest, so the latest work is read first.
+
+    Maintainer note (contract change): the panel used to be chronological (oldest first). Because the
+    panel sits at the BOTTOM of a card that is read downward, the entry the reader most wants ("what
+    is happening now?") was the furthest from their eye — the user asked for reverse order
+    ("Timeline 最好倒序一下 阅读上能够看最近的比较方便"). Selection is unchanged: the same entries are
+    shown, only the order they are written in flips.
+    """
+    from hermes_feishu_card.events import SidecarEvent
+
+    session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    for index in range(3):
+        session.apply(
+            SidecarEvent(
+                schema_version="1",
+                event="tool.updated",
+                conversation_id="chat-1",
+                message_id="msg-1",
+                chat_id="oc_abc",
+                platform="feishu",
+                sequence=index + 1,
+                created_at=0.0,
+                data={
+                    "tool_id": f"tool-{index}",
+                    "name": f"step_{index}",
+                    "status": "completed",
+                },
+            )
+        )
+
+    card = render_card(session, max_timeline_items=10)
+    timeline = next(
+        item for item in card["body"]["elements"] if item.get("element_id") == "auxiliary_timeline"
+    )
+    content = "".join(item["content"] for item in timeline["elements"])
+
+    newest = content.index("step_2")
+    middle = content.index("step_1")
+    oldest = content.index("step_0")
+    assert newest < middle < oldest
 
 
 def test_render_timeline_folds_old_entries_before_answer():
@@ -2355,7 +2873,7 @@ def test_render_thinking_without_answer_uses_public_interim_main_content():
     assert "工具调用 0 次" not in str(card)
 
 
-def test_render_tool_summary_keeps_tool_names_when_reasoning_hidden():
+def test_render_tool_activity_keeps_tool_names_when_reasoning_hidden():
     from hermes_feishu_card.events import SidecarEvent
 
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
@@ -2387,10 +2905,14 @@ def test_render_tool_summary_keeps_tool_names_when_reasoning_hidden():
     )
 
     card = render_card(session, show_reasoning=False)
-    tool_summary = next(item for item in card["body"]["elements"] if item.get("element_id") == "tool_summary")
+    row = next(
+        item for item in card["body"]["elements"]
+        if item.get("element_id") == "tool_activity_0"
+    )
 
-    assert "工具调用 1 次" in tool_summary["content"]
-    assert "`search`: running" in tool_summary["content"]
+    assert "search" in str(row)
+    assert "#1" in str(row)
+    assert "执行中" in str(row)
     assert "auxiliary_timeline" not in str(card)
 
 
@@ -2419,3 +2941,44 @@ def test_render_can_hide_reasoning_timeline_when_configured():
     assert "主回答" in content
     assert "隐藏的思考" not in content
     assert "auxiliary_timeline" not in content
+
+
+@pytest.mark.parametrize('kind', ['approval', 'clarify'])
+def test_mobile_interaction_preserves_full_prompt_in_body(kind):
+    prompt = '需要完整显示的问题内容，' * 25 + '不要丢失末尾条件。'
+    session = CardSession('c', 'm', 'oc')
+    session.active_interaction = InteractionState(
+        interaction_id='mobile-question', kind=kind, prompt=prompt,
+        description='完整授权范围', options=[InteractionOption(label='允许一次', value='once')],
+    )
+    card = render_legacy_interaction_callback_card(session)
+    contents = [item.get('content') for item in card['elements'] if item.get('tag') == 'markdown']
+    assert prompt in contents
+    assert '完整授权范围' in contents
+
+
+def test_answer_mentions_resolve_only_known_requester_and_preserve_code():
+    from hermes_feishu_card.render import _render_known_requester_mentions
+    session = CardSession('c', 'm', 'oc', sender_open_id='ou_requester', sender_name='牟勇')
+    text = '@牟勇，请查看。**@牟勇** @陌生人 @牟勇其他 `@牟勇`\n```text\n@牟勇\n```\n[链接](https://example.com/@牟勇)'
+    result = _render_known_requester_mentions(text, session)
+    assert result.count('<at id="ou_requester"></at>') == 2
+    for literal in ('@陌生人', '@牟勇其他', '`@牟勇`', '```text\n@牟勇\n```', 'https://example.com/@牟勇'):
+        assert literal in result
+
+
+def test_answer_mentions_obey_disable_switch_and_do_not_guess_missing_identity():
+    session = CardSession('c', 'm', 'oc', sender_open_id='ou_requester', sender_name='牟勇')
+    session.answer_text = '@牟勇，请查看。'
+    session.status = 'completed'
+    assert '<at id="ou_requester">' in str(render_card(session))
+    assert '<at id="ou_requester">' not in str(render_card(session, mentions_enabled=False))
+    session.sender_open_id = ''
+    assert '<at id=' not in str(render_card(session))
+
+
+def test_requester_mentions_preserve_existing_at_markup_and_plain_urls():
+    from hermes_feishu_card.render import _render_known_requester_mentions
+    session = CardSession('c', 'm', 'oc', sender_open_id='ou_requester', sender_name='牟勇')
+    original = '<at id="ou_requester">@牟勇</at> https://example.com/@牟勇 `@牟勇'
+    assert _render_known_requester_mentions(original, session) == original

@@ -64,6 +64,13 @@ def _strip_provider_prefix(name: str) -> str:
         return name
     first, rest = name.split("-", 1)
     if first.lower() not in _MODEL_FAMILIES:
+        # A provider-scoped id like 'uniapi/gpt-5.6-luna' splits on the first
+        # dash into 'uniapi/gpt'; the model family lives after the last slash,
+        # so re-anchor there instead of dropping it along with the provider.
+        if "/" in first:
+            family = first.rsplit("/", 1)[-1]
+            if family.lower() in _MODEL_FAMILIES or family.lower() in _KNOWN_SERIES:
+                return f"{family}-{rest}"
         return rest
     return name
 

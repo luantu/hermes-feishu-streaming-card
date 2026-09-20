@@ -1,4 +1,5 @@
 import ast
+import textwrap
 
 from .patch_descriptors import (
     HYBRID_PATCH_DESCRIPTORS,
@@ -26,6 +27,15 @@ QUEUED_COMPLETE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_BEGIN"
 QUEUED_COMPLETE_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_COMPLETE_PATCH_END"
 QUEUED_FOLLOWUP_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_FOLLOWUP_PATCH_BEGIN"
 QUEUED_FOLLOWUP_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_FOLLOWUP_PATCH_END"
+# The busy-path send is the one fragment that CAPTURES an upstream statement (see
+# _apply_busy_recall_patch): the v1 suffix lets a future revision install beside a v0 block instead
+# of silently reusing it.
+BUSY_RECALL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_BUSY_RECALL_PATCH_BEGIN_V1"
+BUSY_RECALL_PATCH_END = "# HERMES_FEISHU_CARD_BUSY_RECALL_PATCH_END_V1"
+# The long-running heartbeat send already keeps its result in `_notify_res`, so this fragment only
+# READS it — no upstream statement is captured (unlike the busy-recall block above).
+LONG_RUNNING_RECALL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_LONG_RUNNING_RECALL_PATCH_BEGIN"
+LONG_RUNNING_RECALL_PATCH_END = "# HERMES_FEISHU_CARD_LONG_RUNNING_RECALL_PATCH_END"
 QUEUED_FINAL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_QUEUED_FINAL_PATCH_BEGIN"
 QUEUED_FINAL_PATCH_END = "# HERMES_FEISHU_CARD_QUEUED_FINAL_PATCH_END"
 REDIRECT_PATCH_BEGIN = "# HERMES_FEISHU_CARD_REDIRECT_PATCH_BEGIN"
@@ -40,6 +50,10 @@ THINKING_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_BEGIN"
 THINKING_DELTA_PATCH_END = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_END"
 CLARIFY_PATCH_BEGIN = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_BEGIN"
 CLARIFY_PATCH_END = "# HERMES_FEISHU_CARD_CLARIFY_PATCH_END"
+# Hermes 242ff24ff7 (2026-09-16) extracted the clarify body into this helper; its
+# caller unpacks ``(response, answered)``, unlike the callback it came from.
+EXTRACTED_CLARIFY_HELPER = "_ask_clarify_question"
+EXTRACTED_CLARIFY_ARGS = ("question", "choices", "multi_select")
 APPROVAL_PATCH_BEGIN = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_BEGIN"
 APPROVAL_PATCH_END = "# HERMES_FEISHU_CARD_APPROVAL_PATCH_END"
 STATUS_PATCH_BEGIN = "# HERMES_FEISHU_CARD_STATUS_PATCH_BEGIN"
@@ -162,6 +176,8 @@ def apply_patch(
     content = _apply_queued_followup_patch(content)
     if strategy == "gateway_run_013_plus":
         content = _apply_redirect_patch(content)
+        content = _apply_busy_recall_patch(content)
+        content = _apply_long_running_recall_patch(content)
         content = _apply_cron_patch(content)
         content = _apply_command_card_startup_patch(content)
         content = _apply_native_redelivery_patch(content)
@@ -221,22 +237,7 @@ def _apply_turn_callbacks(content: str, *, strategy: str) -> str:
         required_callback_args=("text", "already_streamed"),
         allow_turn_context=True,
     )
-    content = _apply_callback_patch(
-        content,
-        callback_name="_clarify_callback_sync",
-        begin_marker=CLARIFY_PATCH_BEGIN,
-        end_marker=CLARIFY_PATCH_END,
-        renderer=_render_clarify_hook_block,
-        required_outer_names=(
-            "source",
-            "event_message_id",
-            "_status_chat_id",
-            "session_key",
-            "_run_still_current",
-        ),
-        required_callback_args=("question", "choices"),
-        allow_turn_context=True,
-    )
+    content = _apply_clarify_patch(content)
     content = _apply_callback_patch(
         content,
         callback_name="_approval_notify_sync",
@@ -597,6 +598,214 @@ def _apply_redirect_patch(content: str) -> str:
     return content
 
 
+def _render_busy_recall_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    return [
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import recall_busy_redirect_ack_async as _hfc_recall_ack{newline}"
+        ),
+        f"{inner_indent}await _hfc_recall_ack(event, content, _hfc_recall_result){newline}",
+        *_render_hook_exception_handler(indent, newline),
+    ]
+
+
+def _remove_busy_recall_patch(content: str) -> str:
+    block = _find_simple_marker_block(content, BUSY_RECALL_PATCH_BEGIN,
+                                     BUSY_RECALL_PATCH_END, "busy recall patch markers")
+    if block is None:
+        return content
+    lines = content.splitlines(keepends=True)
+    begin, end = block
+    indent = lines[begin][:len(lines[begin]) - len(lines[begin].lstrip())]
+    newline = _line_ending(lines[begin]) or _detect_newline(content)
+    hook = _render_busy_recall_hook_block(indent, newline)
+    captured = lines[begin + 1:end]
+    prefix = indent + "_hfc_recall_result = "
+    if (len(captured) <= len(hook) or captured[-len(hook):] != hook
+            or not captured[0].startswith(prefix + "await ")):
+        raise ValueError("corrupt busy recall patch")
+    original = captured[:-len(hook)]
+    original[0] = indent + original[0][len(prefix):]
+    try:
+        body = ast.parse(textwrap.dedent("".join(original))).body
+    except SyntaxError as exc:
+        raise ValueError("corrupt busy recall capture") from exc
+    if (len(body) != 1 or not isinstance(body[0], ast.Expr)
+            or not isinstance(body[0].value, ast.Await)
+            or not isinstance(body[0].value.value, ast.Call)
+            or not _same_expression(body[0].value.value.func, "adapter._send_with_retry")):
+        raise ValueError("corrupt busy recall capture")
+    return "".join(lines[:begin] + original + lines[end + 1:])
+
+
+def _apply_busy_recall_patch(content: str) -> str:
+    """Withdraw the busy-path redirect acknowledgement shortly after it is sent.
+
+    Every other fragment only ADDS code beside an anchor. This one captures the existing send
+    (``await adapter._send_with_retry(...)`` in ``_send_busy_reply``) as ``_hfc_recall_result``,
+    because the message id to recall lives only in that return value. The captured span is upstream's
+    own text with a single ``name = `` prefix, so a pristine restore + re-apply reproduces it, and
+    the install marker keeps re-application idempotent. When the statement's shape changes upstream
+    we leave the file untouched rather than guess at a rewrite.
+    """
+    if (
+        _find_simple_marker_block(
+            content,
+            BUSY_RECALL_PATCH_BEGIN,
+            BUSY_RECALL_PATCH_END,
+            "busy recall patch markers",
+        )
+        is not None
+    ):
+        _remove_busy_recall_patch(content)  # Validate captured code before accepting ownership.
+        return content
+
+    func = _find_async_function(_parse_content(content), "_send_busy_reply")
+    if func is None:
+        return content
+    targets = [
+        node for node in func.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Await)
+        and isinstance(node.value.value, ast.Call)
+        and _same_expression(node.value.value.func, "adapter._send_with_retry")
+    ]
+    target = targets[0] if len(targets) == 1 else None
+    if target is None or target.lineno is None or target.end_lineno is None:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    start, end = target.lineno - 1, target.end_lineno - 1
+    if start < 0 or end < start or end >= len(lines):
+        return content
+    if not _line_ending(lines[end]):
+        # Optional cleanup must not turn a valid EOF send into invalid Python.
+        return content
+    stripped = lines[start].lstrip()
+    if not stripped.startswith("await "):
+        return content
+    indent = lines[start][: len(lines[start]) - len(stripped)]
+    newline = _line_ending(lines[start]) or _detect_newline(content)
+    return "".join(
+        lines[:start]
+        + [
+            f"{indent}{BUSY_RECALL_PATCH_BEGIN}{newline}",
+            f"{indent}_hfc_recall_result = {stripped}",
+        ]
+        + lines[start + 1 : end + 1]
+        + _render_busy_recall_hook_block(indent, newline)
+        + [f"{indent}{BUSY_RECALL_PATCH_END}{newline}"]
+        + lines[end + 1 :]
+    )
+
+
+def _render_long_running_notice_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    return [
+        f"{indent}{LONG_RUNNING_RECALL_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import recall_transient_thread_notice_async as _hfc_recall_notice{newline}"
+        ),
+        f"{inner_indent}await _hfc_recall_notice(source, _heartbeat_text, _notify_res){newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{LONG_RUNNING_RECALL_PATCH_END}{newline}",
+    ]
+
+
+def _apply_long_running_recall_patch(content: str) -> str:
+    """Withdraw the long-running heartbeat text shortly after it is sent.
+
+    ``⏳ Working — 12 min — iteration 42/150, …`` is edited in place every
+    ``HERMES_AGENT_NOTIFY_INTERVAL`` (180s) and — with ``display.cleanup_progress`` off — never
+    removed, so a finished turn leaves its last heartbeat in the thread. The user asked for the
+    same treatment the busy-path redirect acknowledgement gets (「可以像 redirect 那个一样被撤回
+    吗」): withdraw it a few seconds after it is sent. The heartbeat loop then sends a fresh one on
+    its next tick because editing a withdrawn message fails, so long turns still report progress.
+
+    Purely additive: upstream already keeps the send result in ``_notify_res``, so this fragment
+    only READS it and captures no upstream statement. The anchor is the assignment that records the
+    heartbeat's message id; the hook goes right after its INNERMOST enclosing ``if``, i.e. once per
+    fresh heartbeat send (never for the edit path, which arms nothing new).
+    """
+    content = _remove_simple_owned_patch(
+        content, LONG_RUNNING_RECALL_PATCH_BEGIN, LONG_RUNNING_RECALL_PATCH_END,
+        _render_long_running_notice_hook_block, "long running recall patch markers")
+    tree = _parse_content(content)
+    assignments = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "_heartbeat_msg_id"
+            and isinstance(node.value, ast.Call) and _same_expression(node.value.func, "str")
+            and len(node.value.args) == 1 and not node.value.keywords
+            and _same_expression(node.value.args[0], "_notify_res.message_id")
+    ]
+    if len(assignments) != 1:
+        return content
+    assign = assignments[0]
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    scope = parents.get(assign)
+    while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        scope = parents.get(scope)
+    if not isinstance(scope, ast.AsyncFunctionDef) or scope.name not in {
+        "_notify_long_running", "_run_agent_notify_long_running",
+    }:
+        return content
+    if assign.lineno is None or assign.end_lineno is None:
+        return content
+    owners = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If) and node.lineno <= assign.lineno
+        and (node.end_lineno or 0) >= (assign.end_lineno or 0)
+    ]
+    if not owners:
+        return content
+    # The INNERMOST owner: the branch that only runs after a fresh send. The outermost one would
+    # also fire on the in-place edit path, re-arming the withdrawal for a message nobody re-sent.
+    owner = max(owners, key=lambda node: node.lineno)
+    if assign not in owner.body or not _same_expression(
+        owner.test,
+        'getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None)',
+    ):
+        return content
+    fresh_send = parents.get(owner)
+    if not isinstance(fresh_send, ast.If) or not _same_expression(
+        fresh_send.test, 'not (_notify_res and getattr(_notify_res, "success", False))',
+    ) or owner not in fresh_send.body:
+        return content
+    index = fresh_send.body.index(owner)
+    if index == 0:
+        return content
+    send = fresh_send.body[index - 1]
+    if not (isinstance(send, ast.Assign) and len(send.targets) == 1
+            and isinstance(send.targets[0], ast.Name) and send.targets[0].id == "_notify_res"
+            and isinstance(send.value, ast.Await) and isinstance(send.value.value, ast.Call)):
+        return content
+    call = send.value.value
+    if not (any(_same_expression(call.func, name) for name in ("adapter.send", "_notify_adapter.send"))
+            and len(call.args) == 2 and _same_expression(call.args[0], "source.chat_id")
+            and _same_expression(call.args[1], "_heartbeat_text")
+            and all(keyword.arg == "metadata" for keyword in call.keywords)):
+        return content
+    lines = content.splitlines(keepends=True)
+    last = owner.end_lineno
+    if last is None or last - 1 >= len(lines) or not _line_ending(lines[last - 1]):
+        return content
+    indent = _line_indent(lines, owner.lineno - 1)
+    newline = _line_ending(lines[owner.lineno - 1]) or _detect_newline(content)
+    lines[last:last] = _render_long_running_notice_hook_block(indent, newline)
+    return "".join(lines)
+
+
+def _remove_long_running_recall_patch(content: str) -> str:
+    return _remove_simple_owned_patch(
+        content, LONG_RUNNING_RECALL_PATCH_BEGIN, LONG_RUNNING_RECALL_PATCH_END,
+        _render_long_running_notice_hook_block, "long running recall patch markers")
+
+
 def _apply_slash_confirm_patch(content: str) -> str:
     owned_block = _find_simple_marker_block(
         content,
@@ -862,6 +1071,8 @@ def _apply_hfc_command_patch(content: str) -> str:
 
 def remove_patch(content: str) -> str:
     """Remove the owned Feishu card hook block from patched Hermes content."""
+    content = _remove_busy_recall_patch(content)
+    content = _remove_long_running_recall_patch(content)
     from .provider_route import remove_provider_route_patch
     content = remove_provider_route_patch(content)
     content = _remove_simple_owned_patch(
@@ -1032,6 +1243,8 @@ def remove_cron_patch_lenient(content: str) -> str:
 
 def remove_patch_lenient(content: str) -> str:
     """Remove owned patch markers, accepting older generated block bodies."""
+    content = _remove_busy_recall_patch(content)
+    content = _remove_long_running_recall_patch(content)
     owned_complete_block = _find_simple_marker_block(
         content,
         COMPLETE_PATCH_BEGIN,
@@ -1550,19 +1763,49 @@ def _find_turn_runner_stable_tool_lifecycle_location(tree, lines):
     return _last_stable_tool_lifecycle_assignment_location(run_sync, lines)
 
 
+def _unconditionally_executed_statements(function_node):
+    """The statements that run on EVERY call: the function body, plus any ``try`` protected body.
+
+    Used to keep this module's anchors on the assignment that always executes. Hermes reassigns
+    the tool callbacks in more than one place; 0.21.3 added a NEW reassignment deep inside
+    ``if ctx.mute_notification_reply:`` (a branch that is normally False) which sits later in the
+    function than the unconditional one. "The last assignment wins" therefore parked the tool
+    lifecycle block INSIDE that branch, where it never ran: the callbacks were never wrapped, no
+    tool events reached the sidecar, and the card lost its tool row and tool count while the tool
+    lines leaked back to plain text. Anchor on what always runs, not on what is merely last.
+    """
+    allowed = set()
+
+    def visit(body):
+        for stmt in body:
+            allowed.add(id(stmt))
+            # A `try` protected body runs whether or not it later raises; handlers/orelse/finally
+            # are conditional (`finally` is unconditional in fact, but nothing anchors there).
+            if isinstance(stmt, ast.Try):
+                visit(stmt.body)
+
+    visit(function_node.body)
+    return allowed
+
+
 def _last_stable_tool_lifecycle_assignment_location(function_node, lines):
     callback_names = {"tool_start_callback", "tool_complete_callback"}
+    allowed = _unconditionally_executed_statements(function_node)
     candidates = []
     for node in ast.walk(function_node):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        if any(
+        if not any(
             _is_agent_callback_target(target, callback_name)
             for target in targets
             for callback_name in callback_names
         ):
+            continue
+        if id(node) in allowed:
             candidates.append(node)
+    # Unknown conditional-only layouts cannot prove that the hook will run.
+    # Leave the capability unavailable rather than installing an inert hook.
     if not candidates:
         return None
     latest = max(
@@ -2806,6 +3049,25 @@ def _find_simple_owned_patch(
         expected_blocks.append(
             _render_turn_context_hook_block(renderer, indent, newline)
         )
+    if renderer is _render_queued_final_hook_block:
+        expected_blocks.extend([
+            _render_v452_queued_final_hook_block(indent, newline),
+            _render_pr310_queued_final_hook_block(indent, newline),
+        ])
+    if renderer is _render_stable_tool_lifecycle_hook_block:
+        # v4.5.2 installed blocks predate the dedicated reasoning callback.
+        expected_blocks.extend([
+            [line for line in block if "_hfc_bind_reasoning" not in line]
+            for block in list(expected_blocks)
+        ])
+    if renderer is _render_clarify_hook_block:
+        # The extracted ``_ask_clarify_question`` seam answers with ``(answer, True)``,
+        # so its block is the same hook carrying the answered flag.
+        expected_blocks.append(
+            _render_turn_context_hook_block(
+                _render_extracted_clarify_hook_block, indent, newline
+            )
+        )
     actual = lines[begin_index : end_index + 1]
     if actual not in expected_blocks:
         raise ValueError(f"corrupt {error_label}")
@@ -3100,6 +3362,16 @@ def _render_hook_block(indent: str, newline: str, strategy: str = "legacy_gatewa
                 f"{deeper_indent}_hfc_started_message_id = getattr(event, \"message_id\", None) or self._reply_anchor_for_event(event){newline}",
                 f"{inner_indent}except Exception:{newline}",
                 f"{deeper_indent}_hfc_started_message_id = getattr(event, \"message_id\", None){newline}",
+                # Publish the SAME canonical anchor onto the core's own ``source.message_id``.
+                # The gateway fills HERMES_SESSION_MESSAGE_ID from that field alone, but the
+                # Feishu adapter never populates it, so every consumer of that variable (cron
+                # origin anchors, background-task completion notices, notification plugins)
+                # silently falls back to the chat's main message stream instead of the topic.
+                # This block runs before ``_hmwa_prepare_turn`` snapshots the source, and the
+                # value matches the field's documented meaning ("triggering message").
+                f"{inner_indent}_hfc_anchor_source = locals().get(\"source\"){newline}",
+                f"{inner_indent}if _hfc_started_message_id and _hfc_anchor_source is not None:{newline}",
+                f"{deeper_indent}_hfc_anchor_source.message_id = _hfc_started_message_id{newline}",
                 f"{inner_indent}if _hfc_handle_command({{**locals(), \"message_id\": _hfc_started_message_id}}):{newline}",
                 f"{deeper_indent}return None{newline}",
                 f"{inner_indent}_hfc_emit({{**locals(), \"message_id\": _hfc_started_message_id}}){newline}",
@@ -3366,11 +3638,19 @@ def _render_queued_complete_hook_block(indent: str, newline: str):
         f"{deeper_indent}_hfc_turn_ctx = locals().get(\"turn_ctx\"){newline}",
         f"{deeper_indent}_hfc_source = locals().get(\"source\") or getattr(_hfc_turn_ctx, \"source\", None){newline}",
         f"{deeper_indent}_hfc_message_id = locals().get(\"event_message_id\") or getattr(_hfc_turn_ctx, \"event_message_id\", None){newline}",
+        f"{deeper_indent}_hfc_delivery_result = locals().get(\"_delivery_result\"){newline}",
+        f"{deeper_indent}if not isinstance(_hfc_delivery_result, dict):{newline}",
+        f"{deeper_indent}    _hfc_delivery_result = result if isinstance(result, dict) else {{}}{newline}",
         f"{deeper_indent}_hfc_completed_locals = {{{newline}",
         f"{deeper_indent}    **locals(),{newline}",
         f"{deeper_indent}    \"source\": _hfc_source,{newline}",
         f"{deeper_indent}    \"message_id\": _hfc_message_id,{newline}",
         f"{deeper_indent}    \"answer\": first_response,{newline}",
+        # Without the turn result this completed event carries no turn_outcome, so the sidecar
+        # takes its success branch: the answer that already streamed to the user gets archived
+        # into the reasoning panel and the raw provider error is left as the card body. Passing
+        # the result through lets the sidecar render the interrupted turn correctly instead.
+        f"{deeper_indent}    \"agent_result\": _hfc_delivery_result,{newline}",
         f"{deeper_indent}    \"duration\": result.get(\"duration\", 0.0) if isinstance(result, dict) else 0.0,{newline}",
         f"{deeper_indent}    \"model\": result.get(\"model\", \"\") if isinstance(result, dict) else \"\",{newline}",
         f"{deeper_indent}    \"tokens\": {{{newline}",
@@ -3409,6 +3689,10 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
         f"{indent}try:{newline}",
         (
             f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import interrupted_turn_locals as _hfc_interrupted_locals{newline}"
+        ),
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
             f"import emit_from_hermes_locals_async as _hfc_emit_async{newline}"
         ),
         f"{inner_indent}if pending_event is not None:{newline}",
@@ -3418,9 +3702,9 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
         f"{deeper_indent}_hfc_was_interrupted = bool(locals().get(\"was_interrupted\") or (result.get(\"interrupted\") if isinstance(result, dict) else False)){newline}",
         f"{deeper_indent}if _hfc_was_interrupted and _hfc_original_message_id:{newline}",
         (
-            f"{deepest_indent}await _hfc_emit_async({{"
-            f"\"source\": source, \"chat_id\": getattr(source, \"chat_id\", None), "
-            f"\"message_id\": _hfc_original_message_id, \"error\": \"用户已打断当前任务\"}}, event_name=\"message.failed\"){newline}"
+            f"{deepest_indent}await _hfc_emit_async("
+            f"_hfc_interrupted_locals(source, _hfc_original_message_id, result), "
+            f"event_name=\"message.failed\"){newline}"
         ),
         f"{deeper_indent}if _hfc_followup_message_id:{newline}",
         f"{deepest_indent}from copy import copy as _hfc_copy{newline}",
@@ -3438,7 +3722,7 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
     ]
 
 
-def _render_queued_final_hook_block(indent: str, newline: str):
+def _render_v452_queued_final_hook_block(indent: str, newline: str):
     inner = _child_indent(indent)
     deeper = _child_indent(inner)
     return [
@@ -3449,6 +3733,56 @@ def _render_queued_final_hook_block(indent: str, newline: str):
         f"{deeper}followup_result = {{**followup_result, \"_hfc_queued_final_attempted\": True}}{newline}",
         f"{deeper}_hfc_final_locals = {{\"source\": next_source, \"message_id\": getattr(pending_event, \"message_id\", None) or next_message_id, \"answer\": followup_result.get(\"final_response\", \"\"), \"error\": followup_result.get(\"error\") or \"任务已中断\", \"agent_result\": followup_result}}{newline}",
         f"{deeper}_hfc_final_event_name = \"message.failed\" if followup_result.get(\"failed\") or followup_result.get(\"interrupted\") else \"message.completed\"{newline}",
+        f"{deeper}if await _hfc_emit_async(_hfc_final_locals, event_name=_hfc_final_event_name):{newline}",
+        f"{deeper}    followup_result = {{**followup_result, \"_hfc_queued_final_delivered\": True}}{newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{QUEUED_FINAL_PATCH_END}{newline}",
+    ]
+
+
+def _render_pr310_queued_final_hook_block(indent: str, newline: str):
+    inner = _child_indent(indent)
+    deeper = _child_indent(inner)
+    return [
+        f"{indent}{QUEUED_FINAL_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        f"{inner}from hermes_feishu_card.hook_runtime import emit_from_hermes_locals_async as _hfc_emit_async{newline}",
+        f"{inner}if pending_event is not None and isinstance(followup_result, dict) and not followup_result.get(\"_hfc_queued_final_delivered\") and not followup_result.get(\"_hfc_queued_final_attempted\"):{newline}",
+        f"{deeper}followup_result = {{**followup_result, \"_hfc_queued_final_attempted\": True}}{newline}",
+        f"{deeper}_hfc_final_answer = followup_result.get(\"final_response\") or followup_result.get(\"error\") or \"任务已中断\"{newline}",
+        f"{deeper}_hfc_final_metrics = {{\"duration\": followup_result.get(\"_hfc_turn_seconds\"), \"model\": followup_result.get(\"model\", \"\"), \"tokens\": {{\"input_tokens\": followup_result.get(\"input_tokens\", 0), \"output_tokens\": followup_result.get(\"output_tokens\", 0)}}, \"context\": {{\"used_tokens\": followup_result.get(\"last_prompt_tokens\", 0), \"max_tokens\": followup_result.get(\"context_length\", 0)}}}}{newline}",
+        f"{deeper}_hfc_final_locals = {{\"source\": next_source, \"message_id\": getattr(pending_event, \"message_id\", None) or next_message_id, \"answer\": _hfc_final_answer, \"error\": followup_result.get(\"error\") or \"任务已中断\", \"agent_result\": followup_result, **_hfc_final_metrics}}{newline}",
+        f"{deeper}# A queued follow-up ends with the completed envelope even when it failed. Only that{newline}",
+        f"{deeper}# branch reads duration/model/tokens/context, and the failure still reaches the card{newline}",
+        f"{deeper}# because the turn result travels as agent_result (the sidecar derives turn_outcome{newline}",
+        f"{deeper}# from it). Emitting message.failed here produced a context-free card - no tool count,{newline}",
+        f"{deeper}# no duration, no model - so it said nothing about where the run stopped.{newline}",
+        f"{deeper}_hfc_final_event_name = \"message.completed\"{newline}",
+        f"{deeper}if await _hfc_emit_async(_hfc_final_locals, event_name=_hfc_final_event_name):{newline}",
+        f"{deeper}    followup_result = {{**followup_result, \"_hfc_queued_final_delivered\": True}}{newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{QUEUED_FINAL_PATCH_END}{newline}",
+    ]
+
+
+def _render_queued_final_hook_block(indent: str, newline: str):
+    inner = _child_indent(indent)
+    deeper = _child_indent(inner)
+    return [
+        f"{indent}{QUEUED_FINAL_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        f"{inner}from hermes_feishu_card.hook_runtime import emit_from_hermes_locals_async as _hfc_emit_async{newline}",
+        f"{inner}if pending_event is not None and isinstance(followup_result, dict) and not followup_result.get(\"_hfc_queued_final_delivered\") and not followup_result.get(\"_hfc_queued_final_attempted\"):{newline}",
+        f"{deeper}followup_result = {{**followup_result, \"_hfc_queued_final_attempted\": True}}{newline}",
+        f"{deeper}_hfc_final_answer = followup_result.get(\"final_response\") or followup_result.get(\"error\") or \"\"{newline}",
+        f"{deeper}_hfc_final_metrics = {{\"duration\": followup_result.get(\"_hfc_turn_seconds\"), \"model\": followup_result.get(\"model\", \"\"), \"tokens\": {{\"input_tokens\": followup_result.get(\"input_tokens\", 0), \"output_tokens\": followup_result.get(\"output_tokens\", 0)}}, \"context\": {{\"used_tokens\": followup_result.get(\"last_prompt_tokens\", 0), \"max_tokens\": followup_result.get(\"context_length\", 0)}}}}{newline}",
+        f"{deeper}_hfc_final_locals = {{\"source\": next_source, \"message_id\": getattr(pending_event, \"message_id\", None) or next_message_id, \"answer\": _hfc_final_answer, \"error\": followup_result.get(\"error\") or \"任务已中断\", \"agent_result\": followup_result, **_hfc_final_metrics}}{newline}",
+        f"{deeper}# A queued follow-up ends with the completed envelope even when it failed. Only that{newline}",
+        f"{deeper}# branch reads duration/model/tokens/context, and the failure still reaches the card{newline}",
+        f"{deeper}# because the turn result travels as agent_result (the sidecar derives turn_outcome{newline}",
+        f"{deeper}# from it). Emitting message.failed here produced a context-free card - no tool count,{newline}",
+        f"{deeper}# no duration, no model - so it said nothing about where the run stopped.{newline}",
+        f"{deeper}_hfc_final_event_name = \"message.completed\"{newline}",
         f"{deeper}if await _hfc_emit_async(_hfc_final_locals, event_name=_hfc_final_event_name):{newline}",
         f"{deeper}    followup_result = {{**followup_result, \"_hfc_queued_final_delivered\": True}}{newline}",
         *_render_hook_exception_handler(indent, newline),
@@ -3470,6 +3804,7 @@ def _render_redirect_hook_block(indent: str, newline: str):
         f"{inner_indent}if bool(locals().get(\"redirected\")):{newline}",
         f"{deeper_indent}_hfc_redirect_message_id = str(getattr(event, \"message_id\", \"\") or \"\"){newline}",
         f"{deeper_indent}from hermes_feishu_card.hook_runtime import redirect_turn_id_for_agent as _hfc_redirect_turn{newline}",
+        f"{deeper_indent}from hermes_feishu_card.hook_runtime import redirect_conversation_id_for_agent as _hfc_redirect_conversation{newline}",
         f"{deeper_indent}_hfc_redirect_from_turn_id = _hfc_redirect_turn(locals().get(\"running_agent\"), event.source){newline}",
         # Unknown callback ownership must retain the current card. Emitting a
         # fresh started event would abandon it and strand its future callbacks.
@@ -3482,6 +3817,7 @@ def _render_redirect_hook_block(indent: str, newline: str):
             f"\"chat_id\": getattr(event.source, \"chat_id\", None), "
             f"\"message_id\": _hfc_redirect_message_id, "
             f"\"reply_to_message_id\": getattr(event, \"reply_to_message_id\", \"\") or _hfc_redirect_message_id, "
+            f"\"conversation_id\": _hfc_redirect_conversation(locals().get(\"running_agent\"), event.source), "
             f"\"redirect_from_turn_id\": _hfc_redirect_from_turn_id, "
             f"\"redirect_followup\": True}}, event_name=\"message.started\"){newline}"
         ),
@@ -3572,6 +3908,8 @@ def _render_turn_context_hook_block(renderer, indent: str, newline: str):
     """Adapt a legacy closure hook to Hermes' ``TurnRunner`` context seam."""
     block = renderer(indent, newline)
     replacements = (
+        ("_hfc_bind_reasoning(agent, source, event_message_id, _loop_for_step, _run_still_current)",
+         "_hfc_bind_reasoning(agent, _hfc_turn_ctx.source, _hfc_turn_ctx.event_message_id, _hfc_turn_ctx._loop_for_step, _hfc_turn_ctx._run_still_current)"),
         ("_hfc_bind_agent_turn(agent, source)", "_hfc_bind_agent_turn(agent, _hfc_turn_ctx.source)"),
         ("_run_still_current()", "_hfc_turn_ctx._run_still_current()"),
         ('"source": source,', '"source": _hfc_turn_ctx.source,'),
@@ -3664,6 +4002,8 @@ def _render_stable_tool_lifecycle_hook_block(indent: str, newline: str):
         f"{indent}try:{newline}",
         f"{inner_indent}from hermes_feishu_card.hook_runtime import bind_agent_turn_identity as _hfc_bind_agent_turn{newline}",
         f"{inner_indent}_hfc_bind_agent_turn(agent, source){newline}",
+        f"{inner_indent}from hermes_feishu_card.hook_runtime import bind_agent_reasoning as _hfc_bind_reasoning{newline}",
+        f"{inner_indent}_hfc_bind_reasoning(agent, source, event_message_id, _loop_for_step, _run_still_current){newline}",
         (
             f"{inner_indent}from hermes_feishu_card.hook_runtime "
             f"import emit_from_hermes_locals_threadsafe as _hfc_emit_stable_threadsafe{newline}"
@@ -3807,7 +4147,15 @@ def _render_thinking_delta_hook_block(indent: str, newline: str):
     ]
 
 
-def _render_clarify_hook_block(indent: str, newline: str):
+def _render_clarify_hook_block(indent: str, newline: str, *, returns_tuple: bool = False):
+    """Render the clarify interception block.
+
+    ``returns_tuple`` targets Hermes' extracted ``_ask_clarify_question`` seam
+    (commit 242ff24ff7, 2026-09-16): that helper's contract is
+    ``(response, answered)`` and its caller unpacks both values, so an intercepted
+    answer has to come back as ``(answer, True)``. The pre-extraction seam returned
+    the answer string itself.
+    """
     inner_indent = _child_indent(indent)
     deeper_indent = _child_indent(inner_indent)
     return [
@@ -3829,10 +4177,108 @@ def _render_clarify_hook_block(indent: str, newline: str):
         f"{deeper_indent}    \"kind\": \"clarify\",{newline}",
         f"{deeper_indent}}}, interaction_id=\"clarify_\" + _hfc_uuid4().hex[:10], question=question, choices=choices, multi_select=locals().get(\"multi_select\", False)){newline}",
         f"{deeper_indent}if _hfc_clarify_response is not None:{newline}",
-        f"{deeper_indent}    return _hfc_clarify_response{newline}",
+        (
+            f"{deeper_indent}    return _hfc_clarify_response, True{newline}"
+            if returns_tuple
+            else f"{deeper_indent}    return _hfc_clarify_response{newline}"
+        ),
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{CLARIFY_PATCH_END}{newline}",
     ]
+
+
+def _render_extracted_clarify_hook_block(indent: str, newline: str):
+    """Clarify hook for Hermes' extracted ``_ask_clarify_question`` seam."""
+    return _render_clarify_hook_block(indent, newline, returns_tuple=True)
+
+
+def _locate_extracted_clarify_helper(content: str):
+    """Return the extracted clarify helper when this Hermes routes clarify there.
+
+    Hermes ``242ff24ff7`` (2026-09-16) moved the clarify body out of
+    ``_clarify_callback_sync`` into ``_ask_clarify_question``; both the
+    single-question path and every batch question go through that helper. The
+    extraction took the ``ctx = self._ctx`` binding with it, which is exactly what
+    the legacy seam is located by, so the seam has to be identified from the helper.
+
+    ``None`` means the pre-extraction layout. Drift raises: the hook has to know
+    which contract to answer, and silently installing nothing would leave a
+    half-patched gateway that loses clarify cards without saying so.
+    """
+    tree = _parse_content(content)
+    turn_runner = _find_turn_runner_node(tree)
+    if turn_runner is None:
+        return None
+    helper = _find_direct_class_function_node(turn_runner, EXTRACTED_CLARIFY_HELPER)
+    if helper is None:
+        return None
+    caller = _find_direct_class_function_node(turn_runner, "_clarify_callback_sync")
+    tuple_call = caller is not None and any(
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], (ast.Tuple, ast.List))
+        and len(node.targets[0].elts) == 2
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "self"
+        and node.value.func.attr == EXTRACTED_CLARIFY_HELPER
+        for node in ast.walk(caller)
+    )
+    if not isinstance(helper, ast.FunctionDef) or not tuple_call:
+        raise ValueError("Hermes extracted clarify return/call contract changed")
+    if not _binds_turn_context(helper):
+        raise ValueError(
+            "Hermes extracted clarify seam no longer binds the TurnRunner context "
+            f"({EXTRACTED_CLARIFY_HELPER})"
+        )
+    missing = [
+        name
+        for name in EXTRACTED_CLARIFY_ARGS
+        if name not in _function_argument_names(helper)
+    ]
+    if missing:
+        raise ValueError(
+            "Hermes extracted clarify seam signature changed "
+            f"({EXTRACTED_CLARIFY_HELPER} lost {', '.join(missing)})"
+        )
+    return helper
+
+
+def _apply_clarify_patch(content: str) -> str:
+    """Install the clarify hook on whichever seam this Hermes exposes.
+
+    The seam is chosen from the source rather than from what is already installed:
+    a repeat install must keep the spelling that matches the seam, because the
+    extracted helper is unpacked as ``(response, answered)`` while the
+    pre-extraction callback returns the answer string itself.
+    """
+    if _locate_extracted_clarify_helper(content) is not None:
+        return _apply_callback_patch(
+            content,
+            callback_name=EXTRACTED_CLARIFY_HELPER,
+            begin_marker=CLARIFY_PATCH_BEGIN,
+            end_marker=CLARIFY_PATCH_END,
+            renderer=_render_extracted_clarify_hook_block,
+            required_callback_args=EXTRACTED_CLARIFY_ARGS,
+            allow_turn_context=True,
+        )
+    return _apply_callback_patch(
+        content,
+        callback_name="_clarify_callback_sync",
+        begin_marker=CLARIFY_PATCH_BEGIN,
+        end_marker=CLARIFY_PATCH_END,
+        renderer=_render_clarify_hook_block,
+        required_outer_names=(
+            "source",
+            "event_message_id",
+            "_status_chat_id",
+            "session_key",
+            "_run_still_current",
+        ),
+        required_callback_args=("question", "choices"),
+        allow_turn_context=True,
+    )
 
 
 def _render_approval_hook_block(indent: str, newline: str):
@@ -3856,8 +4302,8 @@ def _render_approval_hook_block(indent: str, newline: str):
         f"{deeper_indent}    \"_hfc_loop\": locals().get(\"_loop_for_step\"),{newline}",
         f"{deeper_indent}}}, approval_data, interaction_id=\"approval_\" + _hfc_uuid4().hex[:10]){newline}",
         f"{deeper_indent}if _hfc_approval_choice:{newline}",
-        f"{deeper_indent}    from tools.approval import resolve_gateway_approval as _hfc_resolve_gateway_approval{newline}",
-        f"{deeper_indent}    _hfc_resolve_gateway_approval(_approval_session_key, _hfc_approval_choice){newline}",
+        f"{deeper_indent}    from hermes_feishu_card.hook_runtime import resolve_approval_choice as _hfc_resolve_gateway_approval{newline}",
+        f"{deeper_indent}    _hfc_resolve_gateway_approval(approval_data, _approval_session_key, _hfc_approval_choice){newline}",
         f"{deeper_indent}    return{newline}",
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{APPROVAL_PATCH_END}{newline}",
@@ -4257,6 +4703,8 @@ def apply_gateway_fragment(content: str, target: str, *, strategy="gateway_run_0
     content = _apply_queued_complete_patch(content)
     content = _apply_queued_followup_patch(content)
     content = _apply_redirect_patch(content)
+    content = _apply_busy_recall_patch(content)
+    content = _apply_long_running_recall_patch(content)
     for apply in (_apply_command_card_adapter_patch, _apply_hfc_command_patch,
                   _apply_slash_confirm_patch, _apply_command_card_startup_patch,
                   _apply_native_redelivery_patch, _apply_platform_notice_patch,

@@ -1,4 +1,4 @@
-# Hermes Feishu Streaming Card V4.4.6 sidecar configuration
+# Hermes Feishu Streaming Card V4.6.4 sidecar configuration
 # Copy to a local path and fill credentials from your environment or secret store.
 # Default config path: ~/.hermes_feishu_card/config.yaml
 
@@ -40,11 +40,18 @@ card:
   # callback: explicitly keep native CardKit callback buttons.
   # text: explicitly render numbered text choices and let Hermes handle the reply.
   interaction_mode: auto
+  # Opt-in CardKit entity streaming. Requires cardkit:card:write permission.
+  streaming_mode: false
   # panel (default) keeps reasoning in the collapsible execution timeline.
   # code displays reasoning as visible fenced text blocks; tools stay in the panel.
   reasoning_format: panel
   # Applies to both formats; false hides reasoning and the tool timeline.
   show_reasoning: true
+  # false keeps live raw thinking in a bounded panel preview instead of main_content.
+  # Does not change final/failed content, archived reasoning_format or whole-card limits.
+  stream_thinking_to_body: true
+  # Hide content-area tool rows after completed/failed; timeline and counts stay visible.
+  hide_completed_tool_activity: false
   timeline_expanded: false
   max_reasoning_chars: 1200
   max_wait_ms: 800
@@ -56,6 +63,9 @@ card:
   # @mentions the initiating Feishu user. Card edits themselves do not notify.
   completion_notify:
     enabled: false
+    # message preserves a separate notification; card puts @ above the answer.
+    # A card edit is visual only and does not guarantee a push notification.
+    placement: message
     # Explicit @ mention toggle for the completion notification. Absent =
     # fall back to the global mentions_in_cards switch (absent = enabled).
     mention: true

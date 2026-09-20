@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## [4.6.4] - 2026-09-20
+
+- Wire the first Feishu turn/interaction callback without slash-card warmup, including generated TurnRunner closures; preserve live SDK dispatcher identity and exact profile/adapter ownership (#335, sthnow; patch by babypanda).
+- Open a same-route continuation only after selection and real subsequent output for clarify and approval; keep question/decision receipts, canonical history and turn metrics. Retain the existing owner on failed/uncertain create and preserve a sole legacy owner's dialect through fallback and display recovery (informed by PR #331 and #335).
+- Add optional `classic` / `focused` / `detailed` reading presets and read-only `card-config` explanations. Preserve existing defaults and explicit settings (#328, jackwude; #333, leavrcn).
+- Retire registered transient restart notices only after successful same-scope delivery, with exact profile/bot/chat/thread and generation checks; preserve failed deletion records and native home notices whose provenance is unknown (adapted from mouyong's PR #331).
+- Add isolated contributor preflight checks and explicit focused/full pytest runs with real exit codes, fixture validation, private state and safe summaries (#330, mouyong).
+- Desktop/mobile first-click acceptance and the production upgrade remain unverified; this release does not claim them as passed. See [Chinese notes](docs/release-notes-v4.6.4.md), [English notes](docs/release-notes-v4.6.4.en.md) and the [current acceptance checklist](docs/wiki/feishu-acceptance-v4.6.4.md). PR #331 is absorbed by topic, not merged as a whole.
+
+## [4.6.3] - 2026-09-19
+
+- Add opt-out `card.stream_thinking_to_body` (default `true`) with a bounded live panel preview; preserve terminal content and card-limit fallback (#333, leavrcn).
+- Adapt tool ordering, terminal duration and interrupted-turn metrics from mouyong's #331; preserve measured values and validate actual generated-hook execution.
+- Keep 4.6.2 terminal-tool defaults unchanged. Notice retirement, timeline reordering and ambiguous reused-tool-ID counting from #331 remain separate.
+
+## [4.6.2] - 2026-09-18
+
+- Fix native-plugin/Gateway maintenance proof sharing. Native observers retain their own activity counts but rely on a present Gateway owner for admission/home evidence; missing or unknown owners still refuse automated stop.
+- Add opt-in `card.hide_completed_tool_activity` (default `false`) for completed/failed content tool rows, preserving live progress, timeline, answer and footer. Adapted from mouyong's #331 for jackwude's #328; other #331 changes remain separate.
+- Credit jackwude's #329 evidence for the 4.6.1 independent-notice footer fix.
+
+## V4.6.1 — 2026-09-18
+
+### Fixed
+- Bind lifecycle hooks outside the later muted-notification branch; reject unproven conditional anchors (#326, PR #325).
+- Recall only known transient status templates on their original profile/chat route; preserve answers and queue/error acknowledgements.
+- Keep restart text fallback, auxiliary approval controls, chronological body reasoning and meaningful footer metrics.
+- Keep two recent tool steps, safe timestamped diagnostics and profile-aware interrupt/steer recall; retain onboarding guidance.
+- Retain @mouyong's original commits through `bf7409a`; add maintainer isolation, failure, redaction and control-flow regression checks.
+
+## V4.6.0 — 2026-09-17
+
+### Fixed
+- Route transient recall through the sending profile/chat binding; reject ambiguous multi-profile routes (#323).
+- Wire structured reasoning once per agent turn, preserve repeated stream tokens, and omit exact post-response duplicates (#319).
+- Bound terminal request and lock waits within the retry deadline; redact retry logs (PR #310).
+- Restore owned card display checkpoints after sidecar restart without recreating approvals or execution; wait for sidecar policy during known startup-resume dispatch (#320).
+- Preserve queued-final metrics and distinguish empty successful answers from interruption; improve tool detail budgets and timeline display order (PR #310).
+
+### Boundaries
+- Private checkpoints are bounded and expire after 24 hours. No retroactive recovery of cards without a checkpoint; native handoff retains its own ledger.
+- Original contributions by @mouyong are retained; @zhangzq and @qqqq560204-maker supplied the #319/#323 evidence.
+
+## V4.5.2 — 2026-09-17
+
+### Fixed
+- Preserve queued-turn failure outcomes and streamed answers, preferring finalized Hermes delivery results (#318).
+- Recall successful fresh heartbeat notices through a unique, reversible source contract; preserve ordinary replies and owned answer cards (#321).
+- Move concrete tool work to the subtitle and order ordinal before duration, retaining approval and terminal states (PR #310, @mouyong).
+
+## V4.5.1 — 2026-09-17
+
+### Fixed
+- Preserve in-progress reasoning on early failures, improve tool activity rows, and recall transient redirect acknowledgements with bounded deduplication and reversible patches (latest PR #310 through `a9fd806`).
+- Support the extracted Hermes clarify helper with its `(response, answered)` contract, reject call/async drift, and pin the real upstream source in CI (#316/#317).
+- Normalize CardKit element IDs to unique stable values of at most 20 characters before create, incremental updates and full updates. Reproduce and verify the long timeline ID failure against real unsent Feishu entities (#306).
+- Preserve source-message anchors for background work and resolve missing topic anchors for attachments and cards (#305/#313, based on @mouyong's PR #310).
+- Retain streamed text on failed completion, and retain approval questions, operation scope and outcomes (#307/#312).
+- Reuse paused approval cards, keep the original waiter alive, and explain expired/orphaned approvals without manufacturing a new live request (#314). Add an explicit mobile expand-versus-consent hint (#282; device acceptance remains open).
+- Distinguish restart rejection and restart completion notices from running heartbeats; preserve completed conversation cards when transient heartbeats expire (#311).
+- Improve execution titles, tool activity and collapsible-panel affordances (#304).
+
+## V4.5.0 — 2026-09-15
+
+### Added
+- Opt-in CardKit entity streaming with ordered cumulative text updates, UUID-bound delivery reuse and explicit stream shutdown (#293).
+- Live synchronous Gateway approvals pause on expiry, rotate consent tokens and require fresh review before resolving the original approval request (#295).
+- Resolve known requester names in answer mentions and offer in-card completion mention placement (#262/#279).
+
+### Fixed
+- Preserve the original bound conversation ID through active-turn redirects; execute the actual upstream redirect function through the sidecar and verify final delivery to the new card (#283).
+- Route home-channel onboarding and Chinese deferred-compaction notices through the correct topic anchor (#275/#278).
+- Bound callback acknowledgement independently of slow card PATCH operations; show long mobile questions in the body (#258/#282).
+- Describe successful model turns as response completion rather than business-task completion (#274).
+- Pin compatibility tests to the reported Hermes 0.17 and Docker 0.21 sources, exercise integrity migration, and test real root/non-root container ownership (#73/#263/#264/#265/#266/#277).
+
 ## V4.4.6 — 2026-09-15
 
 ### Fixed

@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from .delivery_policy import normalize_native_chats
+from .reading import expand_reading_preset, normalize_reading_preset
 
 
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
@@ -37,7 +38,10 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "final_drain_timeout_ms": 900,
         "title": "Hermes Agent",
         "interaction_mode": "auto",
+        "streaming_mode": False,
         "show_reasoning": True,
+        "stream_thinking_to_body": True,
+        "hide_completed_tool_activity": False,
         "reasoning_format": "panel",
         "max_timeline_items": 12,
         "max_reasoning_chars": 1200,
@@ -148,7 +152,7 @@ def merge_card_config(
     override: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     resolved = copy.deepcopy(dict(base or {}))
-    incoming = copy.deepcopy(dict(override or {}))
+    incoming = expand_reading_preset(override)
     has_incoming_sizes = "text_sizes" in incoming
     incoming_sizes = incoming.pop("text_sizes", None)
     resolved.update(incoming)
@@ -430,6 +434,10 @@ def _normalize_bot_card_configs(value: object, *, path: str) -> None:
 def _normalize_card_config(value: object, *, path: str) -> None:
     if not isinstance(value, dict):
         return
+    if "reading_preset" in value:
+        value["reading_preset"] = normalize_reading_preset(
+            value["reading_preset"], path=f"{path}.reading_preset"
+        )
     if "text_sizes" in value:
         value["text_sizes"] = normalize_text_sizes(
             value["text_sizes"], path=f"{path}.text_sizes"
@@ -437,6 +445,10 @@ def _normalize_card_config(value: object, *, path: str) -> None:
     if "table_overflow_mode" in value:
         value["table_overflow_mode"] = normalize_table_overflow_mode(
             value["table_overflow_mode"], path=f"{path}.table_overflow_mode"
+        )
+    if "streaming_mode" in value:
+        value["streaming_mode"] = _normalize_boolean(
+            value["streaming_mode"], f"{path}.streaming_mode"
         )
     if "reasoning_format" in value:
         raw_format = value["reasoning_format"]
@@ -459,6 +471,9 @@ def _normalize_card_config(value: object, *, path: str) -> None:
         value["interaction_mentions"] = normalized
     if "completion_notify" in value and isinstance(value["completion_notify"], dict):
         notify = value["completion_notify"]
+        if "placement" in notify and (not isinstance(notify["placement"], str)
+                                       or notify["placement"] not in {"card", "message"}):
+            raise ValueError(f"{path}.completion_notify.placement must be card or message")
         if "mention" in notify and notify["mention"] is not None:
             notify["mention"] = _normalize_boolean(
                 notify["mention"], f"{path}.completion_notify.mention"
@@ -470,7 +485,9 @@ def _merge_sections(config: dict[str, dict[str, Any]], loaded: dict[str, Any]) -
         if section in KNOWN_SECTIONS and not isinstance(value, dict):
             raise ValueError(f"Config section {section} must be a mapping")
 
-        if isinstance(value, dict) and isinstance(config.get(section), dict):
+        if section == "card" and isinstance(value, dict):
+            config[section] = merge_card_config(config.get(section), value)
+        elif isinstance(value, dict) and isinstance(config.get(section), dict):
             config[section].update(value)
         else:
             config[section] = value

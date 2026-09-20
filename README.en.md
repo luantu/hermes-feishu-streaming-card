@@ -13,7 +13,7 @@
 
 ![Hermes Feishu Streaming Card cover](docs/assets/readme-cover.png)
 
-Hermes Feishu Streaming Card turns Hermes Agent Gateway replies in Feishu/Lark into one continuously updated interactive card. Reasoning, tool calls, final answers, approvals, choices, system notices, and runtime stats stay inside cards instead of spilling into scattered native gray text messages.<br><br>It targets the real pain points of running Hermes inside Feishu: missing or out-of-order streaming text, long tables/code blocks rendered as raw Markdown, invisible tool progress, manual approval replies, frozen topic timelines, multi-bot/profile troubleshooting, and uncertain hook compatibility after Hermes upgrades.
+Hermes Feishu Streaming Card turns Hermes Agent Gateway replies in Feishu/Lark into continuously updated cards. Ordinary replies stay in one card; approval and clarification can open a continuation after the user chooses. Reasoning, tool calls, final answers, approvals, choices, system notices, and runtime stats stay inside cards instead of spilling into scattered native gray text messages.<br><br>It targets the real pain points of running Hermes inside Feishu: missing or out-of-order streaming text, long tables/code blocks rendered as raw Markdown, invisible tool progress, manual approval replies, frozen topic timelines, multi-bot/profile troubleshooting, and uncertain hook compatibility after Hermes upgrades.
 ![Hermes Feishu card command interaction, command result feedback, and tool timeline showcase](docs/assets/feishu-card-showcase-v385.png)
 
 <h2>Optional web scraping service</h2><p>If an Agent workflow needs to retrieve public webpages affected by anti-bot restrictions, <a href="https://scrapingant.com/?ref=zwq4ngy">ScrapingAnt</a> is an optional web scraping service to consider. Its Web Scraping API includes 10,000 free API credits every month with no credit card required; it is not required by this plugin.</p><blockquote>Disclosure: This is an affiliate link. A qualifying first paid subscription may earn this project a commission.</blockquote>
@@ -140,7 +140,7 @@ The compatibility matrix covers older Hermes starting at `v2026.4.23` and Hermes
 For an existing Hermes container:
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.4.6
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.6.4
 bash install-docker.sh
 ```
 
@@ -177,9 +177,19 @@ High-frequency stream tuning usually needs no change. For DeepSeek burst, token-
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_MS` | `250` | Max Gateway-side delta coalescing wait |
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_CHARS` | `600` | Flush pending delta when this character budget is reached |
 | `HERMES_FEISHU_CARD_DELTA_COALESCE_MAX_PENDING` | `128` | Pending delta session cap |
+Release scope and acceptance limits: [V4.6.4](docs/release-notes-v4.6.4.en.md), [interaction continuation](docs/wiki/interaction-continuation.md), [reading presets](docs/wiki/reading-presets.md), [contributor preflight](docs/testing.en.md). No new default is enabled automatically.
+
 ## Latest Releases
 | Version | Highlights |
 |---|---|
+| [v4.6.4](docs/release-notes-v4.6.4.en.md) | First-click callbacks, chronological continuation, optional reading presets and scoped notices |
+| [v4.6.3](docs/release-notes-v4.6.3.en.md) | Live thinking visibility, tool duration and interrupted-turn metrics |
+| [v4.6.2](docs/release-notes-v4.6.2.en.md) | Shared Gateway drain proof and optional terminal tool rows |
+| [v4.6.1](docs/release-notes-v4.6.1.en.md) | Hermes 0.21.3 hooks, safe status recall and approval display |
+| [v4.6.0](docs/release-notes-v4.6.0.en.md) | Profile-aware recall, structured reasoning, bounded retries and card restart recovery |
+| [v4.5.2](docs/release-notes-v4.5.2.en.md) | Queued failure preservation and bounded transient notice recall |
+| [v4.5.1](docs/release-notes-v4.5.1.en.md) | CardKit ID limits, topic delivery, approval lifecycle and restart feedback |
+| [v4.5.0](docs/release-notes-v4.5.0.en.md) | Topic and mobile interaction fixes, CardKit streaming, requester mentions and live approval pause |
 | [v4.4.6](docs/release-notes-v4.4.6.en.md) | Recover terminal delivery, accept current Hermes attachment anchors, preserve incomplete outcomes and interaction context |
 | [v4.4.5](docs/release-notes-v4.4.5.en.md) | Preserve unsuccessful and superseded turn outcomes; support the verified split-ledger contract with stronger stability regressions |
 | [v4.4.4](docs/release-notes-v4.4.4.en.md) | Keeps Hermes restart/shutdown notices inside the originating Feishu topic and activates the startup routing hook before boot notifications |
@@ -275,6 +285,14 @@ This remains a sidecar-only design: Hermes keeps only installer-owned, detectabl
 - V4.1 safety controls and troubleshooting: [docs/wiki/v4.1-safety-controls.md](docs/wiki/v4.1-safety-controls.md)
 
 ## Contributors
+
+- V4.6.4: thanks to [sthnow](https://github.com/sthnow) for cold-start callback and post-interaction ordering evidence in [#335](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/335), and patch author **babypanda** for the eager-hook implementation; adapted code retains `Co-authored-by`. Thanks to [mouyong](https://github.com/mouyong) for continuation/notice design and code in [PR #331](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/331), and the contributor-preflight request in [#330](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/330). Individual parts are adapted; this does not merge the entire PR. Optional reading presets also respond to [jackwude](https://github.com/jackwude)'s [#328](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/328) and [leavrcn](https://github.com/leavrcn)'s [#333](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/333). All historical credits below are retained.
+
+- V4.6.3: Thanks to [leavrcn](https://github.com/leavrcn) for [#333](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/333), reproduction and configuration proposal; adapted tool order/duration/interruption code from [mouyong](https://github.com/mouyong)'s [PR #331](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/331), retaining code authorship. Notice retirement and other changes remain separate.
+- V4.6.2: Thanks to [jackwude](https://github.com/jackwude) for [#328](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/328) and the [#329](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/329) evidence for 4.6.1; [mouyong](https://github.com/mouyong) proposed `hide_completed_tool_activity` in [PR #331](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/331). Only that configuration feature is adapted here, with an opt-in default and completed/failed coverage; the rest of #331 remains under review.
+- V4.6.1: Thanks to [mouyong](https://github.com/mouyong) for [PR #325](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/325) and [#326](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/326); original commits retained.
+- V4.6.0: [mouyong](https://github.com/mouyong) supplied the additional [PR #310](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/310) fixes and [#320](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/320) evidence; [zhangzq](https://github.com/zhangzq) supplied structured-reasoning diagnostics in [#319](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/319); [qqqq560204-maker](https://github.com/qqqq560204-maker) isolated custom-profile recall routing in [#323](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/323). Original PR authorship is retained.
+- V4.5.1–V4.5.2: [mouyong](https://github.com/mouyong) contributed [PR #310](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/310), field reports and retesting for #282, #304, #305, #307, #311–#314 and #318/#321, including the queued-outcome fix and transient notice recall; [lanx214](https://github.com/lanx214) reported [#316](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/316) and implemented extracted-clarify compatibility in [PR #317](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/317); [qqqq560204-maker](https://github.com/qqqq560204-maker) and [7360403-coder](https://github.com/7360403-coder) supplied the CardKit 300301 evidence in [#306](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/306). Original PR authorship is preserved, with maintainer safety corrections and regression coverage. The reporter withdrew #282; this does not establish a mobile fix.
 
 - V4.4.5–V4.4.6: [tidytorch](https://github.com/tidytorch) (#286/#291), [Jentlezhi](https://github.com/Jentlezhi) (#292), [sp960817](https://github.com/sp960817), [Cyber-Yichen](https://github.com/Cyber-Yichen), [shichenshuo-star](https://github.com/shichenshuo-star), [ywarmy](https://github.com/ywarmy) (#288/#294/#296), [7360403-coder](https://github.com/7360403-coder) (#298), [mouyong](https://github.com/mouyong) (#276/#280/#282/#289/#301). Thanks for code, tests and field evidence; original PR #291/#292 commit authorship is retained.
 ### V4.4.3

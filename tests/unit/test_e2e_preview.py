@@ -24,8 +24,8 @@ def test_generate_e2e_preview_writes_visual_and_card_json(tmp_path):
 
     assert "Hermes Agent" in svg
     assert "思考中" not in svg
-    assert "生成中" in svg
-    assert "已完成" in svg
+    assert "执行中" in svg
+    assert "本轮回复结束" in svg
     assert "读取资料" in svg
     assert "生成答案" in svg
     assert "&lt;font" not in svg

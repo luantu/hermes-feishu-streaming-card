@@ -3,9 +3,68 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.4.6 合并后（2026-09-15，merge commit 58169a2）
+> 最后更新：V4.6.4 合并后（2026-09-20，merge commit 待提交）
 
 ---
+
+## 〇-C、V4.5.0~V4.6.4 合并冲突保留记录（2026-09-20）
+
+合并基点 = 本地 HEAD d1aab00（含并发会话的 v4.4.6 合并 + 压缩通知独立卡等本地提交）。
+上游跨度 v4.5.0 → v4.6.4（84 提交，141 文件，+13956/-4251）。冲突 6 文件：
+
+### 冲突 1：render.py（7 块）
+- imports：保留本地 `from .model_names import normalize_model_name`，并吸收上游
+  `card_timeline.TERMINAL_TOOL_STATUSES`、`session.ToolState/_runtime_tool_summary`。
+- notice 极简卡片早期返回（本地 1.5）保留；`_primary_text_for_session` 吸收上游
+  `stream_thinking_to_body` 参数。
+- footer 调用保留本地 `loading_gif_img_key`（1.1）。
+- tool_summary/divider 区域（本地 1.9）：divider 仍条件渲染（footer/tool_summary 有内容
+  才渲染），吸收上游 `hide_terminal_tools`/`tool_activity_elements` 门控。
+- completed subtitle（本地 1.7）：保留正文摘要（上游 v4.6 改回固定"本轮回复结束"，
+  fork 不采纳）。
+- timeline：保留本地"加载占位 + 无记录隐藏折叠条"，**移除上游 `if not all_entries:
+  return []` 早退**（会杀掉加载占位），吸收上游 `live_thinking` 实时思考入口。
+- footer 状态文本（等待/running）：采用上游 v4.6 增强版（工具数/耗时/动作短语/live
+  clock），保留本地 GIF：纯初始加载（无工具、无动作短语）时仍优先 GIF 动画。
+- 上游 v4.6 header 状态前缀（`⏳ 执行中 · Hermes Agent`）为上游新契约，吸收。
+
+### 冲突 2：server.py（2 块）
+- imports：本地 `render_card` 与上游 `_primary_text_for_session`/`_render_limit_handoff_card`
+  并存（都保留）。
+- PATCH 日志（本地 2.1 `_card_log`）与上游 heartbeat recall 调度并存。
+
+### 冲突 3：hook_runtime.py（7 块）
+- sync/threadsafe emit：本地终态进入日志 + 上游 `_hfc_eager_ensure_command_card_hooks`
+  并存。
+- async emit：本地 answer.delta 累积/emoji-only 跳过 + 上游终端有界重试
+  （`_post_terminal_with_retry`）并存。
+- notice anchored_scope：本地 `force_independent` 门 + 上游 heartbeat 独立 scope
+  （含 `_hfc_independent_notice_message_id` anchor 重绑定）。
+- 原生发送抑制（本地 3.3 `_hfc_content_was_carded` + card-enabled full answer）保留，
+  吸收上游 `_hfc_recall_plain_text_status_notice` 撤回。
+- platform notice：上游 private delivery 检查 + 本地 force_independent 剥离 thread_id
+  并存。
+- 本地 `_bind_source_turn`/`_read_source_turn`（懒绑定 3.1）与上游 `bind_agent_reasoning`
+  并存。
+
+### 冲突 4：runner.py
+- 本地 SSL certifi 设置（6.1）+ 上游 `_configure_logging()` 并存。
+
+### 冲突 5/6：tests/unit/test_render.py、test_e2e_preview.py
+- 按本地行为修正断言：初始卡 title 吸收上游 `⏳ 执行中 ·` 前缀（main 仍断言"生成中"
+  文字，本地 1.4）；failed 无数据卡 footer 不渲染（本地 1.9，删上游"已停止" pill 断言）；
+  model 归一化显示大写（`GPT 5.5`）；completed 无数据卡 footer 不存在。
+- notice 测试：`payload["conversation_id"]` 断言改为 `oc_topic`（本地强制 chat_id，
+  话题禁用策略 2.6；thread_id 透传但 sidecar 端 `_thread_id_for_event` 恒 None 兜底）。
+
+### 上游删除文件的本地恢复（重要）
+- **`hermes_feishu_card/model_names.py`**：上游 v4.6 删除（合并自动删除），本地 render.py
+  仍引用 `normalize_model_name` → 从合并前 HEAD 恢复文件。
+- **`hermes_feishu_card/assets/loading.gif`**：上游删除，本地 GIF footer 特性依赖 →
+  从合并前 HEAD 恢复。
+- 并发会话 stash 改动（uniapi/ 等 provider 前缀归一化修复 + 测试）已随合并恢复并应用。
+
+
 
 ## 〇-B、V4.4.6 合并冲突保留记录（2026-09-15）
 
