@@ -66,6 +66,44 @@ class Factory:
         return self.clients[bot_id]
 
 
+async def test_owned_notices_survive_sidecar_restart_and_keep_topic_boundary(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_FEISHU_CARD_STATE_DIR", str(tmp_path / "state"))
+    fake = Client()
+    fake.config = SimpleNamespace(app_id="cli_fixture", base_url="https://open.feishu.cn")
+    def make_app():
+        return server.create_app(fake, session_store_directory=tmp_path / "store")
+    async with TestClient(TestServer(make_app())) as http:
+        for mid, thread in (("om_home", ""), ("om_topic", "omt_fixture")):
+            assert (await register(http, mid, thread=thread)).status == 200
+    second = make_app()
+    async with TestClient(TestServer(second)):
+        await server._send_card_for_app(second, "oc_fixture", {}, None, thread_id="omt_fixture")
+        await drain()
+        assert fake.deleted == ["om_topic"]
+    third = make_app()
+    async with TestClient(TestServer(third)):
+        await server._send_card_for_app(third, "oc_fixture", {}, None, thread_id="omt_fixture")
+        await drain()
+        assert fake.deleted == ["om_topic"]
+        await server._send_card_for_app(third, "oc_fixture", {}, None)
+        await drain()
+        assert fake.deleted == ["om_topic", "om_home"]
+
+
+async def test_native_notice_application_proof_must_match_selected_client():
+    import hashlib
+    fake = Client()
+    fake.config = SimpleNamespace(app_id="cli_fixture")
+    app = server.create_app(fake)
+    async with TestClient(TestServer(app)) as http:
+        payload = {"message_id":"om_notice", "notice_family":"restart", "record_only":True,
+                   "route":{"profile_id":"default", "chat_id":"oc_fixture", "conversation_id":"",
+                            "app_id_hash":hashlib.sha256(b"cli_foreign").hexdigest()}}
+        assert (await http.post("/recall/schedule", json=payload)).status == 409
+        payload["route"]["app_id_hash"] = hashlib.sha256(b"cli_fixture").hexdigest()
+        assert (await http.post("/recall/schedule", json=payload)).status == 200
+
+
 async def register(http, message_id, *, profile="default", thread="", bot="alpha"):
     return await http.post("/recall/schedule", json={
         "message_id": message_id,
@@ -90,6 +128,39 @@ def app_with_clients():
 async def drain():
     for _ in range(4):
         await asyncio.sleep(0)
+
+
+async def test_owned_notice_expires_without_later_chat_activity(monkeypatch):
+    monkeypatch.setattr(server, 'OWNED_NOTICE_TTL_SECONDS', .03, raising=False)
+    fake=Client();app=server.create_app(fake)
+    async with TestClient(TestServer(app)) as http:
+        assert (await register(http,'om_expiring')).status==200
+        assert fake.deleted==[]
+        await asyncio.sleep(.07)
+        assert fake.deleted==['om_expiring']
+
+
+async def test_expiry_timer_is_accelerated_by_confirmed_delivery(monkeypatch):
+    monkeypatch.setattr(server, 'OWNED_NOTICE_TTL_SECONDS', 30, raising=False)
+    fake=Client();app=server.create_app(fake)
+    async with TestClient(TestServer(app)) as http:
+        assert (await register(http,'om_early')).status==200
+        await server._send_card_for_app(app,'oc_fixture',{},None)
+        await drain()
+        assert fake.deleted==['om_early']
+
+
+async def test_expiry_survives_restart_without_another_message(tmp_path,monkeypatch):
+    monkeypatch.setenv('HERMES_FEISHU_CARD_STATE_DIR',str(tmp_path/'state'))
+    monkeypatch.setattr(server, 'OWNED_NOTICE_TTL_SECONDS', .1, raising=False)
+    fake=Client();fake.config=SimpleNamespace(app_id='cli_fixture',base_url='https://open.feishu.cn')
+    def make_app():return server.create_app(fake,session_store_directory=tmp_path/'store')
+    async with TestClient(TestServer(make_app())) as http:
+        assert (await register(http,'om_restored')).status==200
+    await asyncio.sleep(.11)
+    async with TestClient(TestServer(make_app())):
+        await asyncio.sleep(.03)
+        assert fake.deleted==['om_restored']
 
 
 @pytest.mark.asyncio
@@ -140,7 +211,7 @@ async def test_opaque_turn_id_uses_event_profile_for_notice_cleanup(
 
     # The profile stays in the existing checkpoint envelope, without adding a
     # new session field that would invalidate older display-checkpoint readers.
-    for path in (tmp_path / "checkpoints").rglob("*.json"):
+    for path in (tmp_path / "checkpoints/card-checkpoints-v1").glob("*.json"):
         assert "route_profile_id" not in json.loads(path.read_text())["record"]["session"]
 
 @pytest.mark.asyncio
@@ -216,7 +287,7 @@ async def test_registry_capacity_preserves_prior_notices_and_duplicate_registrat
         assert (await register(http, "om_second", profile="work")).status == 200
         assert (await register(http, "om_third", profile="work")).status == 429
         assert (await register(http, "om_elsewhere", profile="default")).status == 429
-        assert app[server.EPHEMERAL_RECALL_TASKS_KEY] == {}  # no new 15-second default
+        assert len(app[server.EPHEMERAL_RECALL_TASKS_KEY]) == 2  # duplicate registration keeps the original clocks
         await server._send_card_for_app(app, "oc_fixture", {}, "work:alpha")
         await drain()
         assert clients["work", "alpha"].deleted == ["om_first", "om_second"]
@@ -389,8 +460,8 @@ async def test_capacity_and_delete_failure_retain_the_notice_for_a_later_retry(m
     app[server.RESTART_NOTICES_KEY] = RestartNoticeRegistry(retry_delay=0)
     fake = clients["work", "alpha"]
     async with TestClient(TestServer(app)) as http:
-        assert (await register(http, "om_old", profile="work")).status == 200
         monkeypatch.setattr(server, "EPHEMERAL_RECALL_MAX_PENDING", 0)
+        assert (await register(http, "om_old", profile="work")).status == 200
         await server._send_card_for_app(app, "oc_fixture", {}, "work:alpha")
         assert (await register(http, "om_new", profile="work")).status == 200
         monkeypatch.setattr(server, "EPHEMERAL_RECALL_MAX_PENDING", 1024)

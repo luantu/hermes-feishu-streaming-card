@@ -557,14 +557,14 @@ Use `install-docker.sh` inside an existing Hermes container. It defaults to
 script selects Hermes venv Python and does not fall back to system Python unless
 `HFC_PYTHON` is set.
 
-The Compose example defaults `HFC_VERSION` to `v4.6.4`.
+The Compose example defaults `HFC_VERSION` to `v4.6.11`.
 
 Example:
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.6.4
+export HFC_VERSION=v4.6.11
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -951,12 +951,27 @@ Windows non-loopback startup is rejected when state-directory ACL privacy cannot
 
 ## Terminal tool rows
 
-Set `card.hide_completed_tool_activity: true` to hide content-area tool rows after completed/failed turns. The default is `false`, preserving existing cards. Live progress, approval layout, timeline and footer counts are unchanged. Restart the sidecar after editing configuration.
+Set `card.hide_completed_tool_activity: true` to hide successful content-area tool rows after completed/failed turns; failed, cancelled and interrupted work remains visible. The default is `false`, preserving existing cards. Live progress, approval layout, timeline and footer counts are unchanged. Restart the sidecar after editing configuration.
 
 ## V4.6.3: Live thinking body switch
 
 Set `card.stream_thinking_to_body: false` to keep waiting/tool activity in the body until an answer arrives, with live thinking in a bounded panel preview. The default `true` preserves existing behavior. `show_reasoning` and `max_reasoning_chars` control the render-only preview. Completed/failed content, approval and archived `reasoning_format` behavior are unchanged. Large custom panels and answers remain subject to whole-card limits. Restart the sidecar after editing configuration.
 
-## V4.6.4 candidate: First clicks and ordered continuation
+## V4.6.6: Approval, tool visibility and notice cleanup
 
-The candidate wires the first clarify/approval callback without slash-card warmup, and opens a continuation only after a choice and actual subsequent output. Questions and decisions remain readable; existing defaults and explicit settings stay unchanged. `card.reading_preset` is opt-in and `card-config` explains the effective configuration. See [candidate notes](release-notes-v4.6.4.en.md), [continuation](wiki/interaction-continuation.md), [reading presets](wiki/reading-presets.md) and the [current real-client checklist](wiki/feishu-acceptance-v4.6.4.md). These documents do not claim the release or device acceptance has completed.
+Completed approvals lose duplicated review blocks only after a separate full receipt is confirmed delivered. A long-running tool and its immediate predecessor remain eligible for the bounded process panel, matching their body ordinals. Known native restart notices expire after 15 seconds or earlier after a confirmed same-route delivery; one-line successful background notices also expire. Native expired-approval corrections, failures, output-bearing results and complete approval receipts remain. See [release notes](release-notes-v4.6.6.en.md), [reading presets](wiki/reading-presets.md) and [acceptance evidence](wiki/feishu-acceptance-v4.6.6.md).
+
+
+## V4.6.7: Heartbeat and approval layout
+
+Working heartbeats remain editable; approval buttons use compact auto-width columns. Full scope and callback identity are retained.
+
+## V4.6.8: macOS installation guidance
+
+macOS persistence guidance explains the Linux systemd requirement; a missing verified pidfile does not establish launchd ownership. See [installer safety](installer-safety.en.md) and [release notes](release-notes-v4.6.8.en.md) for one-shot login startup, external supervision and stop boundaries. This release does not manage launchd or change card behavior.
+
+## V4.6.11: live thinking and background tasks
+
+- Set `card.thinking_body_tail_chars: 2400` to keep the latest live thinking in the body. It applies only with `stream_thinking_to_body: true`, before any answer and before the turn ends. The default `0` preserves unlimited existing behavior; accepted integers are 0–1000000. The character window may shrink further to fit the complete serialized card. It does not truncate answers, the reasoning timeline or tool sections; unrelated overflows retain the existing native-delivery fallback. Restart the sidecar after editing configuration.
+- Once `terminal` reports a background process ID, or `process` / `process_manage` reports a command and output, subsequent waits in the same turn show that observed context. At most 32 process associations live in one card session's memory; they are not restored after restart.
+- Recent output is the last tool report, not a live log subscription or predicted progress. The requested wait timeout is explicitly not an ETA; Hermes may clamp it further. Missing command context stays unknown. No other turn or profile is queried.

@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
+## [Unreleased]
+
+## [4.6.11] - 2026-09-28
+
+- Add the opt-in `thinking_body_tail_chars` live-body window and verified whole-card budget reduction without truncating answers or timeline content (#362, leavrcn).
+- Display observed background command/output/status for same-turn waits, with bounded nonpersistent process associations and no fabricated ETA (#361, mouyong).
+- Upgrade verified CodeQL pins and synchronize the CI allowlist (PR #363, Dependabot).
+- See [release notes](docs/release-notes-v4.6.11.md) for validation scope and credits.
+
+## [4.6.10] - 2026-09-27
+
+- Support guarded Hermes ledger release and split delivery adapter APIs; pin current stable/main source compatibility tests.
+- Isolate internal follow-ups and reopened create UUIDs so prior answers survive, including failed replacement creates.
+- Install into the PM-selected runtime venv without `--user`. Preserve original PR #355/#358 authorship.
+- See [release notes](docs/release-notes-v4.6.10.md) for contributors and validation boundaries.
+
+## [4.6.9] - 2026-09-24
+
+- Isolate concurrent group cards by requester or native Gateway execution scope; restrict redirects to the explicit source turn. Preserve independent final answers and terminal failure protection (#348, reported by [cainiaozp](https://github.com/cainiaozp)).
+- Merge [mouyong](https://github.com/mouyong)'s [PR #349](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/349), using compact rows for all single-select choices while preserving callback values and forms.
+- Rewrite Chinese/English onboarding; preserve contributor history, installation/configuration and recent releases, with a linked historical release index.
+- See [Chinese notes](docs/release-notes-v4.6.9.md) and [English notes](docs/release-notes-v4.6.9.en.md) for validation scope and remaining real-client boundaries.
+
+## [4.6.8] - 2026-09-22
+
+- Make macOS setup and persistent-service errors platform-specific instead of suggesting the Linux-systemd-only `enable` command; preserve Linux guidance.
+- Keep the unknown-owner branch when a running sidecar has no verified pidfile. Suggest launchd stop steps only after the actual owner and label are confirmed; retain all existing process ownership checks.
+- Document one-shot login-time `RunAtLoad` use of `start`, without `KeepAlive`, and distinguish the detached sidecar from externally managed runner processes. Synchronize both installer-safety languages and retain the README size limit.
+- Credit [coder-zhw](https://github.com/coder-zhw) for [PR #347](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/347), preserving the original contribution. No launchd management or card behavior change is introduced.
+- Validation scope: CLI platform branches and ordinary package installation. Exact release, public installation and deployment evidence are recorded separately; no new mobile acceptance is claimed. See [Chinese notes](docs/release-notes-v4.6.8.md) and [English notes](docs/release-notes-v4.6.8.en.md).
+
+## [4.6.7] - 2026-09-21
+
+- Preserve Working heartbeat messages so Hermes can edit them in place instead of repeatedly sending after timed recall; one-shot status expiry is unchanged.
+- Render approval choice buttons in compact auto-width columns while retaining full descriptions and legacy callback identity. Clarify layout and reading defaults are unchanged.
+- Selectively adapted from mouyong's PR #345. Keep timeline budgets and producer-based notice ownership; #344 remains unconfirmed on the reporter's version.
+- See [Chinese notes](docs/release-notes-v4.6.7.md) and [English notes](docs/release-notes-v4.6.7.en.md).
+
+## [4.6.6] - 2026-09-21
+
+- Compact duplicated terminal approval review blocks only after an explicit successful PATCH of the separate full question/scope/decision receipt; retain unproven, pending, sole-owner and failed-delivery cases (#337, PR #339).
+- Keep older running tool calls and their immediate predecessors in the bounded timeline window, matching body ordinals; terminal unfinished tools display as interrupted (#340).
+- Add 15-second expiry to owned restart notices, including Home and requester notifications; confirmed same-route delivery can wake an existing timer early. Restore deadlines across sidecar restart and retain failed-delete cooldowns.
+- Recognize exact native background-success and drain producers, preserve failures/output-bearing results, and color the native requester restart icon. Ordinary quoted text grants no recall authority; retain native expired-approval corrections that may be the sole record that no command ran (PR #338).
+- Terminal tool compaction retains unsuccessful tools. Existing reading defaults, timeline ordering and per-reasoning limits remain unchanged. Thanks to [mouyong](https://github.com/mouyong) for proposals, adapted code and #337/#340 evidence; original authorship is retained.
+- Retain tidytorch’s original PR #342 commit for delayed read-only confirmation after an ambiguous interaction POST; cap each lookup to the remaining grace budget and verify a real lost-response HTTP flow never replays the event.
+- See [Chinese notes](docs/release-notes-v4.6.6.md), [English notes](docs/release-notes-v4.6.6.en.md) and [acceptance](docs/wiki/feishu-acceptance-v4.6.6.md). Release and client gates are recorded separately.
+
+## [4.6.5] - 2026-09-20
+
+- Keep text-mode decision receipts static across consecutive questions and preserve interaction-first legacy dialects. Retire the previous schema-2 card after confirmed continuation delivery, preserving its pre-output snapshot and decision receipt. Use a neutral handoff state, preserve legacy dialects, and keep the new owner when the old PATCH fails (adapted from PR #339 after real desktop reproduction).
+
+- Persist bounded restart-notice ownership across sidecar restarts; recognize exact native startup/shutdown producers with profile, adapter, application and topic proof. Preserve unknown messages and failed deletions (continued adaptation of mouyong's PR #331).
+- Use explicit executor `call_id` to deduplicate repeated terminal events and reject late starts without changing legacy name-only counting. Preserve duration, history and ordinals.
+- Add opt-in `timeline_order: chronological` and `timeline_tools_per_reasoning`; defaults remain newest-first and unlimited per block. Keep failures/running work eligible for the existing global display budget.
+- Suppress the duplicate native provider-error warning only after an explicit sidecar acknowledgement; timeout, unknown formats and unavailable routes retain native fallback.
+- Accept exact known hooks reapplied onto verified current Git sources only with explicit upstream-upgrade consent, preserving staged state and unrelated customizations; isolate proxy variables in preflight child processes.
+- See [Chinese notes](docs/release-notes-v4.6.5.md) and [English notes](docs/release-notes-v4.6.5.en.md). A later real desktop clarify selection and chronological continuation passed on 4.6.4 after the initial DeepSeek 503; the old card remaining live was reproduced. Final 4.6.5 client acceptance remains separate.
+
 ## [4.6.4] - 2026-09-20
 
 - Wire the first Feishu turn/interaction callback without slash-card warmup, including generated TurnRunner closures; preserve live SDK dispatcher identity and exact profile/adapter ownership (#335, sthnow; patch by babypanda).

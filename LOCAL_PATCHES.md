@@ -3,7 +3,66 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.6.4 合并后（2026-09-20，merge commit cc4fe46）
+> 最后更新：V4.6.11 合并后（2026-09-29，merge commit 待补记）
+
+---
+
+## 〇-D、V4.6.5~V4.6.11 合并冲突保留记录（2026-09-29）
+
+合并基点 `457f0d0`（v4.6.4 上游点），上游 32 提交（v4.6.5 → v4.6.11：群聊并发隔离、
+live thinking overflow 修复、compact choice rows、notice producer 拆分、后台进程上下文、
+`thinking_body_tail_chars` / `timeline_order` / `timeline_tools_per_reasoning` 新配置）。
+冲突 5 文件：
+
+### config.py（本地 6.3 特性）
+- 保留本地"无 `timeline_expanded` 默认值"（动态解析），吸收上游
+  `timeline_order: "newest_first"`、`timeline_tools_per_reasoning: 0` 两个新默认键。
+- tests/unit/test_config.py 两处期望字典同步处理。
+
+### hook_runtime.py emit applied 判定
+- 本地 `_event_was_delivered`（suppress 友好语义，3.4）保留为默认路径；
+  上游新增 `require_ack=True`（system.notice 场景）时走 `_event_was_applied(strict=True)`。
+- 本地 terminal emit result 日志（3.2）保留。
+
+### render.py（2 块）
+- imports：本地 `model_names.normalize_model_name` 与上游
+  `approval_receipts.has_confirmed_approval_receipt` 并存。
+- timeline 选择：吸收上游 running-tool 优先 / `_limit_tools_per_reasoning` /
+  `priority_tool_ids` 逻辑；**继续移除上游 `if not all_entries: return []` 早退**
+  （会杀掉本地"等待工具事件…"加载占位；空记录分支由本地逻辑处理）。
+
+### server.py（本地 1.8/2.6 特性）
+- `timeline_expanded` 保持 `_resolve_timeline_expanded(card_config)` 动态解析
+  （上游改回 `_safe_bool(..., False)`，fork 不采纳）；吸收上游
+  `timeline_order` / `timeline_tools_per_reasoning` / `thinking_body_tail_chars` 传递。
+
+### 本地特性退役记录：重复终态重发卡（原 2.4 兜底）
+本地旧特性"已终态 session 收到重复 terminal 事件时重渲染/PATCH 卡片"已在本次合并
+**主动退役**：上游 v4.6.9 的终态幂等保护是群聊并发隔离（#348，15 个测试）的前提，
+且上游已有有界终态重试（`terminal_delivery_retry`）。合并后重复/晚到 terminal 事件只记
+`_card_log`（TERMINAL already_handled，本地日志保留）并返回 `applied=true`
+（仍抑制网关原生重发），不再触碰已完成的卡。
+`test_group_concurrent_requesters_keep_own_final_cards` 18 个实例全部通过。
+
+### 本地文件存活验证（合并后）
+`model_names.py`、`assets/loading.gif`、`LOCAL_PATCHES.md`、`restart`、`back-restart`、
+`docs/fork-maintenance-guide.md`、`update` 全部在位；全部锚点 grep 通过（含 GIF 全程
+footer 分支、话题禁用三锚点、生命周期日志、emoji 删卡、懒绑定、原生抑制、ledgered 契约）。
+
+### 已知待甄别项（上游 v4.6.5+ 新功能场景，非本地回归）
+合并后全量 124 failed / 4168 passed / 28 skipped vs 基线 117 failed / 3950 passed /
+18 skipped；其余失败均在基线集合内。新增 12 个失败集中在两个上游 v4.6.5+ 新功能
+文件（合并前不存在）：
+- `test_approval_terminal_cleanup.py`（4 测试 10 实例）：approval_receipts 回执与
+  display continuation 的交互——mock 的 `update_card_message` schema 一致性断言失败
+  （interaction 阶段后对 card-1 的 PATCH schema 与卡不匹配，卡停留在初始内容）。
+- `test_interaction_continuation.py::test_confirmed_handoff_freezes_old_card_without_claiming_turn_success`
+  （2 实例）：同类的 confirmed-handoff 场景。
+
+调查线索：`_update_card_for_app` 抛 AssertionError（mock schema 断言），疑与
+`_existing_owner_render_result` / continuation 打开后的 owner 渲染方言判定和本地
+2.3/2.5 收尾逻辑的交互有关。不影响安装与既有功能路径（patcher 与既有功能测试全过）。
+下次合并前应逐项确认。
 
 ---
 

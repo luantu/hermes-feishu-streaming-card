@@ -41,8 +41,13 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "streaming_mode": False,
         "show_reasoning": True,
         "stream_thinking_to_body": True,
+        "thinking_body_tail_chars": 0,
         "hide_completed_tool_activity": False,
         "reasoning_format": "panel",
+        # Fork (LOCAL_PATCHES 6.3): no timeline_expanded default — the sidecar
+        # resolves it dynamically (expanded while streaming, folded when done).
+        "timeline_order": "newest_first",
+        "timeline_tools_per_reasoning": 0,
         "max_timeline_items": 12,
         "max_reasoning_chars": 1200,
         "max_tool_result_chars": 600,
@@ -455,6 +460,19 @@ def _normalize_card_config(value: object, *, path: str) -> None:
         if not isinstance(raw_format, str) or raw_format.strip().lower() not in {"panel", "code"}:
             raise ValueError(f"{path}.reasoning_format must be panel or code")
         value["reasoning_format"] = raw_format.strip().lower()
+    if "timeline_order" in value:
+        raw_order = value["timeline_order"]
+        if not isinstance(raw_order, str) or raw_order.strip().lower() not in {"newest_first", "chronological"}:
+            raise ValueError(f"{path}.timeline_order must be newest_first or chronological")
+        value["timeline_order"] = raw_order.strip().lower()
+    if "thinking_body_tail_chars" in value:
+        limit = value["thinking_body_tail_chars"]
+        if type(limit) is not int or not 0 <= limit <= 1_000_000:
+            raise ValueError(f"{path}.thinking_body_tail_chars must be an integer from 0 to 1000000")
+    if "timeline_tools_per_reasoning" in value:
+        limit = value["timeline_tools_per_reasoning"]
+        if type(limit) is not int or not 0 <= limit <= 100:
+            raise ValueError(f"{path}.timeline_tools_per_reasoning must be an integer from 0 to 100")
     if "mentions_in_cards" in value and value["mentions_in_cards"] is not None:
         value["mentions_in_cards"] = _normalize_boolean(
             value["mentions_in_cards"], f"{path}.mentions_in_cards"

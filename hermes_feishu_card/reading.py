@@ -40,6 +40,7 @@ READING_FIELDS = (
     "hide_completed_tool_activity", "reasoning_format", "timeline_expanded",
     "max_timeline_items", "max_reasoning_chars", "max_tool_result_chars",
     "table_overflow_mode",
+    "timeline_order", "timeline_tools_per_reasoning", "thinking_body_tail_chars",
 )
 
 
@@ -163,7 +164,7 @@ def explain_reading_config(
     resolved["reasoning_format"] = str(resolved["reasoning_format"]).strip().lower()
     resolved["table_overflow_mode"] = str(resolved["table_overflow_mode"]).strip().lower()
     terminal_policy = (
-        "hidden" if resolved["hide_completed_tool_activity"] else
+        "unsuccessful_only" if resolved["hide_completed_tool_activity"] else
         "failed_only" if resolved.get(HIDE_SUCCESSFUL_TOOL_ACTIVITY) else "visible"
     )
     values = {key: resolved[key] for key in READING_FIELDS}

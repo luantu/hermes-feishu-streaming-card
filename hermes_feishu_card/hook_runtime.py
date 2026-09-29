@@ -1169,7 +1169,7 @@ async def maintenance_admission_from_hermes_locals(
             return False
         event = local_vars.get("event")
         source = local_vars.get("source") or getattr(event, "source", None)
-        adapter_for_source = getattr(runner, "_adapter_for_source", None)
+        adapter_for_source = _hfc_delivery_resolver(runner)
         adapter = adapter_for_source(source) if callable(adapter_for_source) else None
         send = getattr(adapter, "send", None)
         chat_id = str(getattr(source, "chat_id", "") or "").strip()
@@ -1983,7 +1983,11 @@ def handle_status_from_hermes_locals(
         source = local_vars.get("source")
         if _platform_name(local_vars, source) != "feishu":
             return False
-        if not _CONTEXT_COMPACTION_STATUS_RE.search(str(message or "")):
+        provider_failure = bool(
+            event_type == "lifecycle" and isinstance(message, str) and len(message) <= 1000
+            and re.fullmatch(r"❌ (?:API failed|Rate limited) after [1-9][0-9]{0,2} retries — [^\r\n]+", message)
+        )
+        if not provider_failure and not _CONTEXT_COMPACTION_STATUS_RE.search(str(message or "")):
             return False
         run_guard = local_vars.get("_run_still_current")
         if callable(run_guard) and not run_guard():
@@ -2000,6 +2004,15 @@ def handle_status_from_hermes_locals(
             "display_status": "in_progress",
             "content": "正在总结较早的对话，完成后会继续当前任务。",
         }
+        if provider_failure:
+            event_locals.update({
+                "_hfc_notice_title": "模型服务异常",
+                "_hfc_notice_level": "warning",
+                "_hfc_notice_kind": "provider-failure",
+                "_hfc_notice_id": "provider-failure:terminal",
+                "content": "模型服务请求失败，本轮正在结束。错误说明会保留在结果卡中。",
+            })
+            return _emit_status_notice_confirmed(event_locals)
         return emit_from_hermes_locals_threadsafe(
             event_locals,
             event_name="system.notice",
@@ -2008,9 +2021,36 @@ def handle_status_from_hermes_locals(
         return False
 
 
+def _emit_status_notice_confirmed(local_vars: dict[str, Any]) -> bool:
+    """Suppress native failure text only after a bounded sidecar acknowledgement."""
+    loop = local_vars.get("_hfc_loop")
+    future = None
+    try:
+        if loop is None or not loop.is_running():
+            return False
+        try:
+            if asyncio.get_running_loop() is loop:
+                return False  # Never block the loop needed to deliver this event.
+        except RuntimeError:
+            pass
+        timeout = min(10.0, max(1.0, load_runtime_config().timeout_seconds + 1.0))
+        coroutine = emit_from_hermes_locals_async(local_vars, "system.notice", require_ack=True)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except Exception:
+            coroutine.close()
+            raise
+        return future.result(timeout=timeout) is True
+    except Exception:
+        if future is not None:
+            future.cancel()
+        return False
+
+
 async def emit_from_hermes_locals_async(
     local_vars: dict[str, Any],
     event_name: str = "message.started",
+    *, require_ack: bool = False,
 ) -> bool:
     try:
         config = load_runtime_config()
@@ -2060,7 +2100,12 @@ async def emit_from_hermes_locals_async(
                 )
             if event_name == "message.completed":
                 _register_native_handoff_descriptor(payload, result)
-            applied = _event_was_delivered(result, event_name)
+            if require_ack:
+                # Upstream contract: an ack-required emit must report applied
+                # strictly, not through the fork's suppress-friendly view.
+                applied = _event_was_applied(result, strict=True)
+            else:
+                applied = _event_was_delivered(result, event_name)
             if event_name in {"message.completed", "message.failed"}:
                 _hfc_info(
                     "terminal emit result: "
@@ -3309,7 +3354,7 @@ def request_interaction_from_hermes_locals(
             # was lost (connection dropped mid-flight). Falling straight back to
             # native text then produces a duplicate: the card was already sent
             # AND a numbered-list text appears. Ask the sidecar before giving up.
-            if _hfc_interaction_card_confirmed(config, interaction_id):
+            if _wait_for_interaction_card_confirmation(config, interaction_id):
                 _hfc_warn(
                     "interaction card confirmed present after POST failure: "
                     f"{_hfc_log_reference('interaction', interaction_id)}"
@@ -6759,6 +6804,19 @@ async def _hfc_send_with_native_command_result_card(
     metadata: dict[str, Any] | None = None,
 ) -> Any:
     original = getattr(type(self), "_hfc_original_send", None)
+    from .notice_producers import notice_for_send
+    try:
+        notice = notice_for_send(self, chat_id, content, metadata)
+    except Exception:
+        notice = None
+    if notice is not None and callable(original):
+        result = await original(self, chat_id, notice['content'], reply_to=reply_to, metadata=metadata)
+        if getattr(result, "success", False) is True:
+            await schedule_message_recall_async(
+                str(getattr(result, "message_id", "") or ""),
+                route=notice['route'], notice_family=notice['family'],
+            )
+        return result
     handoff_context = _native_handoff_for_send(self, chat_id, content, metadata)
     if handoff_context is not None and callable(original):
         descriptor = handoff_context["descriptor"]
@@ -7082,12 +7140,23 @@ def _hfc_registered_adapter_items(runner: Any) -> list[tuple[Any, Any]]:
     return result
 
 
+def _hfc_delivery_resolver(runner: Any) -> Any:
+    # New Hermes separates intake authorization from outbound delivery. A
+    # callable resolver returning None is an authoritative refusal, not an
+    # invitation to guess another profile's bot.
+    for name in ("_delivery_adapter_for", "_adapter_for_source", "_intake_adapter_for"):
+        resolver = getattr(runner, name, None)
+        if callable(resolver):
+            return resolver
+    return None
+
+
 def _hfc_feishu_adapter_from_runner(runner: Any, source: Any) -> Any:
     if source is None or _platform_name({}, source) != "feishu":
         return None
     # Current Hermes validates retained transport provenance before profile lookup.
     # A shared bot may own a turn routed to another profile; preserve that contract.
-    resolver = getattr(runner, "_adapter_for_source", None)
+    resolver = _hfc_delivery_resolver(runner)
     if callable(resolver):
         try:
             adapter = resolver(source)
@@ -9682,6 +9751,8 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
             _HFC_FEISHU_DELIVERY_CONTEXT.set(None)
             return False
         runner_type = type(runner)
+        from .notice_producers import install_notice_producers
+        install_notice_producers(runner_type)
         _install_startup_resume_wait(runner_type)
         if callable(getattr(runner_type, "_thread_metadata_for_target", None)):
             _hfc_install_policy_adapter_method(
@@ -9790,6 +9861,8 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
                 adapter_ready = True
 
             current_send = adapter_type.__dict__.get("send")
+            from .notice_producers import install_adapter_notice_producers
+            install_adapter_notice_producers(adapter, runner)
             if current_send is _hfc_send_with_native_command_result_card:
                 setattr(adapter_type, "_hfc_command_result_send_wrapped", True)
                 adapter_ready = True
@@ -10012,7 +10085,7 @@ def _post_interaction_event(
 
 
 def _hfc_interaction_card_confirmed(
-    config: RuntimeConfig, interaction_id: str
+    config: RuntimeConfig, interaction_id: str, *, timeout_seconds: float | None = None
 ) -> bool:
     """Return True when the sidecar already tracks the interaction (card sent).
 
@@ -10023,7 +10096,7 @@ def _hfc_interaction_card_confirmed(
     try:
         base_url = _summary_base_url(config.event_url)
         url = f"{base_url}/interactions/{parse.quote(interaction_id, safe='')}"
-        result = _get_json_sync(url, config.timeout_seconds)
+        result = _get_json_sync(url, config.timeout_seconds if timeout_seconds is None else timeout_seconds)
         return isinstance(result, dict) and result.get("status") in (
             "pending",
             "paused",
@@ -10032,6 +10105,32 @@ def _hfc_interaction_card_confirmed(
         )
     except Exception:
         return False
+
+
+def _wait_for_interaction_card_confirmation(
+    config: RuntimeConfig, interaction_id: str, *, grace_seconds: float = 3.0
+) -> bool:
+    """Boundedly confirm a card after an ambiguous event POST.
+
+    The sidecar may have accepted and started the Feishu send while the POST
+    response timed out. Do not replay the event; poll the read-only interaction
+    endpoint briefly so native text fallback is used only when no card exists.
+    """
+    deadline = time.monotonic() + max(0.0, min(float(grace_seconds), 5.0))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        # The read itself consumes the grace budget. A slow lookup must not add
+        # a full configured timeout after the deadline has already expired.
+        if _hfc_interaction_card_confirmed(
+            config, interaction_id, timeout_seconds=min(config.timeout_seconds, remaining)
+        ):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.1, remaining))
 
 
 def _timeout_for_event(config: RuntimeConfig, event_name: str) -> float:
@@ -10202,8 +10301,9 @@ def _transient_notice_recall_seconds(content: Any) -> Optional[float]:
     # The adapter also sends answers and important queue/error acknowledgements.
     # An hourglass alone is not evidence that a message is disposable status.
     if text.startswith(STATUS_NOTICE_PREFIX):
+        # Core edits Working heartbeats in place. A timer would delete the target
+        # and force a fresh send on every later tick; core owns final cleanup.
         status_patterns = (
-            r"⏳ Working — \d+ min(?: — [^\r\n]+)?",
             r"⏳ (?:Compressing context|Waiting for approval|tool execution timed out; retrying)(?:\.\.\.)?",
             r"⏳ Retrying in \d+(?:\.\d+)?s \(attempt \d+/\d+\)(?:\.\.\.)?",
             r"⏳ loading [^\r\n]+ into memory — \d+(?:\.\d+)?%[^\r\n]*",
@@ -10502,6 +10602,22 @@ def _get_json_sync(url: str, timeout: float) -> Any:
     return _open_json_request(req, timeout)
 
 
+def queued_followup_source(source: Any, event: Any) -> Any:
+    """Copy callback ownership; never put an internal identity in reply anchors."""
+    from copy import copy
+    from uuid import uuid4
+
+    copied = copy(source)
+    # Bind ownership before emit: startup/policy can fail before build_event.
+    # An unidentified non-internal turn must not retain copied canonical state.
+    copied._hfc_internal_turn_id = ""
+    copied._hfc_turn_id = str(getattr(event, "message_id", None) or "")
+    if getattr(event, "internal", False) is True and not copied._hfc_turn_id:
+        copied._hfc_internal_turn_id = "hfc-internal:" + uuid4().hex
+        copied._hfc_turn_id = copied._hfc_internal_turn_id
+    return copied
+
+
 def build_event(
     event_name: str, local_vars: dict[str, Any], preview: bool = False
 ) -> dict[str, Any] | None:
@@ -10545,14 +10661,18 @@ def _build_event(
     ) or _first_attr_string(
         gateway_event_obj, ("message_id", "msg_id")
     )
-    message_id = explicit_message_id
+    # Queued internal events have no platform message. Their source-bound
+    # identity is transport-local, not a Feishu message/reply anchor. Do not
+    # borrow the chat-wide fallback slot (another turn may own it).
+    internal_turn_id = _first_attr_string(source_obj, ("_hfc_internal_turn_id",))
+    message_id = internal_turn_id or explicit_message_id
     is_terminal_event = event_name in {"message.completed", "message.failed"}
     active_fallback_cache_key = None
-    if event_name == "message.started" and explicit_message_id is not None:
+    if not internal_turn_id and event_name == "message.started" and explicit_message_id is not None:
         active_fallback_cache_key = _active_fallback_cache_key(
             fallback_key, created_at_lifecycle_token
         )
-    elif event_name != "message.started":
+    elif not internal_turn_id and event_name != "message.started":
         if is_terminal_event:
             active_fallback_cache_key = _terminal_fallback_cache_key(
                 fallback_key, created_at_lifecycle_token
@@ -10612,7 +10732,8 @@ def _build_event(
     if is_terminal_event:
         if not preview:
             if (
-                explicit_message_id is not None
+                not internal_turn_id
+                and explicit_message_id is not None
                 and created_at_lifecycle_token is None
                 and active_fallback_cache_key is None
             ):
@@ -10998,6 +11119,21 @@ def _event_data(
         "profile_id": profile_id,
         "profile_source": profile_source,
     }
+    # Any event can open a session when message.started is unavailable.
+    # Preserve requester identity on those fallback paths as well.
+    sender_open_id = _message_sender_open_id(
+        local_vars, source_obj, local_vars.get("event")
+    )
+    if sender_open_id:
+        data["sender_open_id"] = sender_open_id
+        sender_name = getattr(source_obj, "user_name", None)
+        if (getattr(source_obj, "user_id", None) == sender_open_id
+                and isinstance(sender_name, str) and 0 < len(sender_name) <= 80
+                and not any(ord(c) < 32 or c in "<>" for c in sender_name)):
+            data["sender_name"] = sender_name
+    chat_type = _command_chat_type(local_vars, source_obj, local_vars.get("event"))
+    if chat_type:
+        data["chat_type"] = chat_type.strip().lower()
     native_handoff = _native_handoff_event_metadata(event_name, local_vars)
     if native_handoff is not None:
         data["native_handoff"] = native_handoff
@@ -11133,9 +11269,16 @@ def _event_data(
         status = _first_string(local_vars, ("status", "tool_status")) or "running"
         detail = _first_string(local_vars, ("detail", "tool_detail")) or ""
         data.update({"tool_id": tool_id, "name": name, "status": status, "detail": detail})
+        call_id = _first_string(local_vars, ("call_id", "tool_call_id"))
+        if call_id and len(call_id) <= 256:
+            data["call_id"] = call_id
         arguments = _tool_arguments(local_vars)
         if arguments is not None:
             data["arguments"] = arguments
+        from .process_activity import process_activity
+        observed = process_activity(name, arguments, local_vars.get("result"))
+        if observed:
+            data["process_activity"] = observed
         duration_ms = _tool_duration_milliseconds(local_vars)
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
@@ -11161,16 +11304,6 @@ def _event_data(
             "tokens": _completion_tokens(local_vars, answer),
             "context": _completion_context(local_vars),
         })
-        sender_open_id = _message_sender_open_id(
-            local_vars, source_obj, local_vars.get("event")
-        )
-        if sender_open_id:
-            data["sender_open_id"] = sender_open_id
-            sender_name = getattr(source_obj, "user_name", None)
-            if (getattr(source_obj, "user_id", None) == sender_open_id
-                    and isinstance(sender_name, str) and 0 < len(sender_name) <= 80
-                    and not any(ord(c) < 32 or c in "<>" for c in sender_name)):
-                data["sender_name"] = sender_name
         delivery_kind = _first_string(local_vars, ("delivery_kind",))
         if delivery_kind:
             data["delivery_kind"] = delivery_kind
@@ -11188,18 +11321,7 @@ def _event_data(
         })
         return data
     if event_name == "message.started":
-        sender_open_id = _message_sender_open_id(
-            local_vars, source_obj, local_vars.get("event")
-        )
-        if sender_open_id:
-            data["sender_open_id"] = sender_open_id
-            sender_name = getattr(source_obj, "user_name", None)
-            if (getattr(source_obj, "user_id", None) == sender_open_id
-                    and isinstance(sender_name, str) and 0 < len(sender_name) <= 80
-                    and not any(ord(c) < 32 or c in "<>" for c in sender_name)):
-                data["sender_name"] = sender_name
         for source_key, data_key in (
-            ("chat_type", "chat_type"),
             ("tenant_key", "tenant_key"),
             ("agent_id", "agent_id"),
         ):

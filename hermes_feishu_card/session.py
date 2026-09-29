@@ -78,6 +78,8 @@ class ToolState:
     ordinal: int = 0
     # Retained after completion and in private display checkpoints.
     duration_ms: float | None = None
+    # Explicit executor identity; a legacy tool name is not a call identity.
+    call_id: str = ""
 
 
 @dataclass
@@ -117,6 +119,8 @@ class InteractionState:
     # The approval card's own Feishu message id, recorded when the card is delivered. A timed-out
     # approval refreshes THAT card in place instead of sending a second paused card (#314).
     feishu_message_id: str = ""
+    # Set only after an explicit successful PATCH of the complete standalone receipt.
+    receipt_fingerprint: str = ""
 
     def __deepcopy__(self, memo: dict[int, object]) -> "InteractionState":
         admission = self.runtime_admission
@@ -182,9 +186,13 @@ class CardSession:
     subscription_usage_checked: bool = False
     attachments: list[dict[str, str]] = field(default_factory=list)
     active_interaction: InteractionState | None = None
+    # At most 32 bounded static predecessor cards; never persisted or restored.
+    approval_retirements: list[dict[str, Any]] = field(default_factory=list, repr=False)
     delivery_kind: str = "chat"
     reply_to_message_id: str = ""
     reply_in_thread: bool = False
+    execution_scope: str = ""
+    chat_type: str = ""
     sender_open_id: str = ""
     sender_name: str = ""
     completion_notify_state: str = "idle"
@@ -203,6 +211,7 @@ class CardSession:
     # Persist rendered static text, never InteractionState or callback tokens.
     legacy_owner_receipt: dict[str, Any] = field(default_factory=dict)
     _tool_call_count: int = field(default=0)
+    _process_activity: dict[str, dict] = field(default_factory=dict, repr=False)
     _answer_archive_index: int | None = None
     timeline: CardTimeline = field(default_factory=CardTimeline)
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
@@ -257,6 +266,21 @@ class CardSession:
             return False
         if self.status in {"completed", "failed"}:
             return False
+        execution_scope = event.data.get("execution_scope")
+        if type(execution_scope) is str and re.fullmatch(r"[0-9a-f]{64}", execution_scope):
+            self.execution_scope = execution_scope
+        chat_type = event.data.get("chat_type")
+        if isinstance(chat_type, str) and chat_type.strip().lower() in {"group", "dm", "p2p", "private"}:
+            self.chat_type = chat_type.strip().lower()
+        sender_open_id = _exact_feishu_open_id(event.data.get("sender_open_id"))
+        if sender_open_id:
+            if self.sender_open_id != sender_open_id:
+                self.sender_name = ""
+            self.sender_open_id = sender_open_id
+            sender_name = event.data.get("sender_name")
+            if (isinstance(sender_name, str) and 0 < len(sender_name) <= 80
+                    and not any(ord(c) < 32 or c in "<>" for c in sender_name)):
+                self.sender_name = sender_name
         # Card-action callbacks are authenticated out-of-band transitions. They
         # may complete an interaction while Hermes is already preparing the next
         # batch clarify request, so they must not consume the transport sequence
@@ -305,18 +329,15 @@ class CardSession:
                 self.answer_text += delta
                 append_answer(self, delta)
         elif event.event == "tool.updated":
-            raw_preview = event.data.get("detail")
-            if isinstance(raw_preview, str):
-                normalized_preview = normalize_stream_text(raw_preview).strip()
-                if normalized_preview:
-                    self.latest_tool_preview = _runtime_tool_summary(
-                        event.data.get("name"), normalized_preview
-                    )
             tool_id = event.data.get("tool_id")
             if not isinstance(tool_id, str) or not tool_id:
                 self.updated_at = time.time()
                 self.refresh_display_status_source()
                 return True
+            call_id = event.data.get("call_id")
+            call_id = call_id if isinstance(call_id, str) and 0 < len(call_id) <= 256 else ""
+            if call_id:
+                tool_id = call_id
             if self.answer_text and self._answer_archive_index is None:
                 self._answer_archive_index = self.timeline.entry_count
             name = event.data.get("name")
@@ -330,32 +351,55 @@ class CardSession:
                 previous_tool is not None
                 and previous_tool.status.strip().lower() in TERMINAL_TOOL_STATUSES
             )
+            same_call = bool(call_id and previous_tool is not None and previous_tool.call_id == call_id)
+            if same_call and previous_is_terminal and not is_terminal:
+                # A higher transport sequence can still contain a late start.
+                # Explicit call identity prevents terminal state/count regression.
+                self.updated_at = time.time()
+                self.refresh_display_status_source()
+                return True
+            from .process_activity import enrich_process_detail
+            tool_data = enrich_process_detail(
+                event.data, self._process_activity,
+                observe=not (same_call and previous_is_terminal and is_terminal),
+            )
+            raw_preview = tool_data.get("detail")
+            if isinstance(raw_preview, str):
+                normalized_preview = normalize_stream_text(raw_preview).strip()
+                if normalized_preview:
+                    self.latest_tool_preview = _runtime_tool_summary(
+                        tool_data.get("name"), normalized_preview
+                    )
             if previous_tool is None or (previous_is_terminal and not is_terminal):
                 started_at = None if is_terminal else event.created_at
             else:
                 started_at = previous_tool.started_at
-            detail_data = event.data
-            resolved_duration_ms = _tool_duration_milliseconds(event.data)
+            detail_data = tool_data
+            resolved_duration_ms = _tool_duration_milliseconds(tool_data)
+            if same_call and previous_is_terminal and resolved_duration_ms is None:
+                resolved_duration_ms = previous_tool.duration_ms
+                if resolved_duration_ms is not None:
+                    detail_data = dict(tool_data, duration_ms=resolved_duration_ms)
             if (
                 is_terminal
                 and resolved_duration_ms is None
                 and started_at is not None
                 and event.created_at >= started_at
             ):
-                detail_data = dict(event.data)
+                detail_data = dict(tool_data)
                 resolved_duration_ms = (event.created_at - started_at) * 1000
                 detail_data["duration_ms"] = resolved_duration_ms
             resolved_detail = _tool_detail_from_event_data(detail_data)
             if (
                 is_terminal
                 and previous_tool is not None
-                and not _tool_event_has_primary_detail(event.data)
+                and not _tool_event_has_primary_detail(tool_data)
             ):
                 resolved_detail = _merge_tool_details(
                     previous_tool.detail,
                     resolved_detail,
                 )
-            if previous_tool is None or previous_is_terminal:
+            if previous_tool is None or (previous_is_terminal and not same_call):
                 self._tool_call_count += 1
                 call_ordinal = self._tool_call_count
             elif previous_tool.ordinal:
@@ -371,8 +415,10 @@ class CardSession:
                 started_at=started_at,
                 ordinal=call_ordinal,
                 duration_ms=resolved_duration_ms,
+                call_id=call_id,
             )
-            self.timeline.record_tool(tool_id, resolved_name, resolved_status, resolved_detail)
+            self.timeline.record_tool(tool_id, resolved_name, resolved_status, resolved_detail,
+                                      replace_terminal=same_call)
         elif event.event == "subagent.updated":
             child_id = event.data.get("child_id")
             if type(child_id) is str and child_id.strip():
@@ -414,15 +460,6 @@ class CardSession:
             delivery_kind = event.data.get("delivery_kind")
             if isinstance(delivery_kind, str) and delivery_kind.strip():
                 self.delivery_kind = delivery_kind.strip()
-            sender_open_id = _exact_feishu_open_id(event.data.get("sender_open_id"))
-            if sender_open_id:
-                if self.sender_open_id != sender_open_id:
-                    self.sender_name = ""
-                self.sender_open_id = sender_open_id
-                sender_name = event.data.get("sender_name")
-                if (isinstance(sender_name, str) and 0 < len(sender_name) <= 80
-                        and not any(ord(c) < 32 or c in "<>" for c in sender_name)):
-                    self.sender_name = sender_name
             reply_to_message_id = event.data.get("reply_to_message_id")
             if isinstance(reply_to_message_id, str):
                 self.reply_to_message_id = reply_to_message_id
@@ -488,15 +525,6 @@ class CardSession:
             self.latest_tool_preview = ""
             if completed_answer.strip():
                 self.answer_text = completed_answer
-            sender_open_id = _exact_feishu_open_id(event.data.get("sender_open_id"))
-            if sender_open_id:
-                if self.sender_open_id != sender_open_id:
-                    self.sender_name = ""
-                self.sender_open_id = sender_open_id
-                sender_name = event.data.get("sender_name")
-                if (isinstance(sender_name, str) and 0 < len(sender_name) <= 80
-                        and not any(ord(c) < 32 or c in "<>" for c in sender_name)):
-                    self.sender_name = sender_name
             delivery_kind = event.data.get("delivery_kind")
             if isinstance(delivery_kind, str) and delivery_kind.strip():
                 self.delivery_kind = delivery_kind.strip()

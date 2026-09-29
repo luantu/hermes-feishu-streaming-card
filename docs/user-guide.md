@@ -586,7 +586,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v4.6.4`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.6.11`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -594,7 +594,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.6.4
+export HFC_VERSION=v4.6.11
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -1025,12 +1025,27 @@ MIT License，详见 [LICENSE](../LICENSE)。
 
 ## 完成后的正文工具区
 
-设置 `card.hide_completed_tool_activity: true`，在 completed/failed 后隐藏正文工具行及工具摘要回退。默认 `false` 保持已有显示；运行进度、审批布局、折叠过程和 footer 工具计数不变。修改配置后重启 sidecar 生效。
+设置 `card.hide_completed_tool_activity: true`，在 completed/failed 后隐藏成功的正文工具行及工具摘要回退；失败、取消和中断工具仍保留。默认 `false` 保持已有显示；运行进度、审批布局、折叠过程和 footer 工具计数不变。修改配置后重启 sidecar 生效。
 
 ## V4.6.3：进行中思考正文开关
 
 设置 `card.stream_thinking_to_body: false`，答案未输出时正文保留等待状态或工具活动，实时思考进入有长度上限的折叠预览；默认 `true` 保持旧行为。预览由 `show_reasoning` 控制，使用 `max_reasoning_chars`，不写入持久时间线。完成/失败内容、审批和历史 `reasoning_format` 不变。超长自定义面板预算和超长答案仍受整卡容量限制。修改后重启 sidecar。
 
-## V4.6.4 候选：首次按钮与顺序续答
+## V4.6.6：审批、工具可见性与通知收尾
 
-首次 clarify/approval 无需 slash 卡预热；选择后有实际输出才创建续答卡，问题与选择保留。缺省和已有显式设置不变，`card.reading_preset` 可选，`card-config` 只读解释有效配置。详见[候选说明](release-notes-v4.6.4.md)、[交互续答](wiki/interaction-continuation.md)、[阅读预设](wiki/reading-presets.md)与[本轮真实验收](wiki/feishu-acceptance-v4.6.4.md)。这些说明不代表已经正式发布或通过设备验收。
+已完成审批只有在独立完整回执确认投递后才精简重复审阅区。较早仍在运行的工具及其前一步优先进入有界过程面板，与正文编号一致。已知原生重启通知在 15 秒后撤回，或由同路由成功投递提前收尾；成功后台任务的一行提示也会到期撤回。原生过期审批的未执行纠正提示、失败、带输出结果与完整审批回执保留。详见[发布说明](release-notes-v4.6.6.md)、[阅读设置](wiki/reading-presets.md)与[验收证据](wiki/feishu-acceptance-v4.6.6.md)。
+
+
+## V4.6.7：心跳与审批布局
+
+Working 心跳保留原地编辑，不再由 HFC 定时撤回。审批按钮改用紧凑自动宽度列，完整正文与回调身份保留。
+
+## V4.6.8：macOS 安装提示
+
+macOS 的持久服务提示明确 Linux systemd 限制；缺少可验证 pidfile 不代表 launchd 托管。一次性登录启动、外部托管和停止边界见[安装安全说明](installer-safety.md)与[发布说明](release-notes-v4.6.8.md)。本版不管理 launchd 或改变卡片行为。
+
+## V4.6.11：长思考与后台任务
+
+- 希望正文持续显示最新思考但不刷满整卡时，设置 `card.thinking_body_tail_chars: 2400`。仅在 `stream_thinking_to_body: true`、未有答案且本轮未结束时生效。默认 `0` 保留旧行为；整数范围为 0–1000000。窗口按字符保留尾部，并在整卡预算不足时尝试进一步缩小；思考时间线、工具区和完整答案不裁剪。其他区域仍超限时沿用原有原生投递兜底。修改后重启 sidecar。
+- `terminal` 返回后台进程标识后，或 `process` / `process_manage` 返回明确命令与输出后，同一轮后续 `wait` 会展示已观测命令、最近回报及状态。进程关联最多保留 32 项，限制在当前卡片会话内存中，重启不会恢复该关联。
+- “最近输出”是工具上次回报，不是实时日志订阅；进程没有新事件时不推测百分比。`timeout` 显示为“请求等待上限（非预计完成时间）”，Hermes 还可能按自身配置缩短实际等待。没有观测到命令时明确显示未知，不跨轮或跨 profile 查询其他进程。

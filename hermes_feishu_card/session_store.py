@@ -19,7 +19,7 @@ MAX_RECORD_BYTES = 1024 * 1024
 MAX_RECORDS = 128
 RETENTION_SECONDS = 24 * 3600
 _EXCLUDED = {'tools', 'timeline', 'thinking_normalizer', 'answer_normalizer',
-             'active_interaction', 'terminal_handoff_record', 'route_profile_id'}
+             'active_interaction', 'approval_retirements', 'terminal_handoff_record', 'route_profile_id', '_process_activity'}
 _FIELDS = {f.name for f in fields(CardSession)} - _EXCLUDED
 
 
@@ -43,6 +43,9 @@ class SessionStore:
             if not body[optional]:
                 body.pop(optional)
         body['tools'] = {k: asdict(v) for k, v in session.tools.items()}
+        for tool in body['tools'].values():
+            if not tool['call_id']:
+                tool.pop('call_id')
         body['timeline'] = asdict(session.timeline)
         body['normalizers'] = [session.thinking_normalizer._pending, session.answer_normalizer._pending]
         prefix = f"{profile_id}:" if profile_id else ""

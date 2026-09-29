@@ -63,6 +63,7 @@
 
 - 重定向必须从已校验的 agent turn binding 取回原 conversation ID，不能退化为 source.thread_id；server 的 conversation/profile/chat 边界保持不变。
 - 显式 `turn_id` 必须作为 canonical turn hard fence，直接决定 session ownership、ordering 和 native handoff，绝不查 reply alias；只有缺少 `turn_id` 的 legacy topic 后续事件使用不同内部 `message_id` 时，才查 `reply_to_message_id` anchor。
+- 群聊新轮清理必须同时匹配可验证的 `sender_open_id`；缺少发送者时保留旧卡。hook 的首事件 fallback 也必须携带发送者和 `chat_type`。原生插件通道使用 Gateway session key 的哈希 `execution_scope` 隔离；缺少可匹配范围时不猜测接管。redirect 只清理明确指定的来源 turn，不能结束同群其他成员的卡片。参见 Issue #348。
 - terminal 事件前要 flush pending delta，避免尾部文本丢失。
 - 接管终局后若 PATCH 与终局重试全部失败，sidecar 必须用同一原卡/事件的稳定 UUID 补发完整终局卡，保持原 topic、bot 和内容；不能再让 Gateway 原生发送同一答案。补发使用原 session 对象，不能读取复用 key 后的新轮内容。重复终局不能重复补发；补发不确定或失败须体现在 `last_terminal_delivery` 与 `terminal_delivery_state`，不能宣称已送达。
 - legacy completion 与 native `on_session_end` 共用明确结果字段解释；`completed=false` 和已知迭代/预算退出不得显示成功。未知退出码、非布尔字段和正文内容不作为失败推断依据。
@@ -131,6 +132,7 @@
 - runner 必须真正读取 `setup` / `start` 显式传入的 `--env-file`。配置优先级保持 YAML < 同目录 `.env` < 显式 env file < process env；禁止为了修复 systemd 环境而隐式读取全局 `~/.hermes/.env`。
 - 升级迁移只能停止 PID/token/health 三者一致的旧进程，未知进程保持 fail-closed。
 - `auto` 不得探测 system bus、调用 sudo/pkexec、写 `/etc` 或静默 fallback 到 system manager；`systemd-system` 只能显式使用 transient unit。
+- macOS `enable` 不可用时只提供平台解释。自建登录 LaunchAgent 可用 `RunAtLoad=true` 一次运行会分离子进程的 `start`，不可推荐 `KeepAlive=true`。无 verified pidfile 必须先确认进程归属；只有证实自建 LaunchAgent 直接运行 runner 才提供对应 `launchctl` 停止路径，不据 pidfile 缺失推断 launchd。
 - guided `setup` 在 `service.manager=auto|systemd-user`、user manager 可用且 `loginctl ... Linger=yes` 时默认进入 persistent systemd user 路径；不可用时必须显式警告重启风险并给出精确 `enable` 命令，`--transient` 是显式 opt-out。不得自动 enable linger、调用 sudo 或进入 system manager。随后以 exact Hermes venv Python、absolute config/env/Hermes root 渲染 unit；unit 与 `persistent-service.json` 都必须为 owner-only regular file，并以 `unit_sha256` 互证。
 - persistent enable 前先用现有 token/pidfile owner 安全停止 transient/detached sidecar；无 ownership 的同名 active unit、停服失败、manifest/unit 不完整或 drift 均拒绝。enable/health 失败后只有 `disable --now` 成功才可删除 ownership evidence。
 - `start` 对 exact active persistent unit 只返回 already running；`stop` 不绕过 persistent owner，必须走 `disable`。独立 `start` 仍为 transient，安装器不自动执行 `loginctl enable-linger`。
@@ -240,10 +242,33 @@ native plugin 的 runtime-control lease 明确标记 `gateway_admission_dependen
 
 工具按ordinal排序，运行工具及各自前驱可见，终态duration_ms保存在ToolState并兼容旧检查点。failure只接收有效测量，不能用Unknown、零占位、非有限数覆盖已知值；生成的排队接续hook实际执行须保留旧turn及新turn身份。通知撤回不在本版，#331调用方仍需完整传递bot/profile。
 
-## V4.6.4 候选交互、阅读与通知边界
+## V4.6.4 交互、阅读与通知边界
 
 - 真实生成的嵌套 clarify/approval callback 可能只有 `ctx`，不得假定 `locals()` 包含 `self`。从绑定 TurnRunner 或已记忆 Gateway 恢复时，验证 ctx/source、profile resolver 与同一 live adapter；未知归属 fail-open。只在当前 WS loop 更新原 processor callback，重连不能复用过期刷新标记。
 - 交互后按需创建续答；分段只改变显示投影，不能清空 canonical 历史、工具、附件和统计。独立检查 legacy-only owner 的失败、终局、容量回退和重启，检查点不能含 callback token 或恢复旧授权。
 - 阅读预设可选，未设置保持旧默认；全局/profile/bot 每层先预设后显式字段。`hide_completed_tool_activity` 显式 true/false 语义不变，`card-config` 仅说明配置而非证明进程已加载。
 - 重启通知只登记有来源证明的 exact profile/bot/chat/thread。后续成功投递/更新只清理之前快照，删除失败保留记录；空 thread 不通配。答案、交互回执和来源不明的原生 home 通知不清理。
-- 提交前使用[preflight](../testing.md)核对环境和所选差异基线；候选状态及真实验收分别见[实施状态](../superpowers/plans/2026-09-20-v4.6.x-experience.md)和[V4.6.4验收](feishu-acceptance-v4.6.4.md)。
+- 提交前使用[preflight](../testing.md)核对环境和所选差异基线；实施状态及真实验收分别见[实施状态](../superpowers/plans/2026-09-20-v4.6.x-experience.md)和[V4.6.4验收](feishu-acceptance-v4.6.4.md)。
+
+## V4.6.5 故障、通知和升级边界
+
+模型重试耗尽的同步状态 callback 只能在另一个仍运行的 Gateway loop 上等待有界 HTTP 明确 ACK；空/旧/拒绝响应不抑制原生提示，同 loop 不阻塞。未知文案不通过宽泛关键词接管。通知持久化和已知 native producer 的归属见[通知归属](notice-ownership.md)。
+
+工具去重必须使用明确 call_id，不能把重复工具名猜成同一次调用。默认时间线行为不变，分组裁剪只改变显示。带 call_id 的新展示检查点回退旧版可能被跳过，不得因此恢复执行。
+
+`stale_reapplied` 只允许显式接受上游升级：旧 backup 必须匹配 manifest，严格移除已知模板后逐字等于当前 Git blob，检查 resolved HEAD 与事务 fingerprint；中途漂移、未知 marker 和无 Git 证明拒绝。保留 staged index 与无关定制，不手改 installed gateway 或伪造 manifest。
+
+## V4.6.6 收尾回归
+
+审批精简必须有独立完整回执的显式平台 PATCH 确认；不得仅以 callback 返回体作为投递证明。展示指纹、旧段清理队列均不入检查点。通知计时提前唤醒不得取消 in-flight DELETE；原生来源只存在于精确 producer 或同一 Base delivery invocation。总条目窗口优先保留运行工具、前一步和失败条目，仍需遵守卡片预算。
+
+## V4.6.10 Hermes 0.21.x and reopened cards
+
+Use the outbound `_delivery_adapter_for` resolver when present; None/errors are authoritative and must not fall through to another bot. Exact optional guarded marker release is accepted only between ledger recording and sending, once. Queued/idle source identity is independent of platform reply anchors. Same-key terminal reopen requires a fresh create UUID; failed replacement sends retain only terminal display ownership, not old approval/execution state. Verify current stable and main using their hash-bound fixtures, not version-string guesses.
+
+## V4.6.11 显示边界
+
+- `thinking_body_tail_chars` 只限制未结束、无答案时的正文思考；0 保留原行为。每次收缩必须验证完整 Card JSON，不能截断答案/工具/审批范围，也不能承诺任意自定义面板都能容纳。
+- `CardRenderResult.primary_text` 记录实际选中的正文；legacy owner 重组时必须复用该值，不能重新注入未裁剪思考。
+- `process_activity.py` 只提取已回报的 allowlisted 字段，先脱敏再裁剪；不读取进程注册表、不轮询/执行进程、不虚构 ETA。patch/native 共用提取逻辑。
+- 每个 `CardSession` 的 `_process_activity` 至多 32 项，必须列入 checkpoint `_EXCLUDED`，避免改变旧检查点字段契约或恢复进程关联。重复工具终态不得覆盖后续观测到的进程退出状态。

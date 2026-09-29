@@ -2027,7 +2027,12 @@ def _find_owned_block(content: str):
     placeholder_silent = _with_silent_exception_handler(placeholder, indent, newline)
     actual = lines[begin_index : end_index + 1]
 
+    gateway_013_plus_pre_idle = _render_hook_block(
+        indent, newline, strategy="gateway_run_013_plus", isolate_turn=False
+    )
     if actual not in (
+        gateway_013_plus_pre_idle,
+        _with_silent_exception_handler(gateway_013_plus_pre_idle, indent, newline),
         legacy,
         gateway_013_plus,
         legacy_without_commands,
@@ -2054,6 +2059,8 @@ def _find_owned_block(content: str):
         first_body_index - 2
         if actual
         in (
+            gateway_013_plus_pre_idle,
+            _with_silent_exception_handler(gateway_013_plus_pre_idle, indent, newline),
             gateway_013_plus,
             gateway_013_plus_silent,
             gateway_013_plus_without_commands,
@@ -2577,7 +2584,15 @@ if obligation_id is not None:
 return result, delivery_adapter
 """).body
     body = []
+    # Hermes may hand crash recovery from the turn marker to the ledger here.
+    # Accept only this exact optional guard, once, after recording and before
+    # sending. Keep it in generated source; never weaken the delivery bracket.
+    release_guard = ast.parse("if obligation_id is not None:\n    await self._release_turn_marker(event)").body[0]
+    release_seen = False
     for index, node in enumerate(ledger.body):
+        if len(body) == 2 and not release_seen and ast.dump(node) == ast.dump(release_guard):
+            release_seen = True
+            continue
         if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             continue
         # The upstream informational log between adapter selection and recording
@@ -3054,6 +3069,16 @@ def _find_simple_owned_patch(
             _render_v452_queued_final_hook_block(indent, newline),
             _render_pr310_queued_final_hook_block(indent, newline),
         ])
+    if renderer is _render_queued_followup_hook_block:
+        expected_blocks.extend([
+            _render_v462_queued_followup_hook_block(indent, newline),
+            _render_v468_queued_followup_hook_block(indent, newline),
+        ])
+    if renderer is _render_status_hook_block:
+        expected_blocks.extend([
+            _render_v464_status_hook_block(indent, newline),
+            _render_turn_context_hook_block(_render_v464_status_hook_block, indent, newline),
+        ])
     if renderer is _render_stable_tool_lifecycle_hook_block:
         # v4.5.2 installed blocks predate the dedicated reasoning callback.
         expected_blocks.extend([
@@ -3331,7 +3356,7 @@ def _render_hook_block_without_commands(
     return block
 
 
-def _render_hook_block(indent: str, newline: str, strategy: str = "legacy_gateway_run"):
+def _render_hook_block(indent: str, newline: str, strategy: str = "legacy_gateway_run", *, isolate_turn: bool = True):
     inner_indent = _child_indent(indent)
     deeper_indent = _child_indent(inner_indent)
     block = [
@@ -3394,6 +3419,16 @@ def _render_hook_block(indent: str, newline: str, strategy: str = "legacy_gatewa
                 f"{inner_indent}_hfc_emit(locals()){newline}",
             ]
         )
+    if isolate_turn and strategy == "gateway_run_013_plus":
+        # Ordinary idle notifications enter this hook, not the queued hook.
+        # Copy and bind before command/policy/startup can fail; source.message_id
+        # remains a real platform anchor, never the synthetic lifecycle identity.
+        import_index = next(i for i, line in enumerate(block) if "import emit_from_hermes_locals as" in line)
+        block[import_index + 1:import_index + 1] = [
+            f"{inner_indent}if str(getattr(getattr(source, \"platform\", None), \"value\", getattr(source, \"platform\", None))).lower() == \"feishu\":{newline}",
+            f"{deeper_indent}from hermes_feishu_card.hook_runtime import queued_followup_source as _hfc_turn_source{newline}",
+            f"{deeper_indent}source = _hfc_turn_source(source, event){newline}",
+        ]
     block.extend(_render_hook_exception_handler(indent, newline))
     block.append(f"{indent}{PATCH_END}{newline}")
     return block
@@ -3700,6 +3735,47 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
         f"{deeper_indent}_hfc_followup_message_id = str(getattr(pending_event, \"message_id\", \"\") or \"\"){newline}",
         f"{deeper_indent}_hfc_original_message_id = str(locals().get(\"event_message_id\") or getattr(_hfc_turn_ctx, \"event_message_id\", None) or \"\"){newline}",
         f"{deeper_indent}_hfc_was_interrupted = bool(locals().get(\"was_interrupted\") or (result.get(\"interrupted\") if isinstance(result, dict) else False)){newline}",
+        f"{deeper_indent}if _hfc_was_interrupted and (_hfc_original_message_id or getattr(source, \"_hfc_internal_turn_id\", None)):{newline}",
+        (
+            f"{deepest_indent}await _hfc_emit_async("
+            f"_hfc_interrupted_locals(source, _hfc_original_message_id, result), "
+            f"event_name=\"message.failed\"){newline}"
+        ),
+        f"{deeper_indent}if _hfc_followup_message_id or getattr(pending_event, \"internal\", False) is True:{newline}",
+        f"{deepest_indent}from hermes_feishu_card.hook_runtime import queued_followup_source as _hfc_queued_source{newline}",
+        f"{deepest_indent}next_source = _hfc_queued_source(next_source, pending_event){newline}",
+        (
+            f"{deepest_indent}await _hfc_emit_async({{"
+            f"\"source\": next_source, \"event\": pending_event, \"message\": pending_event, "
+            f"\"chat_id\": getattr(next_source, \"chat_id\", None), "
+            f"\"message_id\": _hfc_followup_message_id, "
+            f"\"reply_to_message_id\": getattr(pending_event, \"reply_to_message_id\", \"\") or _hfc_followup_message_id"
+            f"}}, event_name=\"message.started\"){newline}"
+        ),
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{QUEUED_FOLLOWUP_PATCH_END}{newline}",
+    ]
+
+def _render_v468_queued_followup_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    deeper_indent = _child_indent(inner_indent)
+    deepest_indent = _child_indent(deeper_indent)
+    return [
+        f"{indent}{QUEUED_FOLLOWUP_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import interrupted_turn_locals as _hfc_interrupted_locals{newline}"
+        ),
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import emit_from_hermes_locals_async as _hfc_emit_async{newline}"
+        ),
+        f"{inner_indent}if pending_event is not None:{newline}",
+        f"{deeper_indent}_hfc_turn_ctx = locals().get(\"turn_ctx\"){newline}",
+        f"{deeper_indent}_hfc_followup_message_id = str(getattr(pending_event, \"message_id\", \"\") or \"\"){newline}",
+        f"{deeper_indent}_hfc_original_message_id = str(locals().get(\"event_message_id\") or getattr(_hfc_turn_ctx, \"event_message_id\", None) or \"\"){newline}",
+        f"{deeper_indent}_hfc_was_interrupted = bool(locals().get(\"was_interrupted\") or (result.get(\"interrupted\") if isinstance(result, dict) else False)){newline}",
         f"{deeper_indent}if _hfc_was_interrupted and _hfc_original_message_id:{newline}",
         (
             f"{deepest_indent}await _hfc_emit_async("
@@ -3720,6 +3796,16 @@ def _render_queued_followup_hook_block(indent: str, newline: str):
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{QUEUED_FOLLOWUP_PATCH_END}{newline}",
     ]
+
+
+def _render_v462_queued_followup_hook_block(indent: str, newline: str):
+    """Exact pre-4.6.3 generated body, retained only for verified removal."""
+    block = _render_v468_queued_followup_hook_block(indent, newline)
+    return [line.replace(
+        "_hfc_interrupted_locals(source, _hfc_original_message_id, result)",
+        '{"source": source, "chat_id": getattr(source, "chat_id", None), '
+        '"message_id": _hfc_original_message_id, "error": "用户已打断当前任务"}',
+    ) for line in block if "import interrupted_turn_locals as _hfc_interrupted_locals" not in line]
 
 
 def _render_v452_queued_final_hook_block(indent: str, newline: str):
@@ -4310,7 +4396,7 @@ def _render_approval_hook_block(indent: str, newline: str):
     ]
 
 
-def _render_status_hook_block(indent: str, newline: str):
+def _render_status_hook_block(indent: str, newline: str, *, suppress_owned: bool = True):
     inner_indent = _child_indent(indent)
     deeper_indent = _child_indent(inner_indent)
     return [
@@ -4321,16 +4407,21 @@ def _render_status_hook_block(indent: str, newline: str):
             f"import handle_status_from_hermes_locals as _hfc_handle_status{newline}"
         ),
         f"{inner_indent}if _run_still_current():{newline}",
-        f"{deeper_indent}_hfc_handle_status({{{newline}",
+        f"{deeper_indent}{'if ' if suppress_owned else ''}_hfc_handle_status({{{newline}",
         f"{deeper_indent}    **locals(),{newline}",
         f"{deeper_indent}    \"source\": source,{newline}",
         f"{deeper_indent}    \"chat_id\": _status_chat_id,{newline}",
         f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
         f"{deeper_indent}    \"_hfc_loop\": _loop_for_step,{newline}",
-        f"{deeper_indent}}}, event_type=event_type, message=message){newline}",
+        f"{deeper_indent}}}, event_type=event_type, message=message){':' if suppress_owned else ''}{newline}",
+        *([f"{deeper_indent}    return{newline}"] if suppress_owned else []),
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{STATUS_PATCH_END}{newline}",
     ]
+
+
+def _render_v464_status_hook_block(indent: str, newline: str):
+    return _render_status_hook_block(indent, newline, suppress_owned=False)
 
 
 def _render_slash_confirm_hook_block(indent: str, newline: str):

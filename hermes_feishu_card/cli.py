@@ -649,11 +649,22 @@ def _run_setup(args: argparse.Namespace) -> int:
                 "reboot",
                 file=sys.stderr,
             )
-            print(
-                "next: satisfy the persistence requirement, then run "
-                + shlex.join(enable_command),
-                file=sys.stderr,
-            )
+            if sys.platform == "darwin":
+                print(
+                    "note: on macOS this project does not manage autostart; "
+                    "for startup at user login, use your own launchd LaunchAgent "
+                    "with RunAtLoad=true to run `hermes-feishu-card start` once "
+                    "with the same config/env paths; do not set KeepAlive=true "
+                    "because start detaches the sidecar and exits "
+                    "(see docs/installer-safety.md)",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "next: satisfy the persistence requirement, then run "
+                    + shlex.join(enable_command),
+                    file=sys.stderr,
+                )
         try:
             start_result = start_sidecar(config_path, config, **start_kwargs)
         except Exception as exc:
@@ -1740,8 +1751,64 @@ def _append_runtime_import_recommendation(
     )
 
 
+#: A PM-managed Hermes (0.21.4+) keeps its dependency environment outside the checkout:
+#: ``hermes_bootstrap.activate_dependencies`` selects ``pm.environments.committed_venv(root)``
+#: at process boot and replaces every ``site-packages`` entry on ``sys.path`` with that
+#: venv's. The checkout's own ``venv/`` then belongs to an earlier release and is *not* the
+#: runtime, so a package installed there is invisible to the gateway: every hook seam fails
+#: on import and a fail-open hook swallows the error, leaving the card degraded with no
+#: user-visible error. Resolve the selection through the same helper the runtime uses. It is
+#: imported in a subprocess so this CLI never imports Hermes modules into its own process.
+_PM_RUNTIME_PROBE = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from pathlib import Path\n"
+    "from pm.environments import committed_venv\n"
+    "venv = committed_venv(Path(sys.argv[1]))\n"
+    "print(str(venv) if venv else '')\n"
+)
+
+_PM_RUNTIME_PROBE_TIMEOUT_SECONDS = 30.0
+
+
+def _pm_managed_runtime_python(hermes_root: Path) -> Path | None:
+    """Interpreter a PM-managed Hermes boots with, or None on any other layout."""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", _PM_RUNTIME_PROBE, str(hermes_root)],
+            capture_output=True,
+            text=True,
+            timeout=_PM_RUNTIME_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    venv = Path(lines[-1])
+    if not venv.is_absolute():
+        return None
+    for candidate in (
+        venv / "bin" / "python",
+        venv / "bin" / "python3",
+        venv / "Scripts" / "python.exe",
+    ):
+        try:
+            if candidate.is_file():
+                return candidate.parent.resolve(strict=True) / candidate.name
+        except (OSError, RuntimeError):
+            continue
+    return None
+
+
 def _detect_hermes_runtime_python(hermes_root: Path | str) -> Path | None:
     root = Path(hermes_root).expanduser()
+    pm_managed = _pm_managed_runtime_python(root)
+    if pm_managed is not None:
+        return pm_managed
     candidates = (
         root / "venv" / "bin" / "python",
         root / "venv" / "bin" / "python3",
@@ -2116,15 +2183,15 @@ def _diagnose_install_state(detection: HermesDetection) -> dict[str, Any]:
         plan = decomposed.plan(detection)
         report = {"checked": True, "status": plan.state,
                 "manifest_exists": (detection.root / MANIFEST_NAME).exists(),
-                "manual_action_required": plan.state in {"refused", "stale_unpatched"},
+                "manual_action_required": plan.state in {"refused", *decomposed.EXPLICIT_UPGRADE_STATES},
                 "automatic_repair_available": plan.executable,
                 "message": "Decomposed ownership: " + plan.state}
-        if plan.state == "stale_unpatched":
+        if plan.state in decomposed.EXPLICIT_UPGRADE_STATES:
             accepted = decomposed.plan(detection, accept_hermes_upgrade=True)
             if accepted.executable:
                 report["message"] = (
                     "Hermes source changed and HFC hooks need reinstalling; an updater/autostash "
-                    "may have removed them. Review the upgrade, run the explicit repair command, "
+                    "may have removed or reapplied them. Review the upgrade, run the explicit repair command, "
                     "then restart Gateway.")
                 report["repair_command"] = shlex.join([
                     "hermes-feishu-card", "install", "--hermes-dir", str(detection.root),
@@ -2694,7 +2761,7 @@ def _lifecycle_hook_check(args: argparse.Namespace) -> dict[str, object] | None:
         return {"status": "installed", "blocking": False, "root": verified_root}
     if plan.state == "clean":
         return {"status": "not_installed", "blocking": False, "root": verified_root}
-    if plan.state == "stale_unpatched":
+    if plan.state in {"stale_unpatched", "stale_reapplied"}:
         accepted = plan_recovery(detection, accept_hermes_upgrade=True)
         if accepted.executable:
             return {
@@ -2757,11 +2824,25 @@ def _print_sidecar_start_failure(result: str) -> None:
             "verified pidfile",
             file=sys.stderr,
         )
-        print(
-            "next: stop the old sidecar service manually, then rerun the "
-            f"official installer: {OFFICIAL_INSTALLER_COMMAND}",
-            file=sys.stderr,
-        )
+        if sys.platform == "darwin":
+            print(
+                "next: confirm who owns the existing sidecar before stopping it. "
+                "If your own launchd LaunchAgent directly runs the sidecar runner, "
+                "confirm its label and stop that job with "
+                "`launchctl bootout gui/$(id -u)/<label>` "
+                "(or `launchctl unload /path/to/confirmed.plist`). "
+                "Otherwise identify and stop the old sidecar service manually; "
+                "a missing pidfile does not prove launchd ownership. "
+                "Then rerun the official installer: "
+                f"{OFFICIAL_INSTALLER_COMMAND}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "next: stop the old sidecar service manually, then rerun the "
+                f"official installer: {OFFICIAL_INSTALLER_COMMAND}",
+                file=sys.stderr,
+            )
         return
     print(f"error: {result}", file=sys.stderr)
 
@@ -4272,7 +4353,7 @@ def _recovery_refusal_message(
     hermes_root: Path | None = None,
 ) -> str:
     message = _first_refusal(plan)
-    if plan.state == "stale_unpatched" and not accept_hermes_upgrade:
+    if plan.state in {"stale_unpatched", "stale_reapplied"} and not accept_hermes_upgrade:
         if hermes_root is None:
             command = "--accept-hermes-upgrade --yes"
         else:

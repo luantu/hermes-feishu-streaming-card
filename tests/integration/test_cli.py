@@ -139,8 +139,13 @@ def test_maintenance_status_reports_unavailable_without_mutating(
 def test_maintenance_resume_launches_real_independent_runner(
     monkeypatch, tmp_path, capsys
 ):
+    from hermes_feishu_card.maintenance_store import JOB_ENVIRONMENT_KEYS
+    for key in JOB_ENVIRONMENT_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     job_path = tmp_path / "maintenance" / "jobs" / "job-1.json"
     job = SimpleNamespace(
+        job_id="job-1",
         path=job_path,
         artifact_version=PACKAGE_VERSION,
         hermes_root=tmp_path / "hermes",
@@ -153,6 +158,11 @@ def test_maintenance_resume_launches_real_independent_runner(
         manager="systemd-user",
     )
     calls = []
+    monkeypatch.setattr(
+        cli_module, "stage_job_credentials",
+        lambda paths, *, job_id, environment:
+            calls.append(("credentials", paths, job_id, environment)),
+    )
     monkeypatch.setattr(cli_module, "load_job", lambda path: job)
     monkeypatch.setattr(
         cli_module,
@@ -179,6 +189,7 @@ def test_maintenance_resume_launches_real_independent_runner(
 
     assert code == 0
     assert calls[0] == ("paths", job_path.parent.parent)
+    assert calls[1] == ("credentials", "paths", "job-1", {"NO_PROXY": "127.0.0.1,localhost"})
     assert calls[-1] == ("launch", runtime, job)
     assert "maintenance: started" in capsys.readouterr().out
 
@@ -846,6 +857,69 @@ def test_runtime_python_detection_includes_gateway_windows_candidate(tmp_path):
     candidate.write_bytes(b"python")
 
     assert cli_module._detect_hermes_runtime_python(tmp_path) == candidate
+
+
+def _write_pm_stub(hermes_dir, body):
+    """Stand in for Hermes' `pm.environments`, which detection imports in a subprocess."""
+    package = hermes_dir / "pm"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "environments.py").write_text(body, encoding="utf-8")
+
+
+def test_runtime_python_detection_prefers_pm_managed_environment(tmp_path):
+    """A PM-managed install runs from a venv outside the checkout.
+
+    `hermes_bootstrap.activate_dependencies` selects `pm.environments.committed_venv(root)`
+    and replaces every site-packages entry on sys.path, so the checkout's own `venv/` belongs
+    to an earlier release. Detection must follow the runtime, or the package is installed into
+    a venv the Gateway never imports from and every hook seam fails silently.
+    """
+    hermes_dir = tmp_path / "hermes-agent"
+    stale = hermes_dir / "venv" / "bin" / "python"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale python")
+
+    managed_venv = tmp_path / "installs" / "abc123" / "environments" / "env456" / "venv"
+    managed_python = managed_venv / "bin" / "python"
+    managed_python.parent.mkdir(parents=True)
+    managed_python.write_bytes(b"managed python")
+
+    _write_pm_stub(
+        hermes_dir,
+        "from pathlib import Path\n"
+        "\n"
+        "\n"
+        "def committed_venv(project_root):\n"
+        "    return (Path(project_root).parent / 'installs' / 'abc123'\n"
+        "            / 'environments' / 'env456' / 'venv')\n",
+    )
+
+    detected = cli_module._detect_hermes_runtime_python(hermes_dir)
+
+    assert detected is not None
+    assert detected.name == "python"
+    assert detected.parent.parent == managed_venv.resolve()
+    assert detected != stale
+
+
+def test_runtime_python_detection_falls_back_when_pm_selection_fails(tmp_path):
+    """A layout whose PM selection cannot be read keeps the checkout candidates."""
+    hermes_dir = tmp_path / "hermes-agent"
+    stale = hermes_dir / "venv" / "bin" / "python"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"stale python")
+
+    _write_pm_stub(
+        hermes_dir,
+        "def committed_venv(project_root):\n"
+        "    raise RuntimeError('no committed selection')\n",
+    )
+
+    detected = cli_module._detect_hermes_runtime_python(hermes_dir)
+
+    assert detected is not None
+    assert detected.parent.parent == (hermes_dir / "venv").resolve()
 
 
 def test_status_reports_cron_metrics_when_sidecar_is_running(monkeypatch, capsys):

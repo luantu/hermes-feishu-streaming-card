@@ -1543,6 +1543,11 @@ class PluginRuntime:
                 "profile_id": turn.ingress.profile_id,
                 "profile_source": turn.ingress.profile_source,
                 "reply_to_message_id": turn.ingress.reply_to_message_id,
+                # Gateway admission owns interruption scope. Never send the raw
+                # session key (which may include user/chat identifiers).
+                "execution_scope": sha256(
+                    turn.ingress.gateway_session_key.encode("utf-8")
+                ).hexdigest(),
             },
         )
         with started_transport.gate:
@@ -2035,9 +2040,14 @@ class PluginRuntime:
         status = "pending" if pending else self._tool_status(kwargs.get("status"))
         data: dict[str, object] = {
             "tool_id": tool_call_id,
+            "call_id": tool_call_id,
             "name": self._preview(tool_name),
             "status": status,
         }
+        from .process_activity import process_activity
+        observed = process_activity(tool_name, kwargs.get("args"), None if pending else kwargs.get("result"))
+        if observed:
+            data["process_activity"] = observed
         duration = self._safe_duration(kwargs.get("duration_ms"))
         if not pending and duration is not None:
             data["duration_ms"] = duration
