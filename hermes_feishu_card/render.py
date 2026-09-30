@@ -49,7 +49,10 @@ MODEL_COLOR_PREFIXES = (
     (("kimi-", "kimi/", "kimi ", "moonshot-"), "purple"),
     (("glm-", "glm/", "glm "), "green"),
     (("hunyuan", "hy3"), "teal"),
-    (("qwq", "qwen"), "grey"),
+    # Fork: Qwen was grey (the unmatched-fallback look); give it a distinct
+    # colour so recognized families never read as "unknown".
+    (("qwen",), "carmine"),
+    (("qwq",), "yellow"),
     (("gemini",), "blue"),
 )
 

@@ -47,7 +47,14 @@ _DATE_SUFFIX: Pattern = re.compile(r"-(?:\d{6}|\d{8})$")
 _MAXTHINK: Pattern = re.compile(r"-maxthink$", re.IGNORECASE)
 _API_PATH: Pattern = re.compile(r"/(chat|coder|reasoner|completions)$")
 _SUB_VERSION: Pattern = re.compile(r"(v\d+)-(\d+)", re.IGNORECASE)
-_DECIMAL_VERSION: Pattern = re.compile(r"(\d)-(\d)")
+# 'claude-haiku-4-5' → 'claude-haiku-4.5': the digit-dash-digit join only
+# applies when the second group is the last version segment — a trailing
+# '-72b' (qwen-2.5-72b) or '-flash' must not be fused into the version.
+_DECIMAL_VERSION: Pattern = re.compile(r"(\d)-(\d+)(?![\w.])")
+# Family and version glued together without a dash ('qwen3.8', 'glm4.5',
+# 'qwen2.5'): the family must be re-split from the version or normalization
+# drops it and the footer shows only the variant ('Flash', 'Max', 'Air').
+_STUCK_FAMILY: Pattern = re.compile(r"^([A-Za-z]+)(\d[\w.]*)$")
 
 _EXACT_MAP: Dict[str, str] = {
     "deepseek/chat": "DeepSeek Chat",
@@ -71,6 +78,17 @@ def _strip_provider_prefix(name: str) -> str:
             family = first.rsplit("/", 1)[-1]
             if family.lower() in _MODEL_FAMILIES or family.lower() in _KNOWN_SERIES:
                 return f"{family}-{rest}"
+            # 'uniapi/qwen3.8-flash': the post-slash chunk is a known family
+            # glued to its version — re-split it the same way.
+            stuck = _STUCK_FAMILY.match(family)
+            if stuck and stuck.group(1).lower() in _MODEL_FAMILIES:
+                return f"{stuck.group(1)}-{stuck.group(2)}-{rest}"
+        # 'qwen3.8-flash' splits into ('qwen3.8', 'flash'): if the first chunk
+        # is a known family glued to its version, re-split them so the family
+        # and the version both survive ('qwen-3.8-flash').
+        stuck = _STUCK_FAMILY.match(first)
+        if stuck and stuck.group(1).lower() in _MODEL_FAMILIES:
+            return f"{stuck.group(1)}-{stuck.group(2)}-{rest}"
         return rest
     return name
 

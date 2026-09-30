@@ -823,6 +823,16 @@ def test_model_footer_uses_sanitized_semantic_color(model, color, display):
         ("Tencent/hunyuan", "Tencent Hunyuan"),
         ("deepseek/chat", "DeepSeek Chat"),
         ("deepseek/reasoner", "DeepSeek R1"),
+        # Family and version glued without a dash (uniapi.ruijie.com.cn ids):
+        # the family must survive normalization instead of showing only the
+        # variant ('Flash', 'Max', 'Air').
+        ("qwen3.8-flash", "Qwen 3.8 Flash"),
+        ("uniapi/qwen3.8-flash", "Qwen 3.8 Flash"),
+        ("qwen3-max", "Qwen 3 Max"),
+        ("qwen2.5-72b", "Qwen 2.5 72b"),
+        ("glm4.5-air", "GLM 4.5 Air"),
+        ("zj-deepseek-v4-1-flash", "DeepSeek V4.1 Flash"),
+        ("ali-deepseek-v4-flash", "DeepSeek V4 Flash"),
     ],
 )
 def test_model_footer_keeps_family_after_provider_prefix(raw_model, expected):
