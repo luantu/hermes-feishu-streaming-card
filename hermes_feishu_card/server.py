@@ -25,6 +25,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from .bots import RouteResult
 from .card_limits import inspect_card_limits
 from .config import (
+    card_width_config,
     card_completion_mention_enabled,
     card_interaction_mention_enabled,
     load_config,
@@ -2090,6 +2091,7 @@ def _update_operation_action(
         inspection,
         transitioned.state,
         title=app[CARD_TITLE_KEY],
+        width_mode=_operation_width_mode(app, transitioned),
     )
     return _AfterEofJsonResponse(
         {
@@ -2287,6 +2289,11 @@ async def _commands(request: web.Request) -> web.Response:
                 status=503,
             )
         if created:
+            _store_operation_delivery(request.app, operation.operation_id, {
+                "width_mode": _resolve_session_card_config(
+                    request.app, route.bot_id if route is not None else None, event
+                ).get("width_mode", "default"),
+            })
             _schedule_update_inspection(
                 request.app,
                 operation,
@@ -2328,6 +2335,11 @@ async def _commands(request: web.Request) -> web.Response:
                 status=503,
             )
         if created:
+            _store_operation_delivery(request.app, operation.operation_id, {
+                "width_mode": _resolve_session_card_config(
+                    request.app, route.bot_id if route is not None else None, event
+                ).get("width_mode", "default"),
+            })
             _schedule_operations_diagnosis(
                 request.app,
                 operation,
@@ -2397,6 +2409,7 @@ async def _send_command_card(
         )
     elif operation_id:
         _store_operation_delivery(app, operation_id, {
+            "width_mode": app[OPERATIONS_DELIVERIES_KEY].get(operation_id, {}).get("width_mode", "default"),
             "message_id": delivery.message_id,
             "bot_id": bot_id,
         })
@@ -2605,6 +2618,7 @@ def _render_update_inspection_for_app(
         value("confirm_update"),
         value("cancel_update"),
         title=app[CARD_TITLE_KEY],
+        width_mode=_operation_width_mode(app, operation),
     )
 
 
@@ -2641,6 +2655,7 @@ async def _publish_update_operation_transition(
                         inspection,
                         operation.state,
                         title=app[CARD_TITLE_KEY],
+                        width_mode=_operation_width_mode(app, operation),
                     ),
                     delivery.get("bot_id"),
                 )
@@ -2707,7 +2722,10 @@ async def _run_update_job_launch(
         await _update_card_for_app(
             app,
             message_id,
-            render_update_job_card(job, title=app[CARD_TITLE_KEY]),
+            render_update_job_card(
+                job, title=app[CARD_TITLE_KEY],
+                width_mode=_operation_width_mode(app, operation),
+            ),
             delivery.get("bot_id"),
         )
     except asyncio.CancelledError:
@@ -2728,6 +2746,7 @@ async def _run_update_job_launch(
                 {},
                 {},
                 title=app[CARD_TITLE_KEY],
+                width_mode=_operation_width_mode(app, operation),
             ),
             delivery.get("bot_id"),
         )
@@ -3123,6 +3142,11 @@ def _store_operation_delivery(
         deliveries.pop(candidate, None)
 
 
+def _operation_width_mode(app: web.Application, operation: OperationRecord) -> str:
+    delivery = app[OPERATIONS_DELIVERIES_KEY].get(operation.operation_id, {})
+    return delivery.get("width_mode", app[BASE_CARD_CONFIG_KEY].get("width_mode", "default"))
+
+
 def _render_operations_for_app(
     app: web.Application,
     report: DiagnosticReport,
@@ -3133,6 +3157,7 @@ def _render_operations_for_app(
         operation,
         "Hermes Feishu Card · 本地运行诊断",
         store=app[OPERATIONS_STORE_KEY],
+        width_mode=_operation_width_mode(app, operation),
     )
     title = app[CARD_TITLE_KEY]
     if isinstance(title, str) and title.strip():
@@ -4100,9 +4125,13 @@ def _render_hfc_command_card(
     route: RouteResult | None,
 ) -> dict[str, Any]:
     lines = _hfc_command_lines(request, command, event, route)
+    card_config = _resolve_session_card_config(
+        request.app, route.bot_id if route is not None else None, event
+    )
     return {
         "schema": "2.0",
         "config": {
+            **card_width_config(card_config.get("width_mode", "default")),
             "update_multi": True,
             "summary": {"content": f"/hfc {command}"},
         },
@@ -4677,6 +4706,7 @@ def _schedule_pending_native_handoff_repair(
     *,
     feishu_message_id: str | None = None,
     bot_id: str | None = None,
+    card_config: dict[str, Any] | None = None,
 ) -> asyncio.Task[bool] | None:
     if record.card_state != "pending" or not feishu_message_id:
         return None
@@ -4686,9 +4716,12 @@ def _schedule_pending_native_handoff_repair(
     current = current_repairs.get(identity_key)
     if current is not None and not current.done():
         return current
+    config = card_config or {}
+    title = config.get("title", app[CARD_TITLE_KEY])
+    width_mode = config.get("width_mode", "default")
 
     async def repair() -> bool:
-        card = render_terminal_limit_handoff_card(app[CARD_TITLE_KEY])
+        card = render_terminal_limit_handoff_card(title, width_mode=width_mode)
         updated = await _update_card_for_app(
             app,
             feishu_message_id,
@@ -5309,6 +5342,7 @@ async def _apply_event_locked_inner(
                     prior_handoff,
                     feishu_message_id=feishu_message_ids.get(session_key),
                     bot_id=message_bot_ids.get(session_key),
+                    card_config=request.app[SESSION_CARD_CONFIGS_KEY].get(session_key),
                 )
                 descriptor = prior_handoff.descriptor()
                 if descriptor is not None:
@@ -6042,6 +6076,7 @@ async def _apply_event_locked_inner(
                     handoff_record,
                     feishu_message_id=feishu_message_id,
                     bot_id=message_bot_ids.get(session_key),
+                    card_config=request.app[SESSION_CARD_CONFIGS_KEY].get(session_key),
                 )
             _record_card_render_decision(metrics, render_result)
             session.terminal_disposition = "native"
@@ -7894,6 +7929,7 @@ def _render_session_card_result_for_app(
             else None
         ),
         table_overflow_mode=table_overflow_mode,
+        width_mode=card_config.get("width_mode", "default"),
         completion_mention=completion_in_card and card_completion_mention_enabled(card_config),
         mentions_enabled=card_interaction_mention_enabled(
             card_config,
