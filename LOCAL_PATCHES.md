@@ -3,7 +3,21 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.6.12 合并后（2026-09-30，merge commit 6f047fc）
+> 最后更新：V4.6.12 合并后 + uniapi 模型名归一化修复（2026-09-30，commit 5efcaa1）
+
+### uniapi 模型名归一化修复（6.5 增强，commit 5efcaa1）
+uniapi.ruijie.com.cn 两个 provider（uniapi-high / custom）的模型 ID 形如
+`qwen3.8-flash`（家族+版本粘连、带或不带 `uniapi/` / `zj-` / `ali-` 前缀），旧逻辑
+把家族当 provider 剥掉，footer 只显示变体（"Flash"）且因无法匹配颜色前缀显示灰色。
+修复：
+- `_strip_provider_prefix` 新增 `_STUCK_FAMILY` 粘连拆分（`qwen3.8` → `qwen-3.8`），
+  斜杠后 chunk 同样处理（`uniapi/qwen3.8-flash`）。
+- `_DECIMAL_VERSION` 收紧为 `(\d)-(\d+)(?![\w.])`：`claude-haiku-4-5` 仍折叠为 4.5，
+  但 `qwen-2.5-72b` 的尾段不再被融合成 `2.5.72b`。
+- `MODEL_COLOR_PREFIXES`：Qwen 从 grey（未识别兜底色）改为 carmine，QWQ 改为 yellow。
+- uniapi 全部 7 个模型 ID（ali/zj 前缀、glm-5.3-flash、gpt-5.6-luna、qwen3.8-flash）
+  双形态（裸 ID + `uniapi/` 前缀）验证显示与配色正确；测试用例补入
+  `test_model_footer_keeps_family_after_provider_prefix`。
 
 ---
 
