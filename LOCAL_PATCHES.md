@@ -3,7 +3,17 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.6.11 合并后（2026-09-29，merge commit 待补记）
+> 最后更新：V4.6.12 合并后（2026-09-30，merge commit 6f047fc）
+
+---
+
+## 〇-E、V4.6.12 合并记录（2026-09-30）
+
+合并基点 `9b45913`（v4.6.11 上游点），上游 6 提交（可配置 JSON 2.0 卡片宽度
+`card.width_mode` + 当前 Hermes reply-clock 契约 + thinking-tail 测试稳定化）。
+唯一冲突：render.py imports——本地 `model_names.normalize_model_name` 与上游
+`config.card_width_config` 并存（都保留）。全量测试 **0 新增失败**（124 failed 与
+基线完全一致，上游新增 65 个测试全过）；本地文件与全部锚点合并后逐项验证在位。
 
 ---
 
