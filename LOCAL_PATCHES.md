@@ -3,7 +3,49 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.6.12 合并后 + uniapi 模型名归一化修复（2026-09-30，commit 5efcaa1）
+> 最后更新：V4.7.3 合并后（2026-10-09，merge commit c833fcd）
+
+---
+
+## 〇-F、V4.6.13~V4.7.3 合并冲突保留记录（2026-10-09）
+
+上游 44 提交（v4.6.13 → v4.7.3：task 阅读预设、审批回执架构重构、心跳完整性降频、
+Python 3.14 兼容、slash callback 修复）。冲突 3 文件：
+
+### AGENTS.md
+采用上游 v4.7 重写结构（Delivery and release 段），保留 fork 特有段
+（fork-maintenance-guide 指引、wiki 页列表、Obsidian LLM Wiki 段、stability 段）；
+旧内联测试矩阵/Release Checklist 被上游 wiki 引用取代。
+
+### render.py（3 块）
+- timeline 动态展开（1.8）与上游 task 预设 `TASK_TEXT_SIZE_DEFAULTS` 并存。
+- `_render_footer` 调用/签名：本地 `loading_gif_img_key` 与上游
+  `compact`/`include_status`（task 模式）并存。
+
+### server.py（2 块）+ 两个架构适配（重要）
+1. **渲染选项改用上游 `**card_render_options(card_config)` 抽象**（v4.7 新的
+   render_options.py，含 presentation/width_mode/table_overflow 归一化），
+   本地 `loading_gif_img_key` 保留；`timeline_expanded` 以 dict 内合并方式覆盖
+   `card_render_options` 的静态默认（`**{**options, "timeline_expanded": ...}`——
+   不能写成尾随 kwarg，会与展开的同名键冲突报
+   `got multiple values for keyword argument`）。
+2. **退役交互卡 owner 提升**：本地旧行为把 interaction 卡 promote 为 session owner
+   （feishu_message_ids 指向交互卡、原卡显示"已转入交互卡片"）。上游 v4.7 把交互卡
+   独立为 legacy 回执卡、原流式卡保持 owner 并内联显示选择 scope——整个
+   receipt/continuation 管线（approval_retirements、legacy_owner_receipt、
+   display_segments）依赖该拆分，故提升逻辑退役（PROMOTE 日志保留）。
+3. **`_retire_continuation_predecessor` 加方言守卫**：前驱是交互卡本身
+   （`interaction.feishu_message_id == message_id`）时跳过 2.0 PATCH，
+   防止以 schema-2 破坏 legacy 回执卡。
+
+### 结果
+全量 89 failed / 4826 passed vs 基线 125 failed / 4239 passed：**零新增失败，
+且净改善 36 个**——〇-C 节记录的 v4.6.4 时代待甄别项（approval_terminal_cleanup、
+interaction_continuation 等）随上游架构重构全部通过，待甄别清单清零。
+
+---
+
+## 〇-E、V4.6.12 合并记录（2026-09-30）
 
 ### uniapi 模型名归一化修复（6.5 增强，commit 5efcaa1）
 uniapi.ruijie.com.cn 两个 provider（uniapi-high / custom）的模型 ID 形如
