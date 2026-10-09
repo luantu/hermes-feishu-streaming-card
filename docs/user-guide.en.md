@@ -22,6 +22,31 @@ It targets the real pain points of using Hermes inside Feishu: missing or out-of
 
 Since V3.8.2, the final answer stays in the primary content area while pre-tool answer blocks follow a "show in main body -> archive when the next block arrives" rhythm. Reasoning and tools use different text sizes and visual weight inside the collapsible auxiliary timeline, and the footer no longer repeats the same tool-call summary.
 
+## What can I change on the card?
+
+Edit `card:` in the actual file selected with `--config` during installation. Start with `reading_preset`, then add only intentional overrides. Explicit fields override the preset at the same layer; layers merge global → profile → bot. Do not copy the entire example over an existing configuration.
+
+| Visible region / need | Settings | Limits |
+| --- | --- | --- |
+| Reading style | `reading_preset`: `classic`, `focused`, `detailed`, `task` | Omission preserves defaults; task is released and opt-in |
+| Header | `title`, with profile / bot overrides | Status wording, colors and activity subtitles follow runtime state |
+| Answer | `text_sizes.body` | Hermes supplies content; appearance settings do not rewrite answers |
+| Thinking before an answer | `stream_thinking_to_body`, `thinking_body_tail_chars` | Tail window applies only to live body thinking before an answer; `0` adds no clipping |
+| Body tool activity | `hide_completed_tool_activity` | Hides terminal body tool rows, not timeline or counts; task retains failure/interruption explanations |
+| Reasoning / tool panel | `show_reasoning`, `reasoning_format`, `timeline_expanded`, `timeline_order` | Disabling show_reasoning hides the whole reasoning/tool area; panel title is fixed |
+| Process density | `max_reasoning_chars`, `max_timeline_items`, `timeline_tools_per_reasoning` | Whole-card budgets still apply; final answers are not clipped by these controls |
+| Approval / clarification | `interaction_mode`, `mentions_in_cards`, `interaction_mentions` | Hermes owns questions and permissions; expired authorization stays expired |
+| Footer | `footer_fields`, `text_sizes.footer` | Only available measurements; subscription quota requires an attributed GPT / openai-codex turn |
+| Width and type sizes | `width_mode`, `text_sizes` including pc / mobile | No pixel-height control; wrapping is client-controlled |
+| Long tables | `table_overflow_mode` | compact preserves later tables as field lists; truncate retains table truncation |
+| Completion notification | `completion_notify.enabled`, `placement`, `mention` | Off by default; an edited card mention does not guarantee push delivery |
+| Attachment summary | Appears with attachments | No separate hide switch |
+| Native replies in a chat | `bindings.native_chats` | Changes delivery, not appearance |
+
+Use the [configuration example](../config.yaml.example) and `card-config` for allowed values. Hermes `display.show_reasoning` / `display.runtime_footer` are not HFC appearance controls. `server`, `service` and `integrity` manage connections and runtime safety.
+
+Run `hermes-feishu-card card-config --config <actual-config-path>` to inspect values and sources, restart sidecar through its existing owner, then send a new message. This command does not prove a running process has reloaded configuration; historical terminal cards are not redrawn. See [task cards](task-cards.md#english-quick-reference) for offline preview.
+
 ## Project Highlights
 
 - **Streaming card UX**: `thinking.delta`, `answer.delta`, `tool.updated`, and terminal events update one Feishu card.
@@ -552,19 +577,21 @@ High-frequency streaming knobs usually do not need manual tuning:
 
 ## Docker Containers
 
+Examples pin `v4.7.3`; the default `latest` resolves the published stable release. See [release notes](release-notes-v4.7.1.en.md) for validation boundaries.
+
 Use `install-docker.sh` inside an existing Hermes container. It defaults to
 `/opt/hermes` for Hermes and `/opt/data/config.yaml` for sidecar config. The
 script selects Hermes venv Python and does not fall back to system Python unless
 `HFC_PYTHON` is set.
 
-The Compose example defaults `HFC_VERSION` to `v4.6.12`.
+The Compose example defaults `HFC_VERSION` to `v4.7.3`.
 
 Example:
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.6.12
+export HFC_VERSION=v4.7.3
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -725,7 +752,7 @@ card:
   footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-In multi-profile mode, `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars are ignored. `footer_fields` accepts: `duration`, `model`, `input_tokens`, `output_tokens`, `context`, `subscription_usage`. `subscription_usage` is disabled by default; when explicitly included, completed cards use Hermes runtime `fetch_account_usage("openai-codex")` and render remaining quota in the `5h 26% · weekly 89%` style. Older Hermes versions, missing login, network errors, and timeouts silently omit it.
+In multi-profile mode, `FEISHU_APP_ID`/`FEISHU_APP_SECRET` env vars are ignored. `footer_fields` accepts: `duration`, `model`, `input_tokens`, `output_tokens`, `context`, `subscription_usage`. `subscription_usage` is disabled by default. When enabled, only completed GPT turns attributed to `openai-codex` use Hermes runtime `fetch_account_usage("openai-codex")` to show remaining quota in the `5h 26% · weekly 89%` style. Attribution comes from the turn's `provider` or an `openai-codex/gpt-…` model identifier; a bare GPT name cannot distinguish subscription use from an API key. Non-GPT models, other providers and unknown routes neither fetch nor display this quota, and model changes do not carry it to the next turn. Older Hermes versions without route metadata, missing login, network errors, and timeouts silently omit it.
 
 ### Card width
 
@@ -1006,3 +1033,13 @@ macOS persistence guidance explains the Linux systemd requirement; a missing ver
 - Set `card.thinking_body_tail_chars: 2400` to keep the latest live thinking in the body. It applies only with `stream_thinking_to_body: true`, before any answer and before the turn ends. The default `0` preserves unlimited existing behavior; accepted integers are 0–1000000. The character window may shrink further to fit the complete serialized card. It does not truncate answers, the reasoning timeline or tool sections; unrelated overflows retain the existing native-delivery fallback. Restart the sidecar after editing configuration.
 - Once `terminal` reports a background process ID, or `process` / `process_manage` reports a command and output, subsequent waits in the same turn show that observed context. At most 32 process associations live in one card session's memory; they are not restored after restart.
 - Recent output is the last tool report, not a live log subscription or predicted progress. The requested wait timeout is explicitly not an ETA; Hermes may clamp it further. Missing command context stays unknown. No other turn or profile is queried.
+
+
+## Control credential file (V4.6.13)
+
+Managed launches pass only `--token-file`; the private state directory contains `sidecar-control.token` (POSIX 0600). Keep it for systemd restarts. Unsafe reads/writes fail without argv fallback. Restart through the existing service manager after upgrading. See [release notes](release-notes-v4.6.13.en.md) for same-user trust and Windows ACL limits.
+
+
+## Task layout and offline preview (development branch)
+
+The unreleased `reading_preset: task` and `card-config --preview-dir` provide clearer state/typography and safe configuration previews. See [task cards](task-cards.md#english-quick-reference) for scope, rollback and real-client acceptance boundaries.

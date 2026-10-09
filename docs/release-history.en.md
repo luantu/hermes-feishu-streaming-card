@@ -4,6 +4,10 @@
 
 | Version | Highlights |
 |---|---|
+| [v4.7.2](release-notes-v4.7.2.en.md) | Update safety, SDK callbacks, integrity recovery / 更新与回调修复 |
+| [v4.7.1](release-notes-v4.7.1.en.md) | Slash-confirm callback repair and result-card updates |
+| [v4.7.0](release-notes-v4.7.0.en.md) | Task layout, offline previews, attributed quota and interaction-state repairs |
+| [v4.6.13](release-notes-v4.6.13.en.md) | Private control-token transport and current Hermes source verification |
 | [v4.6.12](release-notes-v4.6.12.en.md) | Optional card width and Hermes reply-clock compatibility |
 | [v4.6.11](release-notes-v4.6.11.en.md) | Bounded live thinking, observed background-task context and CodeQL update |
 | [v4.6.10](release-notes-v4.6.10.en.md) | Hermes 0.21.5 compatibility, PM runtime installation and independent follow-up cards |

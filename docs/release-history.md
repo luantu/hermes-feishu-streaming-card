@@ -4,6 +4,10 @@
 
 | 版本 | 重点 |
 |---|---|
+| [v4.7.2](release-notes-v4.7.2.md) | Update safety, SDK callbacks, integrity recovery / 更新与回调修复 |
+| [v4.7.1](release-notes-v4.7.1.md) | 命令确认回调修复与结果卡更新 |
+| [v4.7.0](release-notes-v4.7.0.md) | 任务布局、离线预览、额度归属与交互状态修复 |
+| [v4.6.13](release-notes-v4.6.13.md) | 控制凭据移出命令行与最新 Hermes 源码验证 |
 | [v4.6.12](release-notes-v4.6.12.md) | 可选卡片宽度与 Hermes 回复计时契约适配 |
 | [v4.6.11](release-notes-v4.6.11.md) | 可选思考尾部窗口、后台任务观测信息与 CodeQL 更新 |
 | [v4.6.10](release-notes-v4.6.10.md) | Hermes 0.21.5 适配、PM 运行环境安装与跟进卡片隔离 |

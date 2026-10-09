@@ -8,7 +8,7 @@
 - Feishu/Lark 卡片 API 与 WebSocket 交互路径有多条 fallback。
 - sidecar 执行与授权状态仍是进程内内存；卡片展示可以从有界私有检查点恢复，不能据此恢复执行或旧审批。详见 [卡片重启恢复](card-restart-recovery.md)。
 
-小文档改动可以直接做；涉及 `hook_runtime.py`、`server.py`、`patcher.py`、安装器或 release 流程时，先读 `AGENTS.md` 的 hot files 和测试矩阵。
+小文档改动可以直接做；涉及 `hook_runtime.py`、`server.py`、`patcher.py`、安装器或 release 流程时，先读根目录 [AGENTS.md](../../AGENTS.md) 的边界与验证要求。技术栈、模块拆分和测试环境见[开发规则](development-rules.md)；新增功能、配置和交互设计见[功能准入规则](feature-rules.md)。
 
 ## Hot files
 
@@ -43,6 +43,7 @@
 - `_hfc_original_handle_resume_command` 必须保留为唯一恢复执行路径；不要在 HFC 重写 session ownership、continuation 或 `switch_session` 规则。
 - 群聊/topic picker 只有在发起者 `open_id` 可验证时才显示；不可验证时 fail-open。私聊不额外比较操作者。
 - slash-confirm 必须在回调线程先原子 claim pending state，再提交到 Gateway loop；submit 返回 false 或抛错时必须回退执行，不能空 ACK 后丢失点击。
+- slash-confirm 回调接管须核对同步、异步两个实际方法，不能仅信任可继承或重绑定后残留的 installed 标记。旧 dispatcher 进入异步 fallback 时，也必须更新原确认卡；更新和补发 reply anchor 只使用发送时保存的 IM message ID，不能使用点击 token。不能靠注册通用 `/card` 命令来绕过原交互的身份和一次性确认校验。
 - schema-2 form submit 的按钮名携带 callback token；Gateway 转发前要求非空 chat 和可验证操作者，sidecar 再要求 token/chat 完全匹配。
 - `interaction.requested` 对 `/events` 只 POST 一次；响应丢失后只允许只读查询 interaction 状态，禁止重放事件。
 - 非回环 sidecar 的 `/card/actions`、`/interactions/{id}` 与 `/messages/{id}/summary` 必须使用独立 `hfc-sidecar-request-v1` proof；签名绑定 HTTP method、规范 path 与 raw body，不能复用 `/events` proof，也不能只把 callback token 当作网络认证。
@@ -65,10 +66,12 @@
 - 显式 `turn_id` 必须作为 canonical turn hard fence，直接决定 session ownership、ordering 和 native handoff，绝不查 reply alias；只有缺少 `turn_id` 的 legacy topic 后续事件使用不同内部 `message_id` 时，才查 `reply_to_message_id` anchor。
 - 群聊新轮清理必须同时匹配可验证的 `sender_open_id`；缺少发送者时保留旧卡。hook 的首事件 fallback 也必须携带发送者和 `chat_type`。原生插件通道使用 Gateway session key 的哈希 `execution_scope` 隔离；缺少可匹配范围时不猜测接管。redirect 只清理明确指定的来源 turn，不能结束同群其他成员的卡片。参见 Issue #348。
 - terminal 事件前要 flush pending delta，避免尾部文本丢失。
+- decomposed Hermes 的 stale-generation 分支只在返回值明确 `interrupted is True`、原 source/turn 身份一致且不是 queued 子轮结果时补发原任务终态；stale 本身不证明失败。安装器须精确验证该接点并保持逐字可逆。
+- Base 的受控 `/stop` 取消可能早于工具结果返回。仅在精确处理 task 的原 owner、会话和路由一致且该 task 确已取消时补发终态；`/new`、`/reset` 与未知取消不猜测。显示投递复用 adapter 的受管后台任务，限制数量和期限，不阻塞原 pending-message drain，也不恢复执行或授权。
 - 接管终局后若 PATCH 与终局重试全部失败，sidecar 必须用同一原卡/事件的稳定 UUID 补发完整终局卡，保持原 topic、bot 和内容；不能再让 Gateway 原生发送同一答案。补发使用原 session 对象，不能读取复用 key 后的新轮内容。重复终局不能重复补发；补发不确定或失败须体现在 `last_terminal_delivery` 与 `terminal_delivery_state`，不能宣称已送达。
 - legacy completion 与 native `on_session_end` 共用明确结果字段解释；`completed=false` 和已知迭代/预算退出不得显示成功。未知退出码、非布尔字段和正文内容不作为失败推断依据。
 - 卡片已完成时不能让 Hermes 原生 resend 泄漏成灰色消息。
-- 初始 create/reply 只能在 Feishu API 边界用稳定 `delivery_uuid` 重试，最多 3 次；不重试 `/events`，也不把这套策略套到 PATCH。
+- 普通卡片初始 create/reply 只能在 Feishu API 边界用稳定 `delivery_uuid` 重试，最多 3 次；这不是通用 `/events` 重放或 PATCH 策略。terminal 事件另有保留原事件身份、包含锁等待的 75 秒传输预算；HTTP 4xx 不重试。`interaction.requested` 仍只 POST 一次。见[卡片连接恢复](card-restart-recovery.md)。
 - `feishu_send_retries`、`feishu_send_unknown_outcomes`、`notice_native_fallbacks`、`notice_uncertain_warnings`、`notice_update_failures`、`last_send_error` 与 `last_update_error` 必须保持脱敏；更新失败只可附加白名单校验后的 `status_code` / `api_code`，不得记录 UUID、响应正文、URL 或原始标识符。
 - 无凭据的 Noop 模式必须在 `/health` 中标记 `degraded` / `noop_mode`，发送计入 `feishu_noop_attempts` 和 failure；不得生成假 message id 或计入 success。
 - 首轮加载和运行中工具动画必须复用 session 的 `FlushController` 更新同一卡，并保持有界；正文/工具终态到达、更新失败、session reset 或应用清理时必须停止，不能与 terminal drain 竞争或制造独立消息。
@@ -80,7 +83,12 @@
 - interaction deadline 由 sidecar 接收时刻与 `timeout_seconds` 计算为绝对截止时间 `expires_at`；action、result poll 与周期清理都在现有 session lock 下先做幂等过期转换。未声明暂停能力的过期状态为 failed；声明 pause_on_timeout 且没有 native runtime admission 的同步 Gateway 审批可转 paused，并撤销旧 token。晚到按钮/form 均不能批准过期操作。恢复按钮要求 Gateway 在最近 15 秒内仍轮询，旋转 token 并重新展示完整范围，只恢复审阅窗口；后续明确选择才解析原 request_id。不得延长 native admission 证明或把重启后旧执行当作仍在等待。
 - card action 是认证的 out-of-band 回调：它生成的内部 `interaction.completed` 可以执行 identity/stale 校验，但不得推进 Hermes `/events` transport 的 `last_sequence`。batch 下一条 `interaction.requested` 必须仍按严格单调序列接受；callback 响应卡要在同一 session lock 内快照，不能混入随后到达的下一题。
 - cleanup 只把尚未到期的 pending interaction 视为活跃；周期循环先转换/刷新过期 interaction，再执行普通 retention cleanup，避免永久保留或删掉仍显示可点击按钮的旧卡。
+- 展示检查点最多保存一个有界、脱敏、无 token 的实际辅助回执；重启验证原 profile/bot/client 后按原方言更新，不恢复执行或授权。只有完整回执 PATCH 明确成功才精简 owner 重复范围；终态已补发或送达不确定时禁止回填旧 owner。
 - 重启临时文本的撤回遵循 [通知生命周期](notice-lifecycle.md)：精确 profile/bot/chat/thread、发送前登记代次快照、成功投递后调度、DELETE 成功后释放记录。不能用空 thread 通配其他话题、话题活动清 home、或静默替换失败的待撤回项。新增发卡入口必须传入当前 profile，更新入口通过真实消息 owner 取身份。
+
+### `hermes_feishu_card/install/native_hooks.py` 临时源码快照
+
+只读快照在能力探测结束或构建异常后必须回收。删除前只通过绑定的目录描述符恢复本目录写权限，不改文件权限、不沿符号链接进入外部目录；身份变化时保留未知路径并报告清理未完成。正常关闭、异常、重复关闭、目录重绑定、符号链接和硬链接保护见 `tests/unit/test_native_snapshot_cleanup.py`。与 `tests/unit/test_native_hook_capabilities.py`、安装检测和 CLI 安装一起验证。收尾应同时检查任务目录与实际系统临时目录，不能只看 `TMPDIR`。
 
 ### `hermes_feishu_card/install/patcher.py`
 
@@ -276,3 +284,29 @@ Use the outbound `_delivery_adapter_for` resolver when present; None/errors are 
 ## V4.6.12 卡片宽度
 
 `card.width_mode` 的全局/profile/bot 合并必须保留显式 default 重置。JSON 2.0 的普通卡、预算兜底、修复和维护发布复用同一配置；JSON 1.0 不注入该字段。长思考预算搜索的每个 probe 必须保留 width_mode，legacy owner 继续保留原 JSON 1.0 方言与审批正文。维护子进程按原 profile/bot 重新加载配置；客户端最终控制可见尺寸。
+
+
+## 控制凭据文件（V4.6.13）
+
+受管启动只把 `--token-file` 路径传给 runner，token 存在私有 state 目录的 `sidecar-control.token`（POSIX 0600）。文件需保留供 systemd 自动重启；不可安全读写时必须失败，不回退 argv。升级后通过原服务管理入口重启 sidecar；不要手工删除仍被服务使用的文件。同用户访问与 Windows ACL 边界见 [发布说明](../release-notes-v4.6.13.md)。
+
+
+## Task presentation and preview (V4.7.0)
+
+`presentation.py` only derives display state; `render_options.py` is the shared runtime/preview boundary. `preview.py` must stay offline and export allowlisted configuration plus synthetic examples. The task preset uses the existing animation/flush lifecycle for at most one extra silence PATCH; pending input, terminal state, owner changes and cleanup must stop it. Run `python tools/preflight.py --suite focused --module appearance --module quota --module runtime` for this boundary, then full regression for runtime changes. See [task cards](../task-cards.md).
+
+
+## V4.7.2 update, identity and SDK boundaries
+
+Persistent sidecar ownership makes card-driven `/update` unavailable before confirmation and is rechecked before Gateway stop. Use terminal maintenance through the existing service owner. If sidecar stop fails before hook mutation, only an unchanged HEAD and verified installed hook permit requesting Gateway restart; this is not a health-success claim.
+
+Orphaned integrity fences can be explicitly rebound with `integrity acknowledge-review --rebind-target OLD_TARGET_SHA256 --yes` and explicit config/Hermes/state paths. The exact old identity and CAS snapshot are required; the current installed plan and stopped sidecar are checked twice. This is operator-authorized target rebinding, not proof that only APFS device numbering changed. Existing automatic/same-target behavior stays strict and known restart evidence is retained.
+
+`feishu_ws_compat.py` repairs only the hash-verified lark-oapi 1.6.8 CARD-drop method body, on the live client's WS loop. It keeps SDK fragmentation and response encoding, changes no SDK files or global class, and leaves unknown/new implementations untouched. Test actual protobuf frames, split payloads, error ACKs, reconnect and native EVENT dispatch. HFC replaces the adapter callback: a log added only to the original Hermes callback cannot prove that the platform sent nothing.
+
+
+## 心跳缺失时的完整性复查
+
+完整性监视仍每轮等待 15 秒。只有完整检测得到 `installed` 且 readiness 仅为心跳等待、缺失或过期时，才延后下一次完整源码检测至本轮结束后 300 秒；期间仍检查最新 readiness，不将缺心跳改成 ready。源码变化最多延迟到下一次完整检查（另加检测时间）；离开这三种心跳状态或重启 sidecar 会清除该观察结果。检查失败及可执行修复计划不缓存，任何修复仍使用本轮新证据和原执行器校验。
+
+`/health` 和状态查询读取最后一次已完成检查的原子快照，不等待后台检测/修复锁。快照中的诊断和计数可能落后于正在运行的检查，不能作为新的安装证明或修复授权。单次源码扫描的 CPU 成本未改变；此处减少重复扫描并解除健康接口的锁等待。

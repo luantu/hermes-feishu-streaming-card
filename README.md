@@ -15,6 +15,8 @@
 
 [快速安装](#快速安装) · [配置方法](#配置方法) · [近期更新](#近期更新) · [使用手册](docs/user-guide.md) · [贡献者](#贡献者)
 
+**发行版本：[v4.7.3](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v4.7.3)。** 减少缺心跳时的重复源码扫描，解除健康接口锁等待，补充完整性恢复说明。见[发行说明](docs/release-notes-v4.7.3.md)。
+
 ## 为什么使用 HFC
 
 | 你关心的事 | 卡片里的体验 |
@@ -78,13 +80,15 @@ python3 -m hermes_feishu_card.cli doctor --config ~/.hermes/config.yaml --hermes
 - **Docker：** 在已有 Hermes 容器中，使用仓库内的安装脚本：
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.6.12
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v4.7.3
 bash install-docker.sh
 ```
 
 默认 `HERMES_DIR=/opt/hermes`、`HFC_CONFIG=/opt/data/config.yaml`、`HFC_ENV_FILE=/opt/data/.env`。详见[容器安装](README-install.md)与 [Compose 示例](docker-compose.example.yml)；示例不是官方镜像。
 
 ## 配置方法
+
+卡片上哪些区域能改、有什么限制，见[卡片配置地图](docs/user-guide.md#卡片上能改什么)。先选阅读预设，不要整段复制示例；同层显式字段会覆盖预设。
 
 `setup` 会准备配置。需要手动调整时，参考 [config.yaml.example](config.yaml.example)，编辑安装时选中的 `--config` 文件；不要直接覆盖已有 Hermes 配置。
 
@@ -149,6 +153,9 @@ card:
 | 缺省 / `classic` | 保持现有展示方式，过程面板折叠 |
 | `focused` | 重点看答案；思考放在面板，正常完成后精简成功工具行 |
 | `detailed` | 展开思考与工具过程，便于追踪任务 |
+| `task`（4.7.0） | 状态和动作集中展示，正文优先，过程折叠，统计简洁 |
+
+4.7.0 新增可选 `task` 布局与九种状态的离线预览。启用方式、配置来源和回退见[任务卡片](docs/task-cards.md)。订阅周额度仅在实际使用 `openai-codex` 的 GPT 回合显示，其他模型或来源不明时隐藏。
 
 同层显式字段优先于预设。若从完整示例复制了旧显示开关，预设可能被覆盖；用 `hermes-feishu-card card-config --config <配置路径>` 检查有效值，重启 sidecar 后生效。更多选项见[阅读预设](docs/wiki/reading-presets.md)。
 
@@ -196,20 +203,29 @@ HFC 采用 **sidecar-only** 架构：Hermes 运行任务，安装器管理必要
 
 | 版本 | 重点 |
 |---|---|
+| [v4.7.3](docs/release-notes-v4.7.3.md) | 缺心跳扫描降频、健康接口响应与恢复说明 |
+| [v4.7.2](docs/release-notes-v4.7.2.md) | 更新停机保护、SDK 按钮回调、完整性恢复与配置地图 |
+| [v4.7.1](docs/release-notes-v4.7.1.md) | 命令确认回调修复与结果卡刷新 |
+| [v4.7.0](docs/release-notes-v4.7.0.md) | 任务布局、离线预览、额度归属与交互状态修复 |
+| [v4.6.13](docs/release-notes-v4.6.13.md) | 控制凭据移出命令行与最新 Hermes 源码验证 |
 | [v4.6.12](docs/release-notes-v4.6.12.md) | 可选卡片宽度与 Hermes 回复计时契约适配 |
 | [v4.6.11](docs/release-notes-v4.6.11.md) | 可选思考尾部窗口、后台任务观测信息与 CodeQL 更新 |
 | [v4.6.10](docs/release-notes-v4.6.10.md) | Hermes 0.21.5 适配、PM 运行环境安装与跟进卡片隔离 |
 | [v4.6.9](docs/release-notes-v4.6.9.md) | 群聊并发卡片隔离、紧凑单选按钮与新手 README |
 | [v4.6.8](docs/release-notes-v4.6.8.md) | macOS 安装与恢复提示，明确自主管理登录启动和未知进程归属 |
-| [v4.6.7](docs/release-notes-v4.6.7.md) | 保留可编辑心跳，紧凑审批按钮与完整正文 |
-| [v4.6.6](docs/release-notes-v4.6.6.md) | 审批回执确认后精简重复、运行工具可见与原生通知自动收尾 |
-| [v4.6.5](docs/release-notes-v4.6.5.md) | 重启通知持久归属、工具调用去重、可选时间线显示与模型报错去重 |
-| [v4.6.4](docs/release-notes-v4.6.4.md) | 首次按钮接线、顺序续答、可选阅读预设与作用域通知清理 |
-| [v4.6.3](docs/release-notes-v4.6.3.md) | 实时思考正文开关、工具耗时与中断用量 |
 
 更早版本见[历史更新](docs/release-history.md)；完整记录见 [CHANGELOG](CHANGELOG.md) 与 [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases)。
 
 ## 贡献者
+
+- V4.7.3: [lanx214](https://github.com/lanx214)（#378）提供性能故障证据；[ywarmy](https://github.com/ywarmy)（#372）提供现场复测和恢复文档建议。
+- V4.7.2: [Nevoker](https://github.com/Nevoker) ([PR #373](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/373)); [DaveWang888](https://github.com/DaveWang888) (#375), [ffdxdynotable](https://github.com/ffdxdynotable) (#374), [ywarmy](https://github.com/ywarmy) (#372), [jackwude](https://github.com/jackwude) (#370). 分别贡献 Python 3.14 修复、故障证据和配置引导建议；保留原提交作者。
+
+- V4.7.1：[baileyh8](https://github.com/baileyh8) 根据用户提供的日志修复命令确认回调，见 [PR #371](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/371)；报告者尚未提供可公开署名。
+
+- V4.7.0：延续 [jackwude](https://github.com/jackwude) 在 [#328](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/328) 和 [leavrcn](https://github.com/leavrcn) 在 [#333](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/333) 提出的阅读体验需求。本轮提交作者为 [baileyh8](https://github.com/baileyh8)；保留全部历史代码作者、方案和现场证据记录。
+
+- V4.6.13: 感谢 [ffdxdynotable](https://github.com/ffdxdynotable) 在 [#367](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/367) 报告控制 token 的命令行暴露，提供 Termux 现场证据与私有文件方案。
 
 - V4.6.12: 感谢 [cbatbj](https://github.com/cbatbj) / chenbing1 通过 [PR #351](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/351) 贡献分层卡片宽度配置与回归测试，保留原始提交和全部历史贡献。
 

@@ -2,9 +2,9 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-Current release version: `4.6.12`; implementation scope: optional scoped card width and current Hermes source compatibility. Final acceptance is recorded in the GitHub Release.
+Current release version: `4.7.3`. Bounds repeated scans during missing heartbeats, unblocks health snapshots and clarifies integrity recovery.
 
-Full tests, exact-merge CI, assets/checksums and public-tag installation remain release gates. See [release notes](release-notes-v4.6.12.en.md); platform API smoke, real Gateway execution and mobile visual acceptance are recorded separately.
+Full tests, exact-merge CI, assets/checksums and public-tag installation remain release gates. See [release notes](release-notes-v4.7.3.en.md) and the [acceptance record](reviews/2026-10-03-task-cards-acceptance.md). Platform API smoke, real Gateway execution, desktop visuals and Android/iOS acceptance are separate evidence; missing coverage is not a pass.
 
 
 V3.9.0 was released on 2026-07-11, and V3.9.1 was released on 2026-07-11. The V4.0.13 all-command lifecycle remains intact; V4.2.0 narrows only a private-chat bare `/update` into the stricter dedicated maintenance card.

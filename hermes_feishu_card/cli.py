@@ -258,6 +258,7 @@ def _build_parser() -> argparse.ArgumentParser:
     card_config.add_argument("--profile-id")
     card_config.add_argument("--bot-id")
     card_config.add_argument("--json", action="store_true", dest="json_output")
+    card_config.add_argument("--preview-dir", help="write offline sample cards and an HTML comparison to a new directory")
 
     setup = subparsers.add_parser(
         "setup",
@@ -399,6 +400,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "explicit sidecar state directory; this is never inferred from "
             "--env-file"
         ),
+    )
+    integrity_acknowledge.add_argument(
+        "--rebind-target",
+        metavar="OLD_TARGET_SHA256",
+        help="explicitly bind an orphaned fence to this verified installation; requires the exact old target_identity",
     )
     integrity_acknowledge.add_argument(
         "--yes",
@@ -922,12 +928,25 @@ def _run_card_config(args: argparse.Namespace) -> int:
         # Selection errors contain fixed messages, never YAML values.
         print(str(exc), file=sys.stderr)
         return 2
+    if args.preview_dir:
+        from .preview import write_preview
+        try:
+            write_preview(Path(args.preview_dir).expanduser(), report)
+        except FileExistsError:
+            print("Preview files already exist; choose a new preview directory.", file=sys.stderr)
+            return 2
+        except (OSError, ValueError):
+            print("Unable to create a safe offline preview.", file=sys.stderr)
+            return 2
+        report["preview"] = {"files": ["index.html", "cards.json"], "mode": "offline_samples", "sends_messages": False}
     if args.json_output:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for key, value in report["values"].items():
             print(f"{key}: {json.dumps(value, ensure_ascii=False)}  [{report['sources'][key]}]")
         print(report["note"])
+        if args.preview_dir:
+            print("Preview created: index.html and cards.json. Sample data only; no messages sent.")
     return 0
 
 
@@ -3179,6 +3198,13 @@ def _run_integrity_acknowledge_review(args: argparse.Namespace) -> int:
             and review.binding.target_identity == first_binding.target_identity
         ):
             acknowledgement_options["allow_same_target_plan_transition"] = True
+        rebind_target = getattr(args, "rebind_target", None)
+        if rebind_target is not None:
+            if (args.yes is not True or review.binding is None
+                    or rebind_target != review.binding.target_identity
+                    or not review.manual_review_required):
+                raise ValueError("explicit old target does not match the pending fence")
+            acknowledgement_options["rebind_from_target_identity"] = rebind_target
         changed = acknowledge_runtime_integrity_review(
             target_state,
             **acknowledgement_options,

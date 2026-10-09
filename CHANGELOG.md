@@ -1,11 +1,46 @@
 # Changelog
 
+## v4.7.3 — 2026-10-08
+
+Bound repeated installed-state scans during missing heartbeats and publish health snapshots without waiting for source inspection (#378, PR #379). Clarify orphaned-fence recovery and its intermediate Gateway restart state (#372). Stabilize the callback-expiry regression using an explicit test clock. See [release notes](docs/release-notes-v4.7.3.md).
+
+## v4.7.2 — 2026-10-07
+
+Persistent-service update guards and pre-mutation restart recovery (#375); verified SDK CARD-frame dispatch (#374); explicit orphaned integrity target rebinding (#372); card configuration map (#370); Python 3.14 slice fingerprint support (PR #373, Nevoker). See [release notes](docs/release-notes-v4.7.2.md).
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.2.0.html).
 
-## [Unreleased]
+## [4.7.1] - 2026-10-05
+
+- Repair slash-confirm callback installation after method rebinding or subclass overrides; inspect both actual callback methods and retain native fallback across earlier HFC wrapper identities.
+- Update the original confirmation card when a retained dispatcher resolves `/new` or another slash confirmation through the asynchronous fallback. Reuse the saved IM message ID and exactly-once confirmation path.
+- Verify the callback path against Hermes 0.19.0, official release 0.21.5 and main snapshot `af90026`; keep reporter-environment verification distinct from isolated SDK/source checks.
+- See [Chinese notes](docs/release-notes-v4.7.1.md) and [English notes](docs/release-notes-v4.7.1.en.md). Earlier contributor credits remain intact.
+
+## [4.7.0] - 2026-10-04
+
+Release scope approved on 2026-10-04: verified desktop flows and visuals. Android/iOS devices and real cancellation lasting more than five seconds remain unverified; delayed cancellation has automated coverage.
+
+- Reclaim read-only native capability source snapshots on success and construction failure; keep cleanup bound to owned directories without following symlinks or changing hardlinked file permissions.
+- Add opt-in `reading_preset: task`: one clear state/action, answer-first reading, consistent type roles, folded process details and compact metrics. Preserve existing presets and explicit configuration.
+- Add offline HTML/Card JSON previews for nine scenarios and explain appearance values with their configuration sources and next-load semantics.
+- Show optional subscription quota only on completed GPT turns attributed to `openai-codex`; omit unrelated, unknown and stale model routes.
+- Preserve complete parameters, permission scope and original interaction dialects while reducing repeated headings, waiting labels and approval details.
+- Close the original card from Hermes' explicit interrupted result or verified controlled stop cancellation, without blocking queued messages; retain bounded token-free auxiliary receipts so expiry and restart remove stale controls without restoring execution or consent.
+- Suppress duplicate Working heartbeats only after authenticated proof that the exact turn has an accepted task card; preserve classic and unknown-path behavior.
+- Preserve older verified Hermes inline-reply cancellation layouts. Mark expired task approvals as historical requests, omit redundant short single-choice lists only when full button labels preserve every option, and avoid repeating a source-identified generic interruption notice.
+- Observe cancellation that completes after Hermes' initial stop wait, within the existing delivery budget and owner checks. Support the verified older heartbeat executor alias while retaining the current split-source contract.
+- Improve task-answer code readability with native plain-text fences and separate language labels. Preserve code bodies and canonical answers; keep uncertain structures and unsafe long-line boundaries unchanged, including legacy owner and CardKit display paths.
+- Strengthen real-client visual release gates and pin Hermes main `c8301ea6c9b797184df16a9c5dd462400b264ff4` for source compatibility. See [Chinese notes](docs/release-notes-v4.7.0.md), [English notes](docs/release-notes-v4.7.0.en.md) and the [acceptance record](docs/reviews/2026-10-03-task-cards-acceptance.md).
+
+## [4.6.13] - 2026-10-02
+
+- Move managed sidecar control tokens from argv to private files; retain ownership handshake, authenticated stop and restart behavior, with no insecure fallback (#367, ffdxdynotable).
+- Stabilize live-spinner panel comparison (PR #366) and verify the 2026-10-02 Hermes main source snapshot.
+- See [release notes](docs/release-notes-v4.6.13.md) for upgrade and local-trust boundaries.
 
 ## [4.6.12] - 2026-09-29
 

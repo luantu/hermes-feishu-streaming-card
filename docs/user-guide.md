@@ -22,6 +22,31 @@ Hermes 飞书流式卡片插件把 Hermes Agent Gateway 的飞书/Lark 回复变
 
 V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文展示 -> 下一段到来后归档进 timeline”的节奏收束，思考与工具在折叠区使用不同字号和灰度层级；卡片底部不再重复展示同一份工具调用摘要。
 
+## 卡片上能改什么
+
+编辑安装时实际选用的 `--config` 文件里的 `card:`。先选 `reading_preset`，再加确实需要覆盖的字段；不要整段复制示例。同层显式字段覆盖预设，配置按全局 → profile → bot 合并。
+
+| 卡片区域 / 需求 | 可以调整 | 限制 |
+| --- | --- | --- |
+| 整体阅读方式 | `reading_preset`：`classic`、`focused`、`detailed`、`task` | 未设置保持原默认；task 是已发布的可选布局 |
+| 顶栏 | `title`，支持 profile / bot 覆盖 | 状态文案、颜色和动作副标题由运行状态决定，不能自由设置 |
+| 答案正文 | `text_sizes.body` | 内容来自 Hermes，不通过外观配置改写答案 |
+| 回答前的正文思考 | `stream_thinking_to_body`；`thinking_body_tail_chars` 保留尾部 | 尾窗只作用于运行中且尚无答案的正文思考；`0` 不额外截取 |
+| 正文工具行 | `hide_completed_tool_activity` | 隐藏结束轮次的正文工具行，不删除时间线或次数；task 另保留失败/中断说明 |
+| 思考与工具面板 | `show_reasoning`、`reasoning_format`、`timeline_expanded`、`timeline_order` | 关闭 show_reasoning 会隐藏整个思考/工具区域；面板标题不能自定义 |
+| 过程信息密度 | `max_reasoning_chars`、`max_timeline_items`、`timeline_tools_per_reasoning` | 受整卡容量约束，不是无限历史；不裁剪最终答案 |
+| 审批与澄清 | `interaction_mode`、`mentions_in_cards`、`interaction_mentions` | 问题和权限由 Hermes 决定；显示设置不会恢复过期授权 |
+| 页脚统计 | `footer_fields` 决定字段和顺序；`text_sizes.footer` | 数据必须有真实来源；订阅额度只在可归属的 GPT / openai-codex 轮次显示 |
+| 宽度与字号 | `width_mode`、`text_sizes`（支持 pc / mobile） | 不设置像素高度，实际折行由客户端决定 |
+| 超长表格 | `table_overflow_mode` | `compact` 保留为字段列表；`truncate` 沿用表格截断策略 |
+| 完成提醒 | `completion_notify.enabled`、`placement`、`mention` | 默认关闭；编辑卡片里的 @ 不保证推送通知 |
+| 附件摘要 | 随附件出现 | 没有独立隐藏开关 |
+| 整个聊天不用卡片 | `bindings.native_chats` | 属于投递选择，回到 Hermes 原生回复 |
+
+字段取值与约束以 [配置示例](../config.yaml.example) 和 `card-config` 为准。`display.show_reasoning`、`display.runtime_footer` 是 Hermes 配置，不能代替 HFC 外观设置。`server`、`service`、`integrity` 管理连接和运行，不要为了调外观修改它们。
+
+改好后运行 `hermes-feishu-card card-config --config <实际配置路径>` 检查值与来源，通过原服务管理方式重启 sidecar，再发新消息验证。`card-config` 不证明运行中的进程已加载；历史终态卡片不会自动重画。离线预览见[任务卡片](task-cards.md)。
+
 ## 项目亮点
 
 - **流式卡片体验**：`thinking.delta`、`answer.delta`、`tool.updated`、`message.completed` 聚合到同一张飞书卡片，减少刷屏和上下文断裂。
@@ -579,6 +604,8 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 
 ## Docker 容器内安装 / 更新
 
+以下示例固定 `v4.7.3`；默认 `latest` 解析已发布稳定版。本版的桌面验收范围及未验证项见[发行说明](release-notes-v4.7.1.md)。
+
 如果 Hermes 运行在已有 Docker 容器里，优先使用 `install-docker.sh`。它默认读取：
 
 | 变量 | 默认值 | 说明 |
@@ -586,7 +613,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v4.6.12`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.7.3`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -594,7 +621,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.6.12
+export HFC_VERSION=v4.7.3
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -777,7 +804,7 @@ card:
   footer_fields: [duration, model, input_tokens, output_tokens, context]
 ```
 
-多 Profile 模式下，`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会覆盖 profile 内的 `feishu` 配置。`footer_fields` 支持 `duration`、`model`、`input_tokens`、`output_tokens`、`context`、`subscription_usage`。其中 `subscription_usage` 默认关闭；显式加入后，完成态会通过 Hermes runtime 的 `fetch_account_usage("openai-codex")` 显示 `5h 26% · weekly 89%` 风格的剩余额度。旧 Hermes、未登录、网络错误或超时会静默跳过。
+多 Profile 模式下，`FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会覆盖 profile 内的 `feishu` 配置。`footer_fields` 支持 `duration`、`model`、`input_tokens`、`output_tokens`、`context`、`subscription_usage`。其中 `subscription_usage` 默认关闭；显式加入后，仅在本轮 GPT 模型明确归属 `openai-codex` 时，通过 Hermes runtime 的 `fetch_account_usage("openai-codex")` 显示 `5h 26% · weekly 89%` 风格的剩余额度。归属来自本轮 `provider` 或 `openai-codex/gpt-…` 模型标识；只知道裸 GPT 名称不足以区分订阅与 API key。非 GPT、其他 provider、未知模型/归属都不查询、不显示这份额度，切换模型不会沿用上一轮额度。旧 Hermes 未报告归属、未登录、网络错误或超时会静默跳过。
 
 ### 卡片宽度
 
@@ -1080,3 +1107,13 @@ macOS 的持久服务提示明确 Linux systemd 限制；缺少可验证 pidfile
 - 希望正文持续显示最新思考但不刷满整卡时，设置 `card.thinking_body_tail_chars: 2400`。仅在 `stream_thinking_to_body: true`、未有答案且本轮未结束时生效。默认 `0` 保留旧行为；整数范围为 0–1000000。窗口按字符保留尾部，并在整卡预算不足时尝试进一步缩小；思考时间线、工具区和完整答案不裁剪。其他区域仍超限时沿用原有原生投递兜底。修改后重启 sidecar。
 - `terminal` 返回后台进程标识后，或 `process` / `process_manage` 返回明确命令与输出后，同一轮后续 `wait` 会展示已观测命令、最近回报及状态。进程关联最多保留 32 项，限制在当前卡片会话内存中，重启不会恢复该关联。
 - “最近输出”是工具上次回报，不是实时日志订阅；进程没有新事件时不推测百分比。`timeout` 显示为“请求等待上限（非预计完成时间）”，Hermes 还可能按自身配置缩短实际等待。没有观测到命令时明确显示未知，不跨轮或跨 profile 查询其他进程。
+
+
+## 控制凭据文件（V4.6.13）
+
+受管启动只把 `--token-file` 路径传给 runner，token 存在私有 state 目录的 `sidecar-control.token`（POSIX 0600）。文件需保留供 systemd 自动重启；不可安全读写时必须失败，不回退 argv。升级后通过原服务管理入口重启 sidecar；不要手工删除仍被服务使用的文件。同用户访问与 Windows ACL 边界见 [发布说明](release-notes-v4.6.13.md)。
+
+
+## 任务布局与离线预览（开发分支）
+
+新增可选 `reading_preset: task`，以及 `card-config --preview-dir`。状态、字号、完整审批范围、配置来源与回退方式见[任务卡片说明](task-cards.md)。当前尚未发布；HTML 使用示例数据模拟排版，不代表真实客户端验收。
