@@ -9,6 +9,14 @@
 
 ## 〇-H、⚠️ 关键运维知识：gateway 从 PM 环境的 site-packages 加载 HFC（2026-10-10）
 
+**最终验证（2026-10-10 16:1x）：default 与 coach 的通知均已恢复无头极简卡（用户确认）。
+生效顺序 = ①仓库修复 → ②PM 环境 `uv pip install --reinstall` 同步 → ③重启 sidecar + gateway。**
+（coach 的残留失败——230002 / 可能的 ReplyThreadAnchorMissing——在最后一轮 sidecar 重启后消失；
+两个 `not_sent` 分支与 FeishuAPIError 分支现均有含 bot/chat hash 与 error_kind 的诊断日志。）
+
+**sidecar 日志真实路径是本机 `~/Library/Logs/Hermes/feishu-card.stderr.log`**（launchd
+StandardErrorPath 重定向），不是外置卷 `~/.hermes/logs/`（那是迁移前的旧文件，早停更）。
+
 **Externally-supervised gateway（`ai.hermes.external.gateway`，2026-10-09 Codex 会话部署）
 不再从仓库加载 `hermes_feishu_card`，而是从 Hermes PM 环境的 site-packages 副本加载：**
 
