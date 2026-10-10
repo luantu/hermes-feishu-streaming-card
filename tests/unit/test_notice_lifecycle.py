@@ -132,12 +132,14 @@ async def test_ordinary_adapter_answer_equal_to_template_is_not_disposable(runti
         runtime._HFC_NATIVE_HANDOFF_CONTEXT.reset(token)
     assert result.success is True
     # ONLINE text is now a classified gateway notice (notice i18n fix): the
-    # send is routed through the notice pipeline, so with an unreachable
-    # sidecar the documented uncertain-fallback line goes out instead. What
-    # this test still guards is that the content is delivered exactly once
-    # and never silently dropped.
+    # send is routed through the notice pipeline — one sidecar event and one
+    # delivered line (card or the documented uncertain fallback), never a
+    # silent drop.
     assert len(sent) == 1
-    assert runtime_route == []
+    assert len(runtime_route) == 1
+    _url, payload = runtime_route[0]
+    assert payload.get("event") == "system.notice"
+    assert payload.get("data", {}).get("notice_kind") == "gateway-online"
 
 
 def test_old_generation_cannot_discard_a_reregistered_message():
