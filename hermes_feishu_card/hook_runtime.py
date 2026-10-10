@@ -6860,6 +6860,25 @@ async def _hfc_send_with_native_command_result_card(
         # still takes: convert a registered producer's notice to the card here
         # and fall back to the original text send when the card cannot go out
         # (card mode off, classifier miss, sidecar down).
+        #
+        # The restart-COMPLETION notice keeps its plain-text contract (the
+        # user asked for that line to replace the old card): send the exact
+        # registered content, never the ONLINE rewrite the anchorless path
+        # applies.
+        classified = None
+        try:
+            classified = _hfc_classify_system_notice(notice['content'])
+        except Exception:
+            classified = None
+        if (classified is not None
+                and _hfc_notice_plain_text(classified) is not None):
+            result = await original(self, chat_id, notice['content'], reply_to=reply_to, metadata=metadata)
+            if getattr(result, "success", False) is True:
+                await schedule_message_recall_async(
+                    str(getattr(result, "message_id", "") or ""),
+                    route=notice['route'], notice_family=notice['family'],
+                )
+            return result
         try:
             card_result = await _hfc_send_system_notice_card(
                 self,

@@ -3,7 +3,36 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.7.3 合并后（2026-10-09，merge commit c833fcd）
+> 最后更新：notice i18n/直连 send 修复（2026-10-10，commit 7c601bd）
+
+---
+
+## 〇-G、网关通知卡片修复：Hermes zh i18n + 直连 send（2026-10-10）
+
+**现象**：重启/上线等通知不再转 notice 无头极简卡，以原生大消息发出。
+
+**根因（两层）**：
+1. **i18n**：Hermes v0.21.6 把网关通知本地化（"⚠️ Hermes 正在重启——…"、
+   "♻️ 网关已上线——Hermes 已恢复就绪。"），HFC 分类表只匹配英文关键字 → 失配。
+2. **直连 send**：v0.21.6 的 `_send_shutdown_notice`/`_send_restart_notification`/
+   `_send_home_channel_message` 直接走 `adapter.send`，**不再经过**
+   `_deliver_platform_notice`（HFC 唯一的转卡拦截点）→ sidecar 全程未捕获。
+
+**修复**（`hook_runtime.py` + `notice_producers.py`）：
+- 分类表加中文变体（restart/shutdown/online；`hermes is restarting/shutting down`
+  英文正式文案也补上）；`gateway-shutdown`/`gateway-online` 路由走独立极简卡
+  （与 heartbeat/background-task 同列）。
+- 重启完成（restarted）保持纯文本契约（用户此前要求），plain_text 按通知自身
+  语言输出（中文通知不再被替换成英文常量）。
+- `notice_producers` 双语常量集合（ONLINE_TEXTS / SHUTDOWN_NOTICE_TEXTS /
+  RESTARTED_TEXTS），recall 身份识别在中英两种文案下都成立。
+- **send 包装层转卡**（`_hfc_send_with_native_command_result_card`）：识别到的
+  已登记 producer 通知改为经 `_hfc_send_system_notice_card(force_independent=True)`
+  发卡；卡片发不出（无卡模式/分类未命中/sidecar 不可用）时回退原生文本，
+  保证通知不丢；recall 登记在两条路径都保留。
+
+**回归边界**：notice 测试集合改动前后一致（5 个既有失败无新增）；
+新增 3 个单测覆盖中文分类、restarted 双语言 plain_text、独立 scope 路由。
 
 ---
 
