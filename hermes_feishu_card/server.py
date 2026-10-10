@@ -8385,6 +8385,12 @@ async def _send_card_for_app(
     metrics: SidecarMetrics = app[METRICS_KEY]
     metrics.feishu_send_attempts += 1
     if reply_in_thread and not reply_to_message_id:
+        logging.warning(
+            "feishu card send rejected: ReplyThreadAnchorMissing bot=%s chat=%s kind=%s",
+            _diagnostic_id_hash(bot_id or "default"),
+            _diagnostic_id_hash(chat_id),
+            delivery_kind,
+        )
         result = CardDeliveryResult(
             message_id=None,
             outcome="not_sent",
@@ -8394,6 +8400,11 @@ async def _send_card_for_app(
         _record_send_error(app, result, bot_id=bot_id)
         return result
     if app[NOOP_MODE_KEY]:
+        logging.warning(
+            "feishu card send rejected: NoopDeliveryMode bot=%s chat=%s",
+            _diagnostic_id_hash(bot_id or "default"),
+            _diagnostic_id_hash(chat_id),
+        )
         result = CardDeliveryResult(
             message_id=None,
             outcome="not_sent",
