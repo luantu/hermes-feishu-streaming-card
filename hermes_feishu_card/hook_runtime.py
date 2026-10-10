@@ -6891,11 +6891,21 @@ async def _hfc_send_with_native_command_result_card(
         except Exception:
             card_result = None
         if card_result is not None and getattr(card_result, "success", False) is True:
+            _hfc_info(
+                "producer notice card delivered "
+                f"family={notice.get('family') or ''!r} "
+                f"message_id={str(getattr(card_result, 'message_id', '') or '')[:20]!r}"
+            )
             await schedule_message_recall_async(
                 str(getattr(card_result, "message_id", "") or ""),
                 route=notice['route'], notice_family=notice['family'],
             )
             return card_result
+        _hfc_warn(
+            "producer notice card failed; falling back to native text "
+            f"family={notice.get('family') or ''!r} "
+            f"error={str(getattr(card_result, 'error', '') or '')[:60]!r}"
+        )
         result = await original(self, chat_id, notice['content'], reply_to=reply_to, metadata=metadata)
         if getattr(result, "success", False) is True:
             await schedule_message_recall_async(
