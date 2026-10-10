@@ -151,10 +151,11 @@ def _wrap(original, name):
             elif name == "_send_home_channel_message":
                 transport = bound["transport"]
                 home = bound["home"]
-                # Relay transports send through transport.send, which no adapter
-                # wrapper can see — the card conversion below is the only hop
-                # that covers them, so relay is no longer skipped.
-                if _platform(bound["platform"]) == "feishu" and bound["message"] in ONLINE_TEXTS:
+                # Relay transports keep the upstream "no recall authority"
+                # boundary (untrusted routing); direct transports convert the
+                # online notice to a card below.
+                if (_platform(bound["platform"]) == "feishu" and bound["message"] in ONLINE_TEXTS
+                        and getattr(transport, "is_relay", True) is False):
                     context = _context(runner, transport.adapter, str(home.chat_id), str(home.thread_id or ""), bound["message"])
                     if context is not None:
                         context['convert_to_card'] = True
