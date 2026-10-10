@@ -3,7 +3,47 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：notice i18n/直连 send 修复（2026-10-10，commit 7c601bd）
+> 最后更新：notice i18n/直连 send 修复 + PM 环境同步（2026-10-10）
+
+---
+
+## 〇-H、⚠️ 关键运维知识：gateway 从 PM 环境的 site-packages 加载 HFC（2026-10-10）
+
+**Externally-supervised gateway（`ai.hermes.external.gateway`，2026-10-09 Codex 会话部署）
+不再从仓库加载 `hermes_feishu_card`，而是从 Hermes PM 环境的 site-packages 副本加载：**
+
+```
+/Volumes/ExtWorkspace/.hermes/installs/<install-hash>/environments/<env-hash>/venv/lib/python3.14/site-packages/hermes_feishu_card/
+```
+
+该副本由声明插件 `/Volumes/ExtWorkspace/.hermes/plugins/hermes-feishu-card-runtime`
+（pyproject 的 uv path source 指向本仓库）在**安装/重建环境时**构建。
+**仓库更新后副本不会自动同步**——本次通知修复因此长时间"不生效"（gateway 一直跑
+10-09 的旧副本）。sidecar（`hermes-agent/venv/bin/python -m hermes_feishu_card.runner`）
+仍从**仓库源码**加载，两个进程会跑不同版本！
+
+**每次修改 hook_runtime/notice_producers 等 gateway 侧代码（或合并上游）后必须同步：**
+
+```bash
+# 找到当前环境（gateway 报错 traceback 里的 site-packages 路径，或最新 mtime）
+PM_ENV=/Volumes/ExtWorkspace/.hermes/installs/2fa32c94405f8f7e/environments/<env-hash>/venv
+uv pip install --python $PM_ENV/bin/python --reinstall --no-deps /Volumes/ExtWorkspace/.hermes/feishu-card
+# 然后重启 gateway
+hermes gateway restart   # 或 launchctl kickstart -k gui/$(id -u)/ai.hermes.external.gateway
+```
+
+**验证同步生效**（应出现取证日志）：
+```bash
+grep "command card adapter methods installed" ~/Library/Logs/Hermes/gateway.error.log
+```
+
+**注意**：
+- PM 环境无 pip，用 `uv pip install --python <venv>/bin/python`。
+- Hermes 重建环境时会从声明插件重新解析 path source → 自动拿到最新仓库代码（自愈）。
+- gateway 的启动/关闭通知读 `.restart_pending.json` marker 的 delivered_targets，
+  会**跳过**已通知过的飞书 chat（测试通知时先 `rm -f ~/.hermes/.restart_pending.json`）。
+- 通知的网关状态日志：`producer notice card delivered` / `classified notice card delivered`
+  / `...failed; falling back to native text`（gateway.error.log）。
 
 ---
 
@@ -11,12 +51,14 @@
 
 **现象**：重启/上线等通知不再转 notice 无头极简卡，以原生大消息发出。
 
-**根因（两层）**：
+**根因（三层）**：
 1. **i18n**：Hermes v0.21.6 把网关通知本地化（"⚠️ Hermes 正在重启——…"、
    "♻️ 网关已上线——Hermes 已恢复就绪。"），HFC 分类表只匹配英文关键字 → 失配。
 2. **直连 send**：v0.21.6 的 `_send_shutdown_notice`/`_send_restart_notification`/
    `_send_home_channel_message` 直接走 `adapter.send`，**不再经过**
    `_deliver_platform_notice`（HFC 唯一的转卡拦截点）→ sidecar 全程未捕获。
+3. **PM 副本**（见 〇-H）：上述修复在仓库里就位后，gateway 仍跑 PM 旧副本 →
+   需 `uv pip install --reinstall` 同步 + 重启（**这才是最终生效的一步**）。
 
 **修复**（`hook_runtime.py` + `notice_producers.py`）：
 - 分类表加中文变体（restart/shutdown/online；`hermes is restarting/shutting down`

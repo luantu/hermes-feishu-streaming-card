@@ -8450,6 +8450,14 @@ async def _send_card_for_app(
             )
     except FeishuAPIError as exc:
         outcome = exc.outcome if exc.outcome in {"not_sent", "unknown"} else "unknown"
+        logging.warning(
+            "feishu card send rejected: %s api_code=%s status=%s bot=%s chat=%s",
+            str(exc)[:200],
+            exc.api_code,
+            exc.status_code,
+            _diagnostic_id_hash(bot_id or "default"),
+            _diagnostic_id_hash(chat_id),
+        )
         result = CardDeliveryResult(
             message_id=None,
             outcome=outcome,
