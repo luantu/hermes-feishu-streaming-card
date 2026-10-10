@@ -6852,6 +6852,31 @@ async def _hfc_send_with_native_command_result_card(
     except Exception:
         notice = None
     if notice is not None and callable(original):
+        # Fork (LOCAL_PATCHES 3.5 + notice i18n): Hermes v0.21.6 sends the
+        # gateway status notices straight through adapter.send — its old
+        # _deliver_platform_notice interception no longer sees them, so the
+        # notices went out as native text where they used to become minimal
+        # notice cards. The send wrapper is the one hop every native notice
+        # still takes: convert a registered producer's notice to the card here
+        # and fall back to the original text send when the card cannot go out
+        # (card mode off, classifier miss, sidecar down).
+        try:
+            card_result = await _hfc_send_system_notice_card(
+                self,
+                chat_id=chat_id,
+                content=notice['content'],
+                reply_to=reply_to,
+                metadata=metadata,
+                force_independent=True,
+            )
+        except Exception:
+            card_result = None
+        if card_result is not None and getattr(card_result, "success", False) is True:
+            await schedule_message_recall_async(
+                str(getattr(card_result, "message_id", "") or ""),
+                route=notice['route'], notice_family=notice['family'],
+            )
+            return card_result
         result = await original(self, chat_id, notice['content'], reply_to=reply_to, metadata=metadata)
         if getattr(result, "success", False) is True:
             await schedule_message_recall_async(
