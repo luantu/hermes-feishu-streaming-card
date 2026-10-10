@@ -13678,3 +13678,48 @@ def test_only_the_restart_completion_notice_skips_the_card():
     assert hook_runtime._hfc_notice_plain_text(waiting) is None
     assert hook_runtime._hfc_notice_plain_text(compression) is None
     assert hook_runtime._hfc_notice_plain_text(None) is None
+
+
+def test_gateway_notices_classify_in_both_locales():
+    """Hermes i18n: the Chinese wording of the gateway notices must reach the
+    card path (or the plain-text contract for restart-completion) exactly like
+    the English one — a locale must not silently disable the notice card."""
+    cases = {
+        "gateway-shutdown": [
+            "⚠️ Hermes is restarting — your current task will be interrupted. Send any message after the restart and I'll try to resume where you left off.",
+            "⚠️ Hermes 正在重启——你当前的任务将被中断。重启后发送任意消息，我会尝试从你离开的地方继续。",
+            "⚠️ Hermes is shutting down — your current task will be interrupted. When it is back online, send any message and I'll try to pick up where we left off.",
+            "⚠️ Hermes 正在关闭——你当前的任务将被中断。恢复上线后，发送任意消息，我会尝试从中断处继续。",
+        ],
+        "gateway-online": [
+            "♻️ Gateway online — Hermes is back and ready.",
+            "♻️ 网关已上线——Hermes 已恢复就绪。",
+        ],
+    }
+    for kind, texts in cases.items():
+        for text in texts:
+            notice = hook_runtime._hfc_classify_system_notice(text)
+            assert notice is not None, text
+            assert notice["notice_kind"] == kind, text
+            assert hook_runtime._hfc_notice_plain_text(notice) is None, text
+
+
+def test_restart_completion_stays_plain_text_in_its_own_locale():
+    en = hook_runtime._hfc_classify_system_notice(
+        "♻ Gateway restarted successfully. Your session continues."
+    )
+    zh = hook_runtime._hfc_classify_system_notice(
+        "♻ 网关已成功重启。你的会话继续有效。"
+    )
+    assert hook_runtime._hfc_notice_plain_text(en) == hook_runtime._HFC_GATEWAY_ONLINE_TEXT
+    assert hook_runtime._hfc_notice_plain_text(zh) == "♻️ 网关已上线——Hermes 已恢复就绪。"
+
+
+def test_gateway_status_notices_take_the_independent_scope():
+    """Fork (LOCAL_PATCHES 3.5): restart/shutdown/online notices are standalone
+    messages — with a session anchor present they must still route to their own
+    minimal notice card instead of folding into the running turn's card."""
+    import inspect
+    source = inspect.getsource(hook_runtime._hfc_send_system_notice_card)
+    assert '"gateway-shutdown", "gateway-online"' in source
+    assert 'anchored_scope = "independent"' in source

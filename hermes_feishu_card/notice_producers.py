@@ -16,6 +16,21 @@ RESTART = ("⚠️ Hermes is restarting — your current task will be interrupte
 SHUTDOWN = ("⚠️ Hermes is shutting down — your current task will be interrupted. "
             "When it is back online, send any message and I'll try to pick up where we left off.")
 RESTARTED = "♻ Gateway restarted successfully. Your session continues."
+# Hermes i18n (zh) wording of the same producers (locales/zh.yaml). The
+# identity checks below must accept both locales or a Chinese-locale notice
+# loses its recall authority (and the card path) entirely.
+ONLINE_ZH = "♻️ 网关已上线——Hermes 已恢复就绪。"
+RESTART_ZH = ("⚠️ Hermes 正在重启——你当前的任务将被中断。"
+              "重启后发送任意消息，我会尝试从你离开的地方继续。")
+SHUTDOWN_ZH = ("⚠️ Hermes 正在关闭——你当前的任务将被中断。"
+               "恢复上线后，发送任意消息，我会尝试从中断处继续。")
+RESTARTED_ZH = "♻ 网关已成功重启。你的会话继续有效。"
+ONLINE_TEXTS = frozenset({ONLINE, ONLINE_ZH})
+SHUTDOWN_NOTICE_TEXTS = frozenset({RESTART, RESTART_ZH, SHUTDOWN, SHUTDOWN_ZH})
+RESTARTED_TEXTS = frozenset({
+    RESTARTED, RESTARTED.replace("♻", "♻️"),
+    RESTARTED_ZH, RESTARTED_ZH.replace("♻", "♻️"),
+})
 EXPIRED_APPROVAL = "⌛ That approval had already expired — the command was not run (it timed out or was resolved elsewhere)."
 DRAIN_TEXTS = frozenset(
     text for action in ('restarting', 'shutting down') for text in (
@@ -62,7 +77,7 @@ def notice_for_send(adapter, chat, text, metadata):
     if isinstance(context, dict) and 'producer' in context:
         producer = context['producer']
         if producer == 'restart':
-            allowed = text in {RESTARTED, RESTARTED.replace('♻', '♻️')}
+            allowed = text in RESTARTED_TEXTS
         elif producer == 'drain':
             allowed = text in DRAIN_TEXTS and chat == context['chat']
         elif producer == 'watcher':
@@ -136,11 +151,11 @@ def _wrap(original, name):
             elif name == "_send_home_channel_message":
                 transport = bound["transport"]
                 home = bound["home"]
-                if (_platform(bound["platform"]) == "feishu" and bound["message"] == ONLINE
+                if (_platform(bound["platform"]) == "feishu" and bound["message"] in ONLINE_TEXTS
                         and getattr(transport, "is_relay", True) is False):
-                    context = _context(runner, transport.adapter, str(home.chat_id), str(home.thread_id or ""), ONLINE)
+                    context = _context(runner, transport.adapter, str(home.chat_id), str(home.thread_id or ""), bound["message"])
             elif (name == '_send_shutdown_notice' and bound["platform_str"] == "feishu" and bound["kind"] in {"home channel", "active chat"}
-                  and bound["msg"] in {RESTART, SHUTDOWN}):
+                  and bound["msg"] in SHUTDOWN_NOTICE_TEXTS):
                 metadata = bound.get("send_kwargs", {}).get("metadata") or {}
                 context = _context(runner, bound["adapter"], bound["chat_id"],
                                    str(metadata.get("thread_id") or ""), bound["msg"])

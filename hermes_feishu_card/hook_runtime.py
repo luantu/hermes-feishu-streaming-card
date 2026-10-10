@@ -5396,8 +5396,14 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "content": "Gateway 正在重启，暂不接受新任务。当前这条请求尚未开始执行。\n\n"
                        "重启耗时取决于正在收尾的任务和启动过程；收到重启完成通知后，请重新发送请求。",
         }
-    if text in {"♻ Gateway restarted successfully. Your session continues.",
-                "♻️ Gateway restarted successfully. Your session continues."}:
+    if text in {
+        "♻ Gateway restarted successfully. Your session continues.",
+        "♻️ Gateway restarted successfully. Your session continues.",
+        # Hermes i18n (zh): the same notice in Chinese must keep the plain-text
+        # contract instead of falling through to the card path.
+        "♻ 网关已成功重启。你的会话继续有效。",
+        "♻️ 网关已成功重启。你的会话继续有效。",
+    }:
         # Maintainer note (contract change): this notice is delivered as PLAIN TEXT, not a card.
         #
         # It used to render as a card titled "Gateway 重启完成" — a duplicate of the home-channel
@@ -5412,7 +5418,12 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "notice_kind": "gateway-restart", "notice_id": "gateway-restart-ready",
             "notice_terminal": True,
             "content": "Gateway 已重启完成，会话已保留。现在可以发送新任务。",
-            "plain_text": _HFC_GATEWAY_ONLINE_TEXT,
+            # Keep the plain-text surface in the notice's own locale: a Chinese
+            # notice must not be rewritten into the English constant.
+            "plain_text": (
+                "♻️ 网关已上线——Hermes 已恢复就绪。"
+                if "网关" in text else _HFC_GATEWAY_ONLINE_TEXT
+            ),
         }
     if text.startswith("📬 No home channel is set for Feishu."):
         return {
@@ -5489,12 +5500,27 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "notice_kind": "compression",
             "notice_id": _hfc_content_notice_id("compression", text),
         }
-    if "gateway shutting down" in lowered or "gateway restart" in lowered:
+    if ("gateway shutting down" in lowered or "gateway restart" in lowered
+            # The restart/shutdown notice wording itself (both locales), which
+            # carries no "gateway" keyword.
+            or "hermes is restarting" in lowered or "hermes is shutting down" in lowered
+            or "正在重启" in text or "正在关闭" in text):
         return {
             "title": "网关状态",
             "level": "warning",
             "notice_kind": "gateway-shutdown",
             "notice_id": _hfc_content_notice_id("gateway-shutdown", text),
+        }
+    if ("网关已上线" in text or "已恢复就绪" in text
+            or "gateway online" in lowered):
+        # The startup "back online" notice: distinct from the restarting
+        # shutdown pair, and it must reach the card path in both locales.
+        return {
+            "title": "Gateway 已上线",
+            "level": "success",
+            "notice_kind": "gateway-online",
+            "notice_id": _hfc_content_notice_id("gateway-online", text),
+            "notice_terminal": True,
         }
     return None
 
@@ -5680,7 +5706,13 @@ async def _hfc_send_system_notice_card(
                 message_id = _hfc_independent_notice_message_id(
                     chat_id, str(content or ""), notice, anchor=message_id
                 )
-            elif notice_kind == "background-task":
+            elif notice_kind in {"background-task", "gateway-shutdown", "gateway-online"}:
+                # Fork (LOCAL_PATCHES 3.5): gateway status notices (restarting /
+                # shutting down / back online) are standalone messages, not
+                # progress on the current turn — they get their own minimal
+                # notice card instead of folding into the session card. Their
+                # independent id comes from the content hash below, so a
+                # repeated notice updates its own card.
                 anchored_scope = "independent"
             else:
                 anchored_scope = "session"
