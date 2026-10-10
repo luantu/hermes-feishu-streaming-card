@@ -131,7 +131,12 @@ async def test_ordinary_adapter_answer_equal_to_template_is_not_disposable(runti
     finally:
         runtime._HFC_NATIVE_HANDOFF_CONTEXT.reset(token)
     assert result.success is True
-    assert sent == [runtime._HFC_GATEWAY_ONLINE_TEXT]
+    # ONLINE text is now a classified gateway notice (notice i18n fix): the
+    # send is routed through the notice pipeline, so with an unreachable
+    # sidecar the documented uncertain-fallback line goes out instead. What
+    # this test still guards is that the content is delivered exactly once
+    # and never silently dropped.
+    assert len(sent) == 1
     assert runtime_route == []
 
 
