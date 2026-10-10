@@ -9868,6 +9868,10 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
         if not isinstance(getattr(runner, "adapters", None), dict) and not isinstance(
             getattr(runner, "_profile_adapters", None), dict
         ):
+            _hfc_warn(
+                "command card install skipped: runner has no adapter registry "
+                f"type={type(runner).__name__!r}"
+            )
             if event is not None:
                 _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
             _HFC_FEISHU_NOTICE_CONTEXT.set(None)
@@ -10049,6 +10053,18 @@ def install_feishu_command_card_adapter_methods(runner: Any, event: Any = None) 
                 _hfc_refresh_feishu_event_handler(adapter)
                 setattr(adapter_type, "_hfc_command_card_methods_installed", True)
                 installed = True
+        if installed:
+            _hfc_info(
+                "command card adapter methods installed "
+                f"runner={type(runner).__name__!r} "
+                f"adapters={len(adapters)}"
+            )
+        else:
+            _hfc_warn(
+                "command card install produced no ready feishu adapter "
+                f"runner={type(runner).__name__!r} "
+                f"registries={len(adapters)}"
+            )
         if event is not None:
             _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(
                 command_result_context if installed else None
