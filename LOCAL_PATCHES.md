@@ -3,7 +3,24 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：notice i18n/直连 send 修复 + PM 环境同步（2026-10-10）
+> 最后更新：V4.7.4 合并后（2026-10-10，merge commit cda2367）
+
+---
+
+## 〇-I、V4.7.4 合并记录（2026-10-10）
+
+上游 9 提交（managed runtime sidecar recovery，PR #381）：**独立侧车环境**
+（新增可选 `service.python_executable`——sidecar 可指向预先装好同版本 HFC 的独立
+Python 环境，**官方化本 fork 手动 `uv pip install --reinstall` 的解耦方案**；不存在的
+环境/版本不符/editable 安装会被拒绝）、**Gateway/Desktop 进程身份区分**（维护操作只
+接受经验证 Gateway 身份）、**退出回收**（PID 存活/出生标识核对，防 PID 复用）。
+
+**零冲突合并**；89 failed / 4868 passed vs 基线 89 failed / 4829 passed（零新增失败、
+修复 1 个基线失败）；全部锚点在位（thread 禁用、GIF 分支、模型归一化、生命周期日志、
+通知双语分类与转卡日志、notice_producers 双语）。
+**PM 环境已同步 4.7.4**（uv pip install --reinstall，见 〇-H 流程）。
+`service.python_executable` 可作为后续把 sidecar 从 Hermes PM 环境解耦的可选项，
+本 fork 暂未启用（当前手动同步 PM 已稳定）。
 
 ---
 
