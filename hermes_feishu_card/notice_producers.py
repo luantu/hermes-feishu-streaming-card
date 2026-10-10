@@ -151,18 +151,35 @@ def _wrap(original, name):
             elif name == "_send_home_channel_message":
                 transport = bound["transport"]
                 home = bound["home"]
-                if (_platform(bound["platform"]) == "feishu" and bound["message"] in ONLINE_TEXTS
-                        and getattr(transport, "is_relay", True) is False):
+                # Relay transports send through transport.send, which no adapter
+                # wrapper can see — the card conversion below is the only hop
+                # that covers them, so relay is no longer skipped.
+                if _platform(bound["platform"]) == "feishu" and bound["message"] in ONLINE_TEXTS:
                     context = _context(runner, transport.adapter, str(home.chat_id), str(home.thread_id or ""), bound["message"])
+                    if context is not None:
+                        context['convert_to_card'] = True
             elif (name == '_send_shutdown_notice' and bound["platform_str"] == "feishu" and bound["kind"] in {"home channel", "active chat"}
                   and bound["msg"] in SHUTDOWN_NOTICE_TEXTS):
                 metadata = bound.get("send_kwargs", {}).get("metadata") or {}
                 context = _context(runner, bound["adapter"], bound["chat_id"],
                                    str(metadata.get("thread_id") or ""), bound["msg"])
+                if context is not None:
+                    context['convert_to_card'] = True
         except (AttributeError, TypeError, ValueError, KeyError):
             pass
         token = _CONTEXT.set(context)
         try:
+            if context is not None and context.get('convert_to_card') is True:
+                card_result = await _notice_card_result(
+                    context, bound,
+                    chat_id=str(
+                        getattr(bound.get("home"), "chat_id", None)
+                        or bound.get("chat_id")
+                        or ""
+                    ),
+                )
+                if card_result is True:
+                    return True
             result = await original(*args, **kwargs)
             # Returned drain replies are sent later by Base. Carry provenance only
             # within the exact Base delivery invocation, never in a global text cache.
@@ -179,6 +196,35 @@ def _wrap(original, name):
             _CONTEXT.reset(token)
     wrapped._hfc_notice_producer = True
     return wrapped
+
+
+async def _notice_card_result(context, bound, *, chat_id):
+    """Deliver a registered notice through HFC's card pipeline.
+
+    Returns True when the notice is fully handled (card delivered, or the
+    plain-text contract sent exactly once); False lets the caller fall back to
+    the original native send. The hook_runtime import is deferred: that module
+    imports this one at load time.
+    """
+    adapter = context.get('adapter') if isinstance(context, dict) else None
+    if adapter is None or not chat_id:
+        return False
+    content = str(bound.get('message') or bound.get('msg') or '')
+    if not content:
+        return False
+    try:
+        from hermes_feishu_card.hook_runtime import _hfc_send_system_notice_card
+        result = await _hfc_send_system_notice_card(
+            adapter,
+            chat_id=chat_id,
+            content=content,
+            reply_to=None,
+            metadata=None,
+            force_independent=True,
+        )
+        return bool(getattr(result, "success", False))
+    except Exception:
+        return False
 
 
 def install_adapter_notice_producers(adapter, runner):

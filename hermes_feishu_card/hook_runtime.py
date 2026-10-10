@@ -7005,8 +7005,18 @@ async def _hfc_send_with_native_command_result_card(
         metadata=metadata,
     )
     if getattr(notice_result, "success", False):
+        if _hfc_classify_system_notice(content) is not None:
+            _hfc_info(
+                "classified notice card delivered "
+                f"kind={str((_hfc_classify_system_notice(content) or {}).get('notice_kind') or '')!r} "
+                f"message_id={str(getattr(notice_result, 'message_id', '') or '')[:20]!r}"
+            )
         return notice_result
     if _hfc_classify_system_notice(content) is not None:
+        _hfc_warn(
+            "classified notice card failed; native fallback "
+            f"error={str(getattr(notice_result, 'error', '') or '')[:60]!r}"
+        )
         if getattr(notice_result, "error", None) == "delivery_disposition=native":
             if callable(original):
                 return await original(
