@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.7.7 — 2026-10-12
+
+Add opt-in native body tables (PR #391, @ywarmy). Preserve oversized headers and cells by falling back to the complete Markdown table before native conversion. Preserve indivisible Markdown tables instead of replacing them with fold notices; final payload limits still trigger the existing full-content handoff. See [release notes](docs/release-notes-v4.7.7.md).
+
+## v4.7.6 — 2026-10-11
+
+Bind split source/process HOME installations through setup, authenticated heartbeats, PM selection and durable maintenance jobs (#384). Preserve ownership diagnostics; refuse split/shared-source card updates before mutation. Existing source-parent identities and persisted fences remain unchanged. Preserve credential-free bootstrap and refuse old maintenance jobs after instance reassignment. See [release notes](docs/release-notes-v4.7.6.md).
+
+## v4.7.5 — 2026-10-11
+
+Resolve the committed Hermes PM environment consistently in CLI and plugin binding (#382). Preserve the admitted DM actor/chat for command-card callbacks instead of applying the group-only gate (#374). Document the remaining separated source/HERMES_HOME maintenance restriction (#384). See [release notes](docs/release-notes-v4.7.5.md).
+
 ## v4.7.4 — 2026-10-09
 
 Keep the sidecar independent of replaceable Hermes environments; bind readiness and maintenance proofs to the Gateway owner; retain Desktop activity without overwriting Gateway identity. Notify before Gateway hard exit and reclaim authenticated local observations only after verified process exit. See [release notes](docs/release-notes-v4.7.4.md) (PR #381).

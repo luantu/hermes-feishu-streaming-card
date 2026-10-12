@@ -39,6 +39,7 @@ Edit `card:` in the actual file selected with `--config` during installation. St
 | Footer | `footer_fields`, `text_sizes.footer` | Only available measurements; subscription quota requires an attributed GPT / openai-codex turn |
 | Width and type sizes | `width_mode`, `text_sizes` including pc / mobile | No pixel-height control; wrapping is client-controlled |
 | Long tables | `table_overflow_mode` | compact preserves later tables as field lists; truncate retains table truncation |
+| Body tables | `native_tables` | Native `table` elements for body tables (column width + auto row height); default `false` keeps Markdown |
 | Completion notification | `completion_notify.enabled`, `placement`, `mention` | Off by default; an edited card mention does not guarantee push delivery |
 | Attachment summary | Appears with attachments | No separate hide switch |
 | Native replies in a chat | `bindings.native_chats` | Changes delivery, not appearance |
@@ -577,21 +578,21 @@ High-frequency streaming knobs usually do not need manual tuning:
 
 ## Docker Containers
 
-Examples pin `v4.7.4`; the default `latest` resolves the published stable release. See [release notes](release-notes-v4.7.1.en.md) for validation boundaries.
+Examples pin `v4.7.7`; the default `latest` resolves the published stable release. See [release notes](release-notes-v4.7.1.en.md) for validation boundaries.
 
 Use `install-docker.sh` inside an existing Hermes container. It defaults to
 `/opt/hermes` for Hermes and `/opt/data/config.yaml` for sidecar config. The
 script selects Hermes venv Python and does not fall back to system Python unless
 `HFC_PYTHON` is set.
 
-The Compose example defaults `HFC_VERSION` to `v4.7.4`.
+The Compose example defaults `HFC_VERSION` to `v4.7.7`.
 
 Example:
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.7.4
+export HFC_VERSION=v4.7.7
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -781,6 +782,30 @@ profiles:
 ```
 
 This setting applies to HFC's JSON 2.0 delivery paths, including streaming/final replies, oversized-content handoff, and repair cards. JSON 1.0 approval/legacy cards do not support this field: they keep their existing `wide_screen_mode` and are not converted to JSON 2.0. A width mode is not a fixed-pixel sizing control; it cannot set a fixed pixel height or bypass Feishu/Lark window, device, or layout constraints. The client determines the final display.
+
+### Body tables
+
+`card.native_tables` (default `false`) renders body Markdown tables as the card's **native `table` element**:
+
+```yaml
+card:
+  native_tables: true
+```
+
+The Markdown rich-text component cannot set a table column width ("表格的富文本语法不支持设置列宽等"), so the client distributes the columns by content and a long value column is squeezed into mid-word breaks. The native `table` element supports `row_height: auto` — the row grows to fit wrapped content instead of clipping the cell with an ellipsis — plus a per-column `width`. When enabled, HFC:
+
+- derives column percentages summing to 100%; 2–6 columns use 15%~70% bounds, a single column fills the width, and wider tables use a lower minimum;
+- sets `row_height: auto`, `row_max_height: 999px` and a grey header;
+- sets `page_size` to `min(data rows, 10)` (Feishu accepts 1~10 only);
+- keeps the original order, interleaving table elements with the surrounding Markdown, with ids like `main_content_t0`.
+
+Boundaries and fallback:
+
+- Only tables the native element can represent are converted: tables without data rows, with more than 50 columns, or with any normalized header/cell exceeding 1,200 characters keep their complete Markdown. Other eligible tables still convert. The 1,200-character threshold is an HFC display policy, not a claim about the platform API limit.
+- If the richer payload pushes the whole card past the safe Feishu budget (5 tables / 200 elements / 28,000 UTF-8 bytes), HFC re-renders once with `false` before the long-content handoff, so a table never costs the answer.
+- The five-tables-per-card limit is unchanged (table six onward is still handled by `table_overflow_mode`).
+- `row_height: auto` requires Feishu client V7.33+ and `data_type: markdown` requires V7.14+; older clients fall back to a fixed row height and an ellipsis at the cell edge.
+- The default `false` keeps the Markdown layout; indivisible tables now retain their full source rather than a fold notice; profile / bot overrides are supported and the sidecar must be restarted.
 
 ### Card text sizes
 
@@ -1043,3 +1068,29 @@ Managed launches pass only `--token-file`; the private state directory contains 
 ## Task layout and offline preview (development branch)
 
 The unreleased `reading_preset: task` and `card-config --preview-dir` provide clearer state/typography and safe configuration previews. See [task cards](task-cards.md#english-quick-reference) for scope, rollback and real-client acceptance boundaries.
+
+### PM environments and missing installation sources
+
+Hermes PM dependencies usually live outside the checkout. Use the environment selected by `committed_venv()`, rather than assuming an existing checkout `.venv` is active. If selection fails or the committed generation is missing, restore Hermes dependencies before retrying; a stale `.venv` is not a recovery path.
+
+`Hermes runtime Python cannot import ... and no install spec is available` means the runtime lacks a usable HFC package and the CLI has no installation source. This happens before hook installation. Launching an installed CLI through `uv run --frozen` does not install its package into the Gateway environment. Use the official installer linked in README, or explicitly set `HFC_INSTALL_SPEC` to a verified same-version wheel when running setup. HFC does not guess package sources or bypass version verification.
+
+### Separate program directory and HERMES_HOME
+
+Separate source and process HOME layouts use an explicit binding. Pass `--hermes-home /root/.hermes` to the existing installer/setup entry point, or set HFC configuration:
+
+```yaml
+service:
+  hermes_home: /root/.hermes
+  shared_source: true  # ALL sidecars sharing the checkout, including the default HOME
+```
+
+Independent Gateways need separate HFC configs, explicit env files, private state directories and listener ports; do not accidentally share the adjacent `.env`.
+
+The HOME must be absolute and contain Hermes `config.yaml`. It is a process data directory, not an HFC routing `profile_id`. Setup persists `HERMES_FEISHU_CARD_HERMES_HOME` in its selected HFC `.env`. The existing YAML < adjacent `.env` < explicit env file < process environment precedence applies; ordinary ambient `HERMES_HOME` is never guessed as the sidecar binding. Conflicting setup and existing bindings are rejected. Restart the sidecar after either setting changes, and restart Gateway after updating HFC.
+
+Authenticated heartbeats bind both source and process HOME. Another HOME/profile, legacy source-only identity and replay cannot take ownership of a split target. Paths stay out of health responses. Split layouts require Hermes' process-scoped `get_process_hermes_home()` API; a task-local fallback is insufficient. Unconfigured installations retain the source-parent default. Doctor distinguishes configuration from live proof; verify `ready`, `generation_match=true` and `drain_home_verified=true` after restarting.
+
+Card-driven `/update` refuses split HOME or explicitly shared-source instances before confirmation. Coordinate terminal maintenance through the original service owners, draining every Gateway using shared code first. Declare `shared_source: true` on the default instance too. HFC does not orchestrate cross-instance source upgrades. Delivery and readiness remain supported. Do not clear unrelated integrity fences or edit hooks manually. Sanitized `integrity.last_reason` now retains owner failures. Old maintenance jobs keep their original default HOME; new jobs persist HOME and are rejected by older readers, so finish maintenance before downgrading.
+
+For a separate env file, also pass `doctor --env-file /original/HFC.env` (or set `HFC_ENV_FILE`). `--hermes-home` can select a read-only diagnosis, but refuses conflicts with the saved binding and does not rewrite configuration.

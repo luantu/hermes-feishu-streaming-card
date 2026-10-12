@@ -52,6 +52,7 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
         "max_reasoning_chars": 1200,
         "max_tool_result_chars": 600,
         "table_overflow_mode": "compact",
+        "native_tables": False,
         "completion_notify": {"enabled": False},
         # Per-kind @ mention switches in interaction cards (clarify /
         # approval). The default is UNSET (None): the resolving helpers fall
@@ -396,6 +397,12 @@ def _validate_service_manager(config: dict[str, Any]) -> None:
     if not isinstance(manager, str) or manager not in SERVICE_MANAGER_VALUES:
         values = ", ".join(sorted(SERVICE_MANAGER_VALUES))
         raise ValueError(f"service.manager must be one of: {values}")
+    if "shared_source" in service and type(service["shared_source"]) is not bool:
+        raise ValueError("service.shared_source must be a boolean")
+    if "hermes_home" in service:
+        home = service["hermes_home"]
+        if not isinstance(home, str) or not home.strip() or not Path(home).is_absolute():
+            raise ValueError("service.hermes_home must be an absolute Hermes HOME")
     if "python_executable" in service:
         selected = service["python_executable"]
         if (not isinstance(selected, str) or not selected.strip()
@@ -472,6 +479,10 @@ def _normalize_card_config(value: object, *, path: str) -> None:
     if "table_overflow_mode" in value:
         value["table_overflow_mode"] = normalize_table_overflow_mode(
             value["table_overflow_mode"], path=f"{path}.table_overflow_mode"
+        )
+    if "native_tables" in value:
+        value["native_tables"] = _normalize_boolean(
+            value["native_tables"], f"{path}.native_tables"
         )
     if "streaming_mode" in value:
         value["streaming_mode"] = _normalize_boolean(
@@ -567,6 +578,9 @@ def _apply_env_mapping_overrides(
             values["HERMES_FEISHU_CARD_ALLOW_NON_LOOPBACK"],
             "HERMES_FEISHU_CARD_ALLOW_NON_LOOPBACK",
         )
+
+    if "HERMES_FEISHU_CARD_HERMES_HOME" in values:
+        config.setdefault("service", {})["hermes_home"] = values["HERMES_FEISHU_CARD_HERMES_HOME"]
 
     if "HERMES_FEISHU_CARD_SERVICE_MANAGER" in values:
         config.setdefault("service", {})["manager"] = values[

@@ -39,6 +39,7 @@ V3.8.2 起，最终答案保留在主内容区，pre-tool answer 会按“正文
 | 页脚统计 | `footer_fields` 决定字段和顺序；`text_sizes.footer` | 数据必须有真实来源；订阅额度只在可归属的 GPT / openai-codex 轮次显示 |
 | 宽度与字号 | `width_mode`、`text_sizes`（支持 pc / mobile） | 不设置像素高度，实际折行由客户端决定 |
 | 超长表格 | `table_overflow_mode` | `compact` 保留为字段列表；`truncate` 沿用表格截断策略 |
+| 正文表格 | `native_tables` | 开启后正文表格用原生 `table` 组件（列宽 + 自动行高）；默认 `false` 保持 Markdown 布局 |
 | 完成提醒 | `completion_notify.enabled`、`placement`、`mention` | 默认关闭；编辑卡片里的 @ 不保证推送通知 |
 | 附件摘要 | 随附件出现 | 没有独立隐藏开关 |
 | 整个聊天不用卡片 | `bindings.native_chats` | 属于投递选择，回到 Hermes 原生回复 |
@@ -607,7 +608,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 
 ## Docker 容器内安装 / 更新
 
-以下示例固定 `v4.7.4`；默认 `latest` 解析已发布稳定版。本版的桌面验收范围及未验证项见[发行说明](release-notes-v4.7.1.md)。
+以下示例固定 `v4.7.7`；默认 `latest` 解析已发布稳定版。本版的桌面验收范围及未验证项见[发行说明](release-notes-v4.7.1.md)。
 
 如果 Hermes 运行在已有 Docker 容器里，优先使用 `install-docker.sh`。它默认读取：
 
@@ -616,7 +617,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 | `HERMES_DIR` | `/opt/hermes` | 容器内 Hermes Agent Gateway 目录 |
 | `HFC_CONFIG` | `/opt/data/config.yaml` | sidecar 配置路径 |
 | `HFC_ENV_FILE` | `/opt/data/.env` | 飞书凭据文件 |
-| `HFC_VERSION` | `latest`（脚本）/ `v4.7.4`（Compose 示例） | 指定安装 tag 或分支 |
+| `HFC_VERSION` | `latest`（脚本）/ `v4.7.7`（Compose 示例） | 指定安装 tag 或分支 |
 | `HFC_PYTHON` | 自动检测 Hermes venv | 显式指定容器内 Python |
 
 示例：
@@ -624,7 +625,7 @@ python3 -m hermes_feishu_card.cli status --config ~/.hermes/config.yaml
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v4.7.4
+export HFC_VERSION=v4.7.7
 bash install-docker.sh --profile-id child --event-url http://hfc-sidecar:8765/events
 ```
 
@@ -836,6 +837,30 @@ profiles:
 ```
 
 该设置适用于 HFC 的 JSON 2.0 发卡路径，包括回复流式/终态、超长内容交接与修复卡片。JSON 1.0 审批/旧版卡片不支持此字段，仍使用原有 `wide_screen_mode`，不会被转换成 JSON 2.0。宽度模式不是固定像素尺寸控制；不能设置固定像素高度，也不能绕过 Feishu/Lark 客户端的窗口、设备和布局限制，最终显示由客户端决定。
+
+### 正文表格
+
+`card.native_tables`（默认 `false`）把正文里的 Markdown 表格渲染成飞书卡片**原生 `table` 组件**：
+
+```yaml
+card:
+  native_tables: true
+```
+
+飞书富文本（Markdown）组件的表格语法**不支持设置列宽**，列宽只能由客户端按内容自动分配，长值列容易被挤成中文硬折。原生 `table` 组件支持 `row_height: auto`（行高随内容撑开，而不是把单元格末尾省略）与逐列 `width`。开启后 HFC 会：
+
+- 按内容计算列宽百分比，合计 100%；2–6 列采用 15%~70% 范围，单列占满宽度，更多列相应降低最小宽度；
+- 固定 `row_height: auto`、`row_max_height: 999px`、灰色表头；
+- `page_size` 取 `min(数据行数, 10)`（飞书只接受 1~10）；
+- 表格按原顺序与前后正文交错，`element_id` 形如 `main_content_t0`。
+
+边界与回退：
+
+- 只转换能被原生组件表示的表格：没有数据行、列数超过 50、任一规范化表头或单元格超过 1,200 字符时，整表保留完整 Markdown，其余合格表格仍可转换。1,200 字符是 HFC 的展示策略，不代表平台 API 上限。
+- 开启后整卡若超出飞书安全预算（5 张表 / 200 个元素 / 28,000 UTF-8 字节），会先按 `false` 重新渲染一次 Markdown 版本，再退回超长内容交接，不会为了表格丢掉答案。
+- 单张卡片最多 5 个表格组件的限制不变（第 6 张起仍由 `table_overflow_mode` 处理）。
+- `row_height: auto` 需要飞书客户端 V7.33+，`data_type: markdown` 需要 V7.14+；更旧的客户端会退化为固定行高并省略单元格末尾。
+- 默认 `false` 保持 Markdown 布局；无法拆分的表格现保留完整原文，不再仅显示折叠提示；支持 profile / bot 覆盖，改完需要重启 sidecar。
 
 ### 卡片字号
 
@@ -1120,3 +1145,29 @@ macOS 的持久服务提示明确 Linux systemd 限制；缺少可验证 pidfile
 ## 任务布局与离线预览（开发分支）
 
 新增可选 `reading_preset: task`，以及 `card-config --preview-dir`。状态、字号、完整审批范围、配置来源与回退方式见[任务卡片说明](task-cards.md)。当前尚未发布；HTML 使用示例数据模拟排版，不代表真实客户端验收。
+
+### PM 环境与安装来源错误
+
+Hermes 的 PM 托管依赖通常在 checkout 外。应以 `committed_venv()` 选择的环境为准，不能凭 checkout 下存在 `.venv` 就向其中安装。若探测失败或已选择的环境丢失，先恢复 Hermes 的依赖环境；不要用旧 `.venv` 绕过检查。
+
+`Hermes runtime Python cannot import ... and no install spec is available` 表示运行环境缺少可用的 HFC 包，而且当前 CLI 没有可验证的安装来源；它发生在 hook 安装之前。通过 `uv run --frozen` 启动一个已安装的 CLI，并不等于 Gateway 的环境已安装同一包。请使用 README 的官方安装入口，或将 `HFC_INSTALL_SPEC` 显式指向已核验的同版本 wheel 后运行 setup。HFC 不会根据错误信息猜测包来源或跳过版本校验。
+
+### 程序目录与 HERMES_HOME 分离
+
+分离布局可通过显式绑定验证 Gateway 身份，例如源码 `/usr/local/lib/hermes-agent` 与进程 HOME `/root/.hermes`。在原安装入口传入 `--hermes-home /root/.hermes`；`setup` 会把 `HERMES_FEISHU_CARD_HERMES_HOME` 写入选定的 HFC `.env`，重启后仍使用该绑定。也可在 HFC 配置中设置：
+
+```yaml
+service:
+  hermes_home: /root/.hermes
+  shared_source: true  # 多个 Gateway 共用源码时，每个 sidecar 都设置，包括默认 HOME
+```
+
+多个独立 Gateway 应各用自己的 HFC 配置、显式 env file、私有 state 目录和监听端口，避免共用配置父目录下的同一 `.env`。
+
+`hermes_home` 是进程数据目录，须为包含 Hermes `config.yaml` 的绝对路径；不是 HFC 的聊天路由 `profile_id`。专用 `.env` 值按既有优先级覆盖 YAML，进程中的专用 HFC 环境变量优先级最高；普通 `HERMES_HOME` 不会被侧车猜作安装绑定。`--hermes-home` 与现有绑定冲突时 setup 拒绝，须先核对并修改所选配置。两项设置均需重启 sidecar；更新 HFC 后也需按原服务管理方式重启 Gateway。
+
+认证心跳校验源码与进程 HOME 的共同身份，不匹配的 HOME、共享源码下的另一个 profile、重复心跳均不能接管；健康响应只暴露摘要。Hermes 必须提供进程级 `get_process_hermes_home()`；旧的 task-local HOME API 不足以证明分离布局，保持拒绝。未配置 HOME 时沿用源码父目录，普通布局无需迁移。doctor 会区分已配置绑定和实际运行证明；最终仍需看到 `readiness=ready`、`generation_match=true`、`drain_home_verified=true`。
+
+分离 HOME 或声明 `shared_source: true` 的实例，卡片 `/update` 在确认前拒绝，并引导终端维护。HFC 不负责跨实例排空：共享源码升级前先停止接纳并排空所有使用者，再通过原服务管理器维护。默认 HOME 的 sidecar 也必须声明共享源码，不能只设置独立 profile。此限制不影响正常发卡和 readiness。不要清除其他完整性围栏或手改 hook；`integrity.last_reason` 现在保留脱敏的 owner 原因，便于与 readiness 对照。旧维护任务缺少 HOME 字段时保持原目录语义；新任务携带 HOME，旧版读取时会拒绝，降级前应结束维护任务。
+
+使用独立 env file 时，诊断也传入 `doctor --env-file /原/HFC.env`（或设置 `HFC_ENV_FILE`）；`--hermes-home` 可用于只读诊断，但与已保存绑定冲突时拒绝，不写回配置。

@@ -139,6 +139,7 @@
 - Hermes 升级可能替换 `gateway/run.py` 而保留 HFC backup/manifest；CLI `status` / `start` 必须只读识别 verified `stale_unpatched`，仅对可执行的 `accept_hermes_upgrade` plan 给出显式恢复命令。用户改动、损坏或证据不足必须 fail-closed，不得自动重写 Hermes 或自动重启 Gateway。
 - runner 必须真正读取 `setup` / `start` 显式传入的 `--env-file`。配置优先级保持 YAML < 同目录 `.env` < 显式 env file < process env；禁止为了修复 systemd 环境而隐式读取全局 `~/.hermes/.env`。
 - 升级迁移只能停止 PID/token/health 三者一致的旧进程，未知进程保持 fail-closed。
+- CLI 与插件 binding 共用 `install/runtime_python.py` 的隔离 PM 探测。存在 committed venv 时优先选择它并保留 venv launcher 路径；探测失败、相对路径或已删除的 generation 必须拒绝，不能落回旧 `.venv`。只有没有 PM 模块或 PM 明确返回无选择时保留 legacy 行为；插件仍验证 prefix/site-packages/可执行目标，显式 Hermes home 传给 PM 探测。
 - Hermes PM 重建会删除旧环境；独立 sidecar 不能假定长驻解释器路径永远存在。可用 `service.python_executable` 绑定独立 HFC venv；setup/start/enable 均遵守此选择，先验证 Hermes hook，再验证侧车的版本与普通 site-packages 来源。配置缺省保持原行为；指定环境失效必须拒绝启动，不静默切回 PM。
 - 旧侧车仍响应 health 不代表运行文件可用。升级后的恢复顺序是检查当前 PM 与进程来源，备份并停止侧车，通过官方 install 修复已验证的升级状态；仅 installed 且侧车停止时 acknowledge-review，再启动侧车与 Gateway。不得清除未知围栏或手工改 hook。
 - `auto` 不得探测 system bus、调用 sudo/pkexec、写 `/etc` 或静默 fallback 到 system manager；`systemd-system` 只能显式使用 transient unit。
@@ -312,3 +313,16 @@ Orphaned integrity fences can be explicitly rebound with `integrity acknowledge-
 完整性监视仍每轮等待 15 秒。只有完整检测得到 `installed` 且 readiness 仅为心跳等待、缺失或过期时，才延后下一次完整源码检测至本轮结束后 300 秒；期间仍检查最新 readiness，不将缺心跳改成 ready。源码变化最多延迟到下一次完整检查（另加检测时间）；离开这三种心跳状态或重启 sidecar 会清除该观察结果。检查失败及可执行修复计划不缓存，任何修复仍使用本轮新证据和原执行器校验。
 
 `/health` 和状态查询读取最后一次已完成检查的原子快照，不等待后台检测/修复锁。快照中的诊断和计数可能落后于正在运行的检查，不能作为新的安装证明或修复授权。单次源码扫描的 CPU 成本未改变；此处减少重复扫描并解除健康接口的锁等待。
+
+## V4.7.5 私聊按钮与目录边界
+
+私聊命令卡的准入证明来自原请求的 task-local context，并复制到 pending state；回调只能由同一聊天和同一用户消费。不得信任 action.value 的 chat_type，不得把「不是 group」当成私聊证据。表单/运维按钮只有真实平台缓存 raw_type=p2p 才进入原生私聊准入，sidecar 继续验证 token/权限。未知聊天沿用保守路径；群聊规则不放宽。
+
+#384 使用 `instance_binding.py` 统一显式 source/HOME 绑定。setup 将 `--hermes-home` 保存为专用 HFC env 值；runner、PM 探测、认证 runtime target 和维护任务使用同一 HOME。默认 source-parent 身份保持 v1，分离 HOME 用 v2 哈希；禁止只放宽 drain 布尔值却继续比较 source-only 身份。split 只接受 Hermes 进程级 HOME API，不接受 task-local fallback。
+
+维护任务保存 HOME，重读配置发现漂移时在任何 Gateway 命令前拒绝；排空、停止、重启、失败清理均使用所保存的绑定。旧任务无字段时保留原语义。分离 HOME 与 `service.shared_source=true` 的卡片升级保持拒绝：此项目没有跨实例排空权，共享源码的所有 sidecar（包括默认 HOME）均须声明共享。不要把支持 readiness 写成自动协调所有实例。身份原因保留在 integrity 脱敏白名单；现存 fence 不自动清除。
+
+
+## V4.7.7 表格内容保留
+
+原生表格的 1,200 字符限制只决定是否转换，不能截断最终答案；任一表头或单元格超限时整表回退原 Markdown。Markdown 分段若无法安全拆开表头或行，保留整表交给最终 serializer/容量门禁，禁止以折叠提示替代原文。测试必须验证实际正文、task 展示、混合顺序和超限完整交接；session 中保留原文不能替代投递内容完整性。
