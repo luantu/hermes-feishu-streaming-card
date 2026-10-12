@@ -148,16 +148,29 @@ python3 -m hermes_feishu_card.cli install --hermes-dir ~/.hermes/hermes-agent --
 
 ### 3.3 安装后的重启
 
+> **2026-10-12 更新（外部运行时架构）**：Hermes 迁移到打包运行时
+> `~/.local/libexec/hermes-runtime/hermes`（`--external-supervisor`，HERMES_HOME
+> 固定到 `/Volumes/ExtWorkspace/.hermes`，源码树在
+> `/Volumes/ExtWorkspace/.hermes/hermes-agent`）。launchd 标签已更换：
+> gateway 是 **`ai.hermes.external.gateway`**（旧 `ai.hermes.gateway` 与
+> `ai.hermes.gateway-coach` 已不存在，kickstart 旧标签会静默失败）。
+> HFC 需以**非 editable** 方式装入 PM 运行时 venv
+> （`hermes_feishu_card.install.runtime_python.pm_managed_runtime_python` 解析；
+> PM venv 无 pip，用仓库 venv 的 `pip --python <PM python> install` 升级），
+> 安装目标为 `--hermes-dir /Volumes/ExtWorkspace/.hermes/hermes-agent
+> --hermes-home ~/.hermes`。
+
 ```bash
 launchctl kickstart -k gui/$(id -u)/ai.hermes.feishu-card
-launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway
-launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-coach
-sleep 4
-ps aux | grep -E "hermes.*(gateway|feishu-card)" | grep -v grep
+launchctl kickstart -k gui/$(id -u)/ai.hermes.external.gateway
+sleep 12   # drain-first 接管需要时间，进程号更替属正常
+ps aux | grep -E "gateway run|hermes_feishu_card.runner" | grep -v grep
 ```
 
-期望看到 3 个进程：两个 `hermes_cli.main ... gateway run`（default + coach）和
-一个 `hermes_feishu_card.runner`（sidecar）。
+期望看到 2 个进程：一个 `hermes-runtime/hermes gateway run --external-supervisor`
+和一个 `hermes_feishu_card.runner`（sidecar）。验证 HFC 已挂钩：
+`~/Library/Logs/Hermes/gateway.error.log` 出现
+`command card adapter methods installed`，sidecar `events_applied` 增长。
 
 ---
 
