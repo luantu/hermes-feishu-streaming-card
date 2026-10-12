@@ -3,7 +3,7 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.7.4 合并后（2026-10-10，merge commit cda2367）
+> 最后更新：V4.7.7 合并后（2026-10-12，merge commit ceeae11；Hermes 迁移外部运行时 + PM venv 安装，见 docs/fork-maintenance-guide.md 3.3）
 
 ---
 
