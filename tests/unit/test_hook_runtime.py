@@ -3880,6 +3880,21 @@ def test_chinese_compression_notice_classification():
     assert aborted["notice_kind"] == "compression"
 
 
+def test_self_improvement_review_notice_classification():
+    zh = hook_runtime._hfc_classify_system_notice(
+        "💾 自我改进回顾：技能 'demo' 已修补 · Background review may not "
+        "delete memory entries unattended. The proposed batch was staged for "
+        "your approval — review it with /memory pending."
+    )
+    assert zh is not None
+    assert zh["notice_kind"] == "self-improvement"
+    en = hook_runtime._hfc_classify_system_notice(
+        "💾 Self-improvement review: skill 'demo' patched"
+    )
+    assert en is not None
+    assert en["notice_kind"] == "self-improvement"
+
+
 def test_force_independent_notice_never_quotes_or_threads(monkeypatch):
     captured = {}
 

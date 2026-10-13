@@ -459,6 +459,49 @@ Hermes 的会话卫生压缩通知（如 zh `gateway.compress.turnhold_deferred`
 
 ---
 
+## 〇-D、后台审查（自我改进）通知收纳 + 裸发通道审计（2026-10-13，本地新增补丁组）
+
+后台审查摘要（"💾 自我改进回顾：技能 'x' 已修补 · … · Background review may not
+delete memory entries…"）由 `agent/background_review.py` → gateway
+`run_turn_runner.py::_make_bg_review_callbacks` 的 `deliver()` 闭包 →
+`_send_status_text` → 适配器裸 `send()` 原生直发，绕开全部 HFC 钩子（第三条
+裸发通道），且 v4.7.7 分类器已无 self-improvement 规则。本地新增：
+
+- `install/patcher.py`：`BG_REVIEW_NOTICE_PATCH_BEGIN/END` +
+  `_render_bg_review_notice_hook_block` + `_apply_bg_review_notice_patch`
+  （锚定 `_make_bg_review_callbacks` 内嵌套的 `def deliver` 闭包体顶部——
+  同步方法，新增 `_find_function_def` 查找器；factory 在而 deliver 缺失时
+  **抛错拒装**，契约漂移必须可见）。接入 `apply_gateway_fragment`、
+  `remove_patch`、lenient 元组、run.py adapter owned_markers。
+  hook 复用 `handle_platform_notice_from_hermes(self._runner, ctx.source,
+  message, force_independent=True)`，独立极简卡、无引用、不进话题（〇-C 语义）。
+- `hook_runtime.py::_hfc_classify_system_notice`：新增
+  `自我改进回顾` / `self-improvement review` / `background review` →
+  `self-improvement` 分类（zh+en）。
+- 测试：`test_apply_gateway_fragment_installs_bg_review_notice_hook`、
+  `test_self_improvement_review_notice_classification`、decomposed 断言；
+  两个 fixture 的 `run_turn_runner.py` 增加 `_make_bg_review_callbacks`。
+
+### 裸发通道审计（gateway 直接 `adapter.send` 的其余用户可见通知）
+
+| 通道 | 位置 | 处置 |
+| --- | --- | --- |
+| 卫生压缩通知 | `run_turn.py::_hmwa_hygiene_notify` | 〇-C 已钩（独立极简卡） |
+| 后台审查摘要 | `run_turn_runner.py::_make_bg_review_callbacks` | 本节已钩 |
+| platform notice | `run_notifications.py::_deliver_platform_notice` | 上游锚点已钩 |
+| 状态回调管线 | `_status_callback_sync` → `_send_or_update_status_coro` | status 锚点已钩（裸发仅为 hook 拒绝后的 fallback） |
+| 网关关闭/重启通知 | `run_shutdown.py::_send_notice_logged` | **候选**：走原生；已有"网关状态"分类语义，如需收卡再扩 |
+| 会话停滞提醒 | `run_watchers.py`（stall notification） | **候选**：走原生 |
+| 看板订阅推送 | `kanban_watchers_notifier.py` | **候选**：走原生 |
+| /goal 状态行 | `run_goals.py::_send_goal_status_notice` | 低优先（偏会话性） |
+| 斜杠命令 ack | `run_busy.py::_send_command_ack` | 保持原生（会话性反馈） |
+| 未授权 DM 拒绝 / 语音转写回显 | `run_inbound.py` | 保持原生（会话性/安全反馈） |
+
+> 后三个候选（shutdown / stall / kanban）要收卡时按本节同一模式扩展：
+> 钩子 + 分类器规则 + force_independent 独立极简卡。
+
+---
+
 ## 一、render.py
 
 ### 1.1 GIF 动画 footer

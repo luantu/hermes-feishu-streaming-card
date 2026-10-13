@@ -2,6 +2,35 @@ class TurnRunner:
     def __init__(self, runner, ctx):
         self._runner, self._ctx = runner, ctx
 
+    def _make_bg_review_callbacks(self):
+        """(send, release): background-review messages held until release."""
+        ctx = self._ctx
+        import threading
+        release_evt = threading.Event()
+        pending = []
+        pending_lock = threading.Lock()
+
+        def deliver(message: str) -> None:
+            if self._status_live():
+                self._send_status_text(message, {}, "background_review_callback scheduling error")
+
+        def release() -> None:
+            release_evt.set()
+            with pending_lock:
+                queued = list(pending)
+                pending.clear()
+            for message in queued:
+                deliver(message)
+
+        def send(message: str) -> None:
+            if not release_evt.is_set():
+                with pending_lock:
+                    pending.append(message)
+            else:
+                deliver(message)
+
+        return send, release
+
     def _status_callback_sync(self, event_type, message):
         ctx = self._ctx
         ctx.status_queue.put((event_type, message))

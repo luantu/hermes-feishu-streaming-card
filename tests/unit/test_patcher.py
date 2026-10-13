@@ -625,6 +625,42 @@ def test_apply_patch_installs_hygiene_notice_card_hook():
     assert patcher.remove_patch(patched) == content
 
 
+def test_apply_gateway_fragment_installs_bg_review_notice_hook():
+    content = (
+        "class TurnRunner:\n"
+        "    def __init__(self, runner, ctx):\n"
+        "        self._runner, self._ctx = runner, ctx\n"
+        "\n"
+        "    def _status_live(self):\n"
+        "        return True\n"
+        "\n"
+        "    def _make_bg_review_callbacks(self):\n"
+        "        ctx = self._ctx\n"
+        "\n"
+        "        def deliver(message: str) -> None:\n"
+        "            if self._status_live():\n"
+        "                self._send_status_text(message, {}, 'review send')\n"
+        "\n"
+        "        return deliver\n"
+    )
+
+    patched = patcher.apply_gateway_fragment(content, "gateway/run_turn_runner.py")
+
+    assert patcher.BG_REVIEW_NOTICE_PATCH_BEGIN in patched
+    assert "handle_platform_notice_from_hermes" in patched
+    assert (
+        "if _hfc_handle_bg_review(self._runner, ctx.source, message, force_independent=True):"
+        in patched
+    )
+    deliver_at = patched.index("def deliver(message: str) -> None:")
+    assert deliver_at < patched.index(patcher.BG_REVIEW_NOTICE_PATCH_BEGIN)
+    assert (
+        patcher.apply_gateway_fragment(patched, "gateway/run_turn_runner.py")
+        == patched
+    )
+    assert patcher.remove_patch(patched) == content
+
+
 def test_cron_marker_block_in_other_function_is_not_owned():
     content = (
         "def other():\n"

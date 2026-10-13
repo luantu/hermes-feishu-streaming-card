@@ -81,6 +81,8 @@ PLATFORM_NOTICE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_PLATFORM_NOTICE_PATCH_BEGIN"
 PLATFORM_NOTICE_PATCH_END = "# HERMES_FEISHU_CARD_PLATFORM_NOTICE_PATCH_END"
 HYGIENE_NOTICE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_HYGIENE_NOTICE_PATCH_BEGIN"
 HYGIENE_NOTICE_PATCH_END = "# HERMES_FEISHU_CARD_HYGIENE_NOTICE_PATCH_END"
+BG_REVIEW_NOTICE_PATCH_BEGIN = "# HERMES_FEISHU_CARD_BG_REVIEW_NOTICE_PATCH_BEGIN"
+BG_REVIEW_NOTICE_PATCH_END = "# HERMES_FEISHU_CARD_BG_REVIEW_NOTICE_PATCH_END"
 HFC_COMMAND_PATCH_BEGIN = "# HERMES_FEISHU_CARD_HFC_COMMAND_PATCH_BEGIN"
 HFC_COMMAND_PATCH_END = "# HERMES_FEISHU_CARD_HFC_COMMAND_PATCH_END"
 EXACT_BASE_NO_TEXT_PATCH_BEGIN = (
@@ -1160,6 +1162,67 @@ def _apply_hygiene_notice_patch(content: str) -> str:
     return "".join(lines[:insert_at] + hook + lines[insert_at:])
 
 
+def _render_bg_review_notice_hook_block(indent: str, newline: str):
+    inner_indent = _child_indent(indent)
+    return [
+        f"{indent}{BG_REVIEW_NOTICE_PATCH_BEGIN}{newline}",
+        f"{indent}try:{newline}",
+        (
+            f"{inner_indent}from hermes_feishu_card.hook_runtime "
+            f"import handle_platform_notice_from_hermes as "
+            f"_hfc_handle_bg_review{newline}"
+        ),
+        (
+            f"{inner_indent}if _hfc_handle_bg_review("
+            f"self._runner, ctx.source, message, force_independent=True):{newline}"
+        ),
+        f"{inner_indent}    return None{newline}",
+        *_render_hook_exception_handler(indent, newline),
+        f"{indent}{BG_REVIEW_NOTICE_PATCH_END}{newline}",
+    ]
+
+
+def _apply_bg_review_notice_patch(content: str) -> str:
+    owned_block = _find_simple_marker_block(
+        content,
+        BG_REVIEW_NOTICE_PATCH_BEGIN,
+        BG_REVIEW_NOTICE_PATCH_END,
+        "background review notice patch markers",
+    )
+    if owned_block is not None:
+        lines = content.splitlines(keepends=True)
+        begin_index, end_index = owned_block
+        indent = _leading_whitespace(_strip_line_ending(lines[begin_index]))
+        newline = _line_ending(lines[begin_index]) or _detect_newline(content)
+        expected = _render_bg_review_notice_hook_block(indent, newline)
+        if lines[begin_index : end_index + 1] == expected:
+            return content
+        return "".join(lines[:begin_index] + expected + lines[end_index + 1 :])
+
+    tree = _parse_content(content)
+    factory = _find_function_def(tree, "_make_bg_review_callbacks")
+    if factory is None:
+        return content
+    deliver = [
+        node
+        for node in factory.body
+        if isinstance(node, ast.FunctionDef) and node.name == "deliver"
+    ]
+    if len(deliver) != 1:
+        # The factory exists but its deliver closure drifted: refuse loudly
+        # instead of silently shipping uncarded review notices.
+        raise ValueError("background review deliver closure contract drifted")
+    lines = content.splitlines(keepends=True)
+    deliver_body = _body_location(deliver[0], lines)
+    if deliver_body is None:
+        raise ValueError("background review deliver closure contract drifted")
+
+    newline = _detect_newline(content)
+    insert_at, body_indent = deliver_body
+    hook = _render_bg_review_notice_hook_block(body_indent, newline)
+    return "".join(lines[:insert_at] + hook + lines[insert_at:])
+
+
 def _apply_hfc_command_patch(content: str) -> str:
     owned_block = _find_simple_marker_block(
         content,
@@ -1253,6 +1316,13 @@ def remove_patch(content: str) -> str:
         HYGIENE_NOTICE_PATCH_END,
         _render_hygiene_notice_hook_block,
         "hygiene notice patch markers",
+    )
+    content = _remove_simple_owned_patch(
+        content,
+        BG_REVIEW_NOTICE_PATCH_BEGIN,
+        BG_REVIEW_NOTICE_PATCH_END,
+        _render_bg_review_notice_hook_block,
+        "background review notice patch markers",
     )
     content = _remove_simple_owned_patch(
         content,
@@ -1407,6 +1477,7 @@ def remove_patch_lenient(content: str) -> str:
         (HFC_COMMAND_PATCH_BEGIN, HFC_COMMAND_PATCH_END),
         (PLATFORM_NOTICE_PATCH_BEGIN, PLATFORM_NOTICE_PATCH_END),
         (HYGIENE_NOTICE_PATCH_BEGIN, HYGIENE_NOTICE_PATCH_END),
+        (BG_REVIEW_NOTICE_PATCH_BEGIN, BG_REVIEW_NOTICE_PATCH_END),
         (SLASH_CONFIRM_PATCH_BEGIN, SLASH_CONFIRM_PATCH_END),
         (QUEUED_COMPLETE_PATCH_BEGIN, QUEUED_COMPLETE_PATCH_END),
     ):
@@ -2412,6 +2483,20 @@ def _find_async_function(tree, name: str):
         if isinstance(node, ast.ClassDef):
             for child in node.body:
                 if isinstance(child, ast.AsyncFunctionDef) and child.name == name:
+                    return child
+
+    return None
+
+
+def _find_function_def(tree, name: str):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef) and child.name == name:
                     return child
 
     return None
@@ -4880,6 +4965,7 @@ LEGACY_TARGET_PATCH_ADAPTERS = (
             (NATIVE_REDELIVERY_PATCH_BEGIN, NATIVE_REDELIVERY_PATCH_END),
             (PLATFORM_NOTICE_PATCH_BEGIN, PLATFORM_NOTICE_PATCH_END),
             (HYGIENE_NOTICE_PATCH_BEGIN, HYGIENE_NOTICE_PATCH_END),
+            (BG_REVIEW_NOTICE_PATCH_BEGIN, BG_REVIEW_NOTICE_PATCH_END),
             (HFC_COMMAND_PATCH_BEGIN, HFC_COMMAND_PATCH_END),
         ),
     ),
@@ -4944,7 +5030,7 @@ def apply_gateway_fragment(content: str, target: str, *, strategy="gateway_run_0
     for apply in (_apply_command_card_adapter_patch, _apply_hfc_command_patch,
                   _apply_slash_confirm_patch, _apply_command_card_startup_patch,
                   _apply_native_redelivery_patch, _apply_platform_notice_patch,
-                  _apply_hygiene_notice_patch):
+                  _apply_hygiene_notice_patch, _apply_bg_review_notice_patch):
         content = apply(content)
     return _apply_turn_callbacks(content, strategy=strategy)
 

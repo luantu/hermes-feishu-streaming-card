@@ -5482,6 +5482,19 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "notice_kind": "compression",
             "notice_id": _hfc_content_notice_id("compression", text),
         }
+    if (
+        "自我改进回顾" in text
+        or "self-improvement review" in lowered
+        or "background review" in lowered
+    ):
+        # Background review summaries (skills patched / memory gate), zh and
+        # en; delivered via the bg-review status lane.
+        return {
+            "title": "自我改进",
+            "level": "info",
+            "notice_kind": "self-improvement",
+            "notice_id": _hfc_content_notice_id("self-improvement", text),
+        }
     if ("gateway shutting down" in lowered or "gateway restart" in lowered
             # The restart/shutdown notice wording itself (both locales), which
             # carries no "gateway" keyword.
