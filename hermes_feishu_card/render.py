@@ -2881,7 +2881,9 @@ def _render_footer(
         return pill
     values = {
         "duration": _format_duration(duration),
-        "model": html.escape(model, quote=True) if compact else _colored_model_label(model),
+        # Fork (LOCAL_PATCHES 6.5): the compact/task footer also carries the
+        # normalized, colored model label instead of the raw id.
+        "model": _colored_model_label(model),
         "input_tokens": f"↑{_format_count(input_tokens)}",
         "output_tokens": f"↓{_format_count(output_tokens)}",
         "context": (

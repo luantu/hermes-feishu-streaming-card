@@ -144,7 +144,8 @@ def test_official_model_hook_reaches_terminal_session_and_footer():
         )
         assert session.apply(event)
         card = render_card(session, presentation="task")
-        assert "synthetic-configured-model" in json.dumps(card, ensure_ascii=False)
+        # Fork (LOCAL_PATCHES 6.5): footer shows the normalized model name.
+        assert "Configured Model" in json.dumps(card, ensure_ascii=False)
         assert "SYNTHETIC_PRIVATE_ENDPOINT" not in json.dumps(card)
     finally:
         runtime.close()
@@ -252,7 +253,8 @@ def test_official_api_usage_aggregates_one_turn_and_keeps_actual_response_model(
             raw = json.dumps(
                 render_card(session, presentation=presentation), ensure_ascii=False
             )
-            assert "synthetic-actual-last" in raw and "↑25" in raw and "↓8" in raw
+            # Fork (LOCAL_PATCHES 6.5): footer shows the normalized model name.
+            assert "Actual Last" in raw and "↑25" in raw and "↓8" in raw
             assert "ctx 0/0" not in raw
             assert (
                 "SYNTHETIC_PRIVATE_ENDPOINT" not in raw
@@ -336,7 +338,8 @@ def test_no_api_reports_only_known_model_and_duration_not_fake_zero_metrics():
             raw = json.dumps(
                 render_card(session, presentation=presentation), ensure_ascii=False
             )
-            assert "2s" in raw and "synthetic-configured-model" in raw
+            # Fork (LOCAL_PATCHES 6.5): footer shows the normalized model name.
+            assert "2s" in raw and "Configured Model" in raw
             assert "↑0" not in raw and "↓0" not in raw and "ctx 0/0" not in raw
     finally:
         runtime.close()
@@ -519,8 +522,9 @@ async def test_real_signed_http_terminal_delivers_measured_footer_to_actual_owne
         assert session.tokens == {"input_tokens": 10, "output_tokens": 3}
         assert "synthetic-real-response" in session.model
         assert session.status == "completed"
+        # Fork (LOCAL_PATCHES 6.5): rendered footer shows the normalized name.
         assert any(
-            "synthetic-real-response" in json.dumps(card)
+            "Real Response" in json.dumps(card)
             and "↑10" in json.dumps(card, ensure_ascii=False)
             and "↓3" in json.dumps(card, ensure_ascii=False)
             for card in cards

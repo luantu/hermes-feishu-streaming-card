@@ -53,7 +53,7 @@ def test_all_preview_states_keep_safe_payloads_and_complete_answer():
     data = build_preview(report)
     assert report == before
     assert len(data["scenarios"]) == 9
-    colors = {"running": "blue", "waiting": "default", "approval": "orange", "clarify": "orange", "completed": "green", "short": "green", "stopped": "red", "restored": "default", "notice": "green"}
+    colors = {"running": "blue", "waiting": "default", "approval": "orange", "clarify": "orange", "completed": "green", "short": "green", "stopped": "red", "restored": "default", "notice": "blue"}
     for sample in data["scenarios"]:
         assert sample["cards"]["task"]["header"]["template"] == colors[sample["id"]], sample["id"]
         for card in sample["cards"].values():

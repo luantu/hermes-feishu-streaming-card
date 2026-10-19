@@ -14585,7 +14585,10 @@ async def test_interaction_placement_matches_state_and_actual_send(client, runti
             payload["data"].pop("_hfc_runtime_admission")
         payload["thread_id"] = "omt_new_topic"
         payload["data"].update(reply_to_message_id="om_event_anchor", reply_in_thread=False)
-        expected = ("omt_new_topic", "om_original" if sticky else "om_event_anchor", sticky)
+        # Fork policy (LOCAL_PATCHES 2.6): thread routing disabled, no sticky
+        # placement and no event reply_in_thread, so both sticky values land on
+        # the explicit om_ anchor with an empty thread.
+        expected = ("", "om_event_anchor", False)
         original_send = feishu_client.send_card
         observed = []
 
@@ -14602,7 +14605,11 @@ async def test_interaction_placement_matches_state_and_actual_send(client, runti
         response = await test_client.post("/events", json=payload)
         assert response.status == 200
         assert observed == [(*expected, not runtime)]
-        assert (*feishu_client.sent[-1][2:], feishu_client.sent_reply_in_thread[-1]) == expected
+        # The wire-level send carries None for the disabled thread, while the
+        # interaction state records the empty string.
+        assert (*feishu_client.sent[-1][2:], feishu_client.sent_reply_in_thread[-1]) == (
+            None, "om_event_anchor", False,
+        )
         interaction = test_client.app[SESSIONS_KEY]["turn-runtime"].active_interaction
         assert (interaction.thread_id, interaction.reply_to_message_id, interaction.reply_in_thread) == expected
         assert len(feishu_client.sent) == 2
