@@ -3,7 +3,56 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V4.7.7 合并后（2026-10-12，merge commit ceeae11；Hermes 迁移外部运行时 + PM venv 安装，见 docs/fork-maintenance-guide.md 3.3）
+> 最后更新：V5.0.2 合并后（2026-10-19，merge commit ed0972b）
+
+---
+
+## 〇-J、V5.0.2 合并记录（2026-10-19，跨大版本 V5）
+
+上游 v4.7.7 → **v5.0.2**（158 提交，247 文件：V5 任务分区阅读/交互续答/维护边界、
+localized transient notice recall #434、PM persistent dependencies）。**7 个冲突文件**
+（.gitignore/config/feishu_client/patcher/render/server/session，14 块）：
+
+### 结构变化吸收
+- **config_rules.py**（V5 新模块）：`config.py` 变为 re-export；本地 fork 定制项
+  （`resend_after_seconds`/`card_orphan_timeout_seconds`）移入 config_rules 的
+  DEFAULT_CONFIG；`timeline_expanded` 默认值继续不设（LOCAL_PATCHES 6.3）。
+- **install/base_contracts.py**（V5）：本地 `_find_decomposed_base_patch_locations`
+  等被上游吸收后删除（patcher 改从 base_contracts import）；本地 ledgered renderer
+  保留作旧形态兼容。
+- **event_rules.py**（V5）：`thread_id_for_event`/`reply_to_message_id_for_event`/
+  `reply_in_thread_for_event` **三个 fork 策略函数统一改在本模块**（恒 None / 仅显式
+  om_ / 恒 False）——一处改全链路（server 的 placement 与全部 7 处调用点自动生效）。
+- **server.py 的 placement 体系**（V5）：`interaction_reply_placement` 采用上游，
+  `session_reply_in_thread=False` 禁用 sticky（fork 2.6）；`deliver_terminal`
+  （V5 终态投递：PATCH→retry→recover once）取代本地 `_retry_terminal_update`/
+  `_recover_terminal_card`；本地 stale_target 埋点、PATCH 埋点、多表格分卡
+  （`_render_session_cards`）保留。
+- **render.py**：compact/task footer 的模型名改用 `_colored_model_label`（归一带色，
+  fork 6.5 在 task 模式同样生效）。
+
+### ⚠️ PM 双源冲突（本次安装最大的坑，运维记录）
+安装时报 `PM admission refused`：**两个声明插件同时 enabled**——
+`hermes-feishu-card-runtime`（2026-10-09 Codex 建的，uv source 指向**仓库目录**）
+与 `hfc-runtime-dependency`（V5 新机制，**wheel 路径源**）——PM 解析同一包双源冲突。
+**处理**：从 `/Volumes/ExtWorkspace/.hermes/config.yaml` 的 `plugins.enabled` 移除
+`hermes-feishu-card-runtime`（备份 `config.yaml.bak-before-v5-install`），重跑 install
+后 PM 重建环境（bdbb9d70）成功注册 5.0.2。**恢复 install 前的兼容改动**：PM 环境需
+`ruamel.yaml`（Hermes PM resolver 依赖），以及本机需真实路径 HERMES_HOME：
+`HERMES_HOME=/Volumes/ExtWorkspace/.hermes python3 -m hermes_feishu_card.cli install
+--hermes-dir /Volumes/ExtWorkspace/.hermes/hermes-agent --yes`（V5 的 `_safe_directory`
+拒绝符号链接祖先，`/Users/luantu/.hermes` 链接路径会报 "PM dependency directory
+ancestry must be real directories"）。
+
+### 结果
+全量 60 failed / 6657 passed vs 基线 91 failed / 5033 passed（**零新增失败、净修复
+31 个**）；fork 特性锚点 18/18 在位。测试需 `HFC_FIXED_TAG_SOURCE_ROOT` 指向
+v2026.8.3 的 Git checkout（**必须用 /private/tmp 真实路径，/tmp 符号链接会被
+native probe 拒绝**）。
+
+---
+
+## 〇-I、V4.7.4 合并记录（2026-10-10）
 
 ---
 
