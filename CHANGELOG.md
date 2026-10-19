@@ -1,5 +1,32 @@
 # Changelog
 
+## v5.0.2 — 2026-10-17
+
+- Recall exact known en/zh redirect, interrupt and steer receipts (including active-subagent steering) through the same busy-entry and delay classifier; support the bare simplified-Chinese compression status (#434).
+- Match complete receipts so onboarding and appended guidance remain visible. Preserve queue/demoted-subagent messages, unknown translations and native Working heartbeat edit/cleanup behavior.
+- Thanks to Timeral for the reproduction and source analysis in #434; issue evidence is credited separately from code authorship, with all earlier credits retained.
+
+See [Chinese release notes](docs/release-notes-v5.0.2.md) and [English release notes](docs/release-notes-v5.0.2.en.md) for scope and verification boundaries.
+
+## v5.0.1 — 2026-10-16
+
+- Support verified inherited completion and approval-renderer seams in the two reported Hermes 0.22.x revisions (#428), retaining strict source checks, original interaction authority and exact restore. Optional split progress/provider capture remains outside this patch.
+- Register the exact HFC wheel through official PM plugin admission so future generations retain it (#431); re-resolve the selected runtime and verify source bytes, with owned rollback and uninstall.
+- Thanks to lanx214 and za8209 for issue evidence, and Lite-G for the independent compatibility analysis in PR #432 (code not incorporated). Earlier credits and authorship remain intact.
+
+See [Chinese release notes](docs/release-notes-v5.0.1.md) and [English release notes](docs/release-notes-v5.0.1.en.md) for compatibility, upgrade and verification boundaries.
+
+## v5.0.0 — 2026-10-15
+
+- Add opt-in task reading, continuation history folding, and verified continuation navigation. Resolve missing IM positions with one bounded exact-message lookup after confirmed delivery.
+- Preserve native interaction authority while displaying matched approval denials and natural clarify timeouts, including Hermes' specialized clarify executor. Keep confirmed clarification cards from duplicating native questions.
+- Restore observed per-turn model/provider, elapsed time, token and context footer data through the actual Gateway delivery chain.
+- Separate event, display, configuration, lifecycle and installer responsibilities while retaining identity checks, atomic ownership, fail-open boundaries and exact restore.
+- Expose loaded versus next-load reading configuration, minimal YAML and offline preview. Keep native tables opt-in with complete Markdown fallback.
+
+See [Chinese release notes](docs/release-notes-v5.0.0.md) and [English release notes](docs/release-notes-v5.0.0.en.md) for compatibility and verification boundaries.
+
+
 ## v4.7.7 — 2026-10-12
 
 Add opt-in native body tables (PR #391, @ywarmy). Preserve oversized headers and cells by falling back to the complete Markdown table before native conversion. Preserve indivisible Markdown tables instead of replacing them with fold notices; final payload limits still trigger the existing full-content handoff. See [release notes](docs/release-notes-v4.7.7.md).

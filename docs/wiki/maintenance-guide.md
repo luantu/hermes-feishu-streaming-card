@@ -31,8 +31,13 @@
 - 字段名必须贴合 Hermes 变量：`source`、`event`、`response`、`agent_result`、`event_message_id` 等。
 - Feishu topic 场景必须保留 `source.message_id` 和 `reply_to_message_id`；首回复建 thread 的 `reply_in_thread` 意图还必须进入 `CardSession`，并通过普通交互与 `RuntimeInteractionDeliveryReservation` 的所有新卡发送路径继续传递。create API 不接受 `receive_id_type=thread_id`：无 reply anchor 时实际发送必须回落父 `chat_id`，但 native-handoff 的 logical topic route/UUID identity 仍保持稳定。
 - `message.started` 必须从真实入站 `event.message_id` 绑定 `turn_id`；同一 `source` 的 stream/tool/terminal 回调复用这个 immutable identity。显式 `turn_id` 是 canonical turn hard fence，不能被 `message_id` 或 `reply_to_message_id` alias 覆盖；无法在 `source` 绑定私有属性时保持 legacy fail-open。
+- 官方 PluginRuntime 的所有事件还必须保留同一 ingress 的 `profile_id` / `profile_source`，包括 patch delta、状态提示、交互准入、工具观察和结束事件。事件 data 由统一身份绑定函数构造，调用方数据不得覆盖已验证的 profile；不能只在 started 写入身份，否则后续事件会创建另一份 session，留下未收尾卡片。
+- patch delta 使用协议支持的 `phase=update`。最终 `message.completed` / `message.failed` 的 HTTP 确认沿用运行时的 10 秒上限，并受调用者更短预算约束；不能再被普通 observer 超时截短。带有已知 runtime admission 协议的 patch `interaction.requested` 也使用该有界预算，因为它等待交互卡送达确认；其他事件保留原 observer 上限，未知结果仍不冒充成功。
+- Hybrid 最终投递回执必须穿过 `TurnRunner.run_sync` 的正常与空响应结果重组分支，再由外层 Gateway 一次性消费；只验证 finalizer 和消费 helper 不足以证明真实链路。回归应执行固定上游源码的两个原始 Return AST，核对除私有回执外所有原字段保持一致。排队续问在递归前直接投递上一轮结果，必须在该实际出口独立消费同一回执并保留正文、历史与后续回调。响应含 `MEDIA:` 附件标签、Gateway 后续追加附件或改写响应时，保留原生投递，不能让早期卡片回执吞掉新增内容。
+- Hybrid 原生工具提示在 callback 入队前和 sender 每次出队后检查当前卡片所有权，保留独立日志。只有同一 canonical turn、profile、chat/thread、Gateway session 与 generation 的 `CARD_ACTIVE` 才抑制；未知、未接管、其他平台及异常继续原生路径。后台 sender 启动早于接管，不能仅在方法入口检查一次。接受证明仅存于同一个 `TurnContext`，绑定同一 runtime 和完整路由，终结后用于丢弃该上下文的进度尾队列；换轮次、换 runtime 或 runtime 关闭不得复用。取消任务时也检查该证明，避免最后一次队列清空或编辑重新产生原生提示。
 - stable tool lifecycle 与 legacy progress callback 不能同时投递同一调用；wrapper 检测必须读取 agent 当前实际 callback，显式 fallback 标记仅用于卡片路径未接受时恢复原生进度。
 - 已识别 `system.notice` 必须按 sidecar 结果分流：已有卡片异步更新的 `accepted` 与独立卡首次投递的 `delivered` 抑制原生文本，`not_sent` 回退原始通知文本，`unknown` 只尝试固定通用提示且不重复原始通知文本；`accepted` 必须同时带有 `applied=true`，不可解析响应一律视为 `unknown`。
+- canonical turn 的 thread/task carrier、有限 registry 与弱 Agent 引用由 `canonical_turn.py` 单独持有；hook 入口为直接兼容导出，PluginRuntime 直接读取同一模块，不反向导入 hook adapter。不可为了 footer 新建第二份身份或授权状态。
 - 上下文压缩只从 `_status_callback_sync` 的固定 `Compacting context` 标记产生 `context-compaction`；不得用静默 watchdog、普通 compression 文本或虚构百分比推断。
 - cron completion hook 必须位于 `extract_media` / `media_files` 过滤之后：`native_delivery=required` 时清空原生正文但继续文件上传，不能在媒体提取前提前返回。
 - 不得恢复固定 command allowlist；built-in、alias、plugin/quick、unknown feedback 都必须经过统一 command context。V4.2.0 的飞书私聊裸 `/update` 必须优先进入专用维护流；群聊、非飞书、别名和带参数更新仍使用 Hermes 原 handler。
@@ -45,7 +50,7 @@
 - slash-confirm 必须在回调线程先原子 claim pending state，再提交到 Gateway loop；submit 返回 false 或抛错时必须回退执行，不能空 ACK 后丢失点击。
 - slash-confirm 回调接管须核对同步、异步两个实际方法，不能仅信任可继承或重绑定后残留的 installed 标记。旧 dispatcher 进入异步 fallback 时，也必须更新原确认卡；更新和补发 reply anchor 只使用发送时保存的 IM message ID，不能使用点击 token。不能靠注册通用 `/card` 命令来绕过原交互的身份和一次性确认校验。
 - schema-2 form submit 的按钮名携带 callback token；Gateway 转发前要求非空 chat 和可验证操作者，sidecar 再要求 token/chat 完全匹配。
-- `interaction.requested` 对 `/events` 只 POST 一次；响应丢失后只允许只读查询 interaction 状态，禁止重放事件。
+- `interaction.requested` 对 `/events` 只 POST 一次；响应丢失后只允许只读查询 interaction 状态，禁止重放事件。官方插件通过独立签名的 `GET /interactions/{id}/delivery` 核对原 interaction id 和完整 admission descriptor 的摘要，查询最多 3 秒，不刷新等待心跳或触发过期处理；摘要只在平台送达且当前 reservation 提交后绑定到该 interaction 对象，后续选择结果更新保留，新建同 id 对象不得继承。缺失或不匹配的摘要不能证明已送达，不能据此抑制原生交互。
 - 非回环 sidecar 的 `/card/actions`、`/interactions/{id}` 与 `/messages/{id}/summary` 必须使用独立 `hfc-sidecar-request-v1` proof；签名绑定 HTTP method、规范 path 与 raw body，不能复用 `/events` proof，也不能只把 callback token 当作网络认证。
 - Gateway poll 到达 deadline 时只 best-effort 发送一次新的 `interaction.failed`，不得重放原始 `interaction.requested`；发送失败保持 fail-open，不循环重试。
 - policy cache 必须有界、短 TTL、线程安全且按 profile/chat/endpoint 隔离；认证、timeout、reload 或响应异常全部回到 Hermes 原生路径。terminal 必须清理 turn 决策、pending delta 和 native-media suppression。
@@ -90,7 +95,13 @@
 
 只读快照在能力探测结束或构建异常后必须回收。删除前只通过绑定的目录描述符恢复本目录写权限，不改文件权限、不沿符号链接进入外部目录；身份变化时保留未知路径并报告清理未完成。正常关闭、异常、重复关闭、目录重绑定、符号链接和硬链接保护见 `tests/unit/test_native_snapshot_cleanup.py`。与 `tests/unit/test_native_hook_capabilities.py`、安装检测和 CLI 安装一起验证。收尾应同时检查任务目录与实际系统临时目录，不能只看 `TMPDIR`。
 
+native 来源探测在快照前后分别用可信 Git 验证 HEAD 与 clean state。HEAD 与 status 各有 5 秒有界预算，不重试、不缓存来源、不省略末尾复核；超时继续拒绝能力。公开 refusal 保持兼容，诊断中的 `stage=git_head kind=timeout` 才说明读取超时，不能从 `source_commit_mismatch` 单独推断实际提交漂移。
+
 ### `hermes_feishu_card/install/patcher.py`
+
+Cron 的交付位置定位在 `install/cron_contracts.py`，通用正文/docstring 位置在 `install/ast_contracts.py`；不得把媒体 hook 移到 extract/filter 之前，或用文件拆分改变旧源码接受范围。
+
+Gateway stale-result 的 AST 来源绑定判断在 `install/gateway_contracts.py`。handler 发现、marker、生成与写回仍由 patcher 管理；不得借提取放宽唯一 guard、同块赋值、原 source/pinned tuple 及禁止重赋值的条件。
 
 职责：
 
@@ -122,6 +133,9 @@
 - 自动 repair 只适用于 known-safe state；`--no-repair` 必须保持有效，用户编辑不能被覆盖。
 - `integrity.mode=safe` 还必须验证 Git root/ancestry/current blobs、provenance、anchors、可逆 patch 和 mutation 前 fingerprint；runtime heartbeat 本身不构成 mutation 权限。修复只设置 restart required，不能自动重启 Gateway。
 - 调整 planner/executor 时运行 `tests/unit/test_recovery.py`、`tests/unit/test_operations.py`、`tests/integration/test_server.py`；涉及安装器时再加 `tests/integration/test_cli_install.py`。
+- Recovery/Integrity/CLI 的 secure filesystem primitive 共同归 `install/posix_transaction.py`：目录身份、bound read/stage/replace/unlink 和 cleanup 故障必须注入实际 owner。planner fingerprint、Git/provenance、锁、pre/post validate、逆序回滚仍在原入口；不能把 CLI portable fallback 或原不存在目录的策略用于强恢复。
+- 变更共同 I/O 时同时验证 `tests/unit/test_recovery.py`、`tests/unit/test_integrity.py`、`tests/integration/test_cli_integrity.py` 和 `tests/integration/test_cli_install.py`，重点保留 parent ABA/swap、同 inode 编辑、stage 替换、失败 rollback 与原 bytes/mode；最后执行 full/package/platform 门禁。实现与独立验收分开。
+- 固定版本 Hybrid 安装的 `terminal_disposition` 已扩展投递回执与原生进度边界。检查和恢复旧清单时，只接受 canonical backup 经精确历史 renderer 生成、与受管文件逐字节相等的版本；不能通过忽略缺失 marker 来迁就旧安装。旧 revision 的检查明确要求先官方 restore 再 install，不得将旧 hook 报为新版安装完成。新安装使用完整新 fragment 集合，旧版普通安装到新版检查/恢复必须单独回归。
 - ownership manifest 与 recovery plan 的受管相对路径统一写成 POSIX 表示。兼容旧 Windows manifest 时只可把 `\\` 规范化为 `/` 后做精确等值比较；绝对路径、父目录跳转或多余后缀仍须拒绝。
 
 ### `hermes_feishu_card/process.py` and sidecar lifecycle
@@ -326,3 +340,41 @@ Orphaned integrity fences can be explicitly rebound with `integrity acknowledge-
 ## V4.7.7 表格内容保留
 
 原生表格的 1,200 字符限制只决定是否转换，不能截断最终答案；任一表头或单元格超限时整表回退原 Markdown。Markdown 分段若无法安全拆开表头或行，保留整表交给最终 serializer/容量门禁，禁止以折叠提示替代原文。测试必须验证实际正文、task 展示、混合顺序和超限完整交接；session 中保留原文不能替代投递内容完整性。
+
+
+## V3 插件启用诊断
+
+官方 enable 命令失败与配置所有权拒绝分别呈现：preimage 后配置漂移、官方命令修改无关配置保留各自固定错误原因，便于定位。未知异常仍只显示 `official plugin enable failed`，不转发任意异常文本。原始异常通过 cause 保留供受控排查，配置恢复、prepared manifest 和源码写入门禁不变。
+
+Hermes 对已启用的插件可只更新 `allow_tool_override: false`，不排序启用列表，也不补写缺失的 `plugins.disabled`。安装器只在 preimage 已启用 HFC 时接受这个精确分支，同时保留原列表规范化分支；两种期望均在运行官方命令前从 preimage 派生。其他插件条目和非插件配置仍须完全一致，拒绝时仍逐字恢复配置，不能通过忽略整个 `plugins` 区域或预先改写用户配置规避检查。
+
+
+## 官方插件的本轮 footer 指标
+
+`post_api_request` 只接收已绑定 turn/session/platform 的归一化 usage、模型名及 request id；不保存原始 response 或 provider URL。每轮最多记录 256 个 request id，重放不重复累计，缺失任一次 usage 或超出上限时省略本轮 token 合计。上下文使用量只取最新独立请求的实际 prompt token；该请求 usage 缺失时清空旧值，不把上一请求当作最新值。容量通过既有 canonical turn carrier 的弱引用读取当前 `context_compressor.context_length`；同线程/task、当前 turn 不匹配或容量未知时不显示虚构的零值。耗时从本轮 pre-LLM 观察开始计算，不把工具等待时间称为模型推理时间。
+
+新增 publish 参数由官方安装器生成，旧安装只通过已知模板逐字重建验证后 restore，再重新安装；不得手改已安装 Hermes。指标只服务显示，不授予执行或交互所有权。交互卡明确 ACK 后，即使用户已先完成选择，也保留同一 pending identity 的卡片交付所有权，避免再次发送原生问题。
+
+交互卡已明确接管后，原 `wait_for_response` 的异常继续沿 Hermes 调用路径传播，不得被准入的 fail-open 捕获后重发原生题目。未接管或未知接点仍保留原生路径；取消、超时和未知错误不得伪造用户答案。
+
+
+交互送达回执不确定时，只发送一次准入 POST，再通过认证的 `GET /interactions/{id}/delivery` 查询完整身份指纹。这个只读端点不更新等待者心跳或过期状态；不可用通用 result poll 替代。指纹仅在 Feishu 送达且原 reservation commit 成功后写入同一个 InteractionState；新建同 ID 对象不得继承证明，检查点不恢复它。查询响应上限 64 KiB，整次查询最多 3 秒，包含响应头和分块读取；不另建常驻线程或后台重试。没有匹配证明时仍走原生回退。
+
+实际 PluginManager 注册清单必须包含 `post_api_request`，与插件真实注册的完整集合严格相等。安装能力验证不得只检查处理函数存在，或从被测常量生成预期集合而漏掉注册接线。历史恢复只识别已知完整 revision 组合，不能任意混搭旧 publish、clarify 和 terminal 模板。
+
+
+## Hermes 0.22.x 与 PM 依赖登记
+
+以下兼容性与依赖登记修复包含在 V5.0.1；发行和真实环境验收边界见[发行说明](../release-notes-v5.0.1.md)。
+
+Issue [#428](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/428) 的两个固定源码修订 `297552a9d646119871391d202509822cd86330df`、`7bda2a3368024f7ae1c70cef16583e7c2c891674` 把 post-turn hooks 和最终响应投递移入 `GatewayTurnPersistenceMixin`。安装器同时核对 handler 的 import/继承关系、MRO 前置 mixin 无遮蔽、调用参数与 `agent:end`；计时仍从原 handler 传入，completion 只写在 persistence owner。缺少来源、重绑定、接点重复或契约漂移均拒绝安装。旧 V4 manifest 增加这组源码目标时，先验证原备份与 ownership，再要求 `--accept-hermes-upgrade`；成功后 restore 恢复新源码的原始字节。
+
+审批 hook 位于 `_render_approval_sync` 的 context binding 后，保留原 `_approval_notify_sync` 的 generation check 和 observer registration。等待期间及解析前再核对原 generation，通过 Hermes 的原 request ID/queue resolver 解析一次。`PendingControls` 仍只是原队列的视图；重复或已撤销的 request 不能批准下一项。原生 fallback 与异常退出仍由 Hermes 处理，不持久化执行 handle。
+
+Issue [#431](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/431) 的故障来自直接 pip 安装只覆盖当前 PM venv。PM 代次从声明重建时，这种临时安装会消失。`install/pm_dependency.py` 现在在所选 Hermes HOME 的 `plugins/hfc-runtime-dependency/` 保存精确普通 wheel、仅含依赖的 virtual `pyproject.toml` 与 `.hfc-owner.json`。它通过官方 `hermes_cli.plugins_admission.admit_plugin_set_change` 登记 `plugins.enabled`，保留其他 enabled/disabled 与配置项；不直接编辑 PM facts 或 lock。该目录无 runtime manifest 和 `register()`，实际 producer 仍是 wheel 的唯一 `hermes_agent.plugins` entry point。`tool.uv.sources` 使用目录内 wheel path，PM 复制 workspace 后继续使用相同包字节。
+
+已经能够 import 同版本也必须完成登记。登记后重新读取 committed venv，并核对 `site-packages`、wheel 来源摘要及每个包资源字节。显式 install spec 不会换成同版本 PyPI 包；wheel 缓存不依赖原下载临时目录。POSIX 路径使用绑定目录描述符的 rename，Windows 沿用显式 lstat/目录身份复检的 portable 安装边界；未知 PM API、明确 disabled、未归属目录、用户修改及不确定文件状态均拒绝覆盖。跨 profile 的共享依赖冲突交给 PM 原 resolver 拒绝，不自动移除另一 profile 的依赖。
+
+普通安装失败会撤回本次新增 selection，并恢复本次替换前的 owned dependency source。PM 是否已提交不能确认时，保留 source 与诊断材料，不把超时当成未安装。`restore` 只恢复 hooks，保留依赖；`uninstall` 在 hooks 恢复后通过同一 admission API 移除 HFC 自己新增的 selection 和未修改的 owned source，不认领用户预先登记的依赖。旧版非 PM 的 pip 安装路径保持独立。
+
+验证分层：离线 fixture 覆盖漂移拒绝、旧布局、V4 扩展迁移及逐字 restore；两个固定 SHA 另跑真实源码安装矩阵和原审批 queue/controls。PM 集成测试在私有 HOME 的最小 project 中执行固定上游的真实 dependency engine，注入现成 uv/Python 仅用于供应工具；A→B 两代均通过独立子进程从普通 wheel 导入，并检查唯一 entry point。portable 分支在本机做故障注入，尚未执行 Windows 主机验收。它没有运行完整 Hermes dependency closure、PM worker transport、生产 updater、实际 Gateway/model 或真实飞书客户端。全量 preflight 仍使用固定 `v2026.8.3` Git fixture；不能用其通过替代上述 pinned 检查。

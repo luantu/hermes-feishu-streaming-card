@@ -16,3 +16,6 @@ build/
 .codegraph/
 .agents/
 uv.lock
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
