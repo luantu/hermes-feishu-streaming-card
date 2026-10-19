@@ -226,7 +226,8 @@ def test_task_completion_retains_exactly_one_completion_marker(reply_anchor):
     value = session(status="completed", answer_text="验收结果", duration=12, reply_to_message_id=reply_anchor, model="deepseek/model")
     card = render_card(value, presentation="task")
     assert json.dumps(card, ensure_ascii=False).count("已完成") == 1
-    assert "12s" in str(card) and "deepseek/model" in str(card)
+    # Fork (LOCAL_PATCHES 6.5): the task footer shows the normalized name.
+    assert "12s" in str(card) and "DeepSeek Model" in str(card)
 
 
 def test_task_phase_without_tool_stays_visible_in_body():

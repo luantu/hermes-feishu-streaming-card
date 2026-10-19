@@ -383,6 +383,7 @@
     "hermes_feishu_card/metrics.py": [
       "runtime"
     ],
+    "hermes_feishu_card/model_names.py": ["render", "appearance"],
     "hermes_feishu_card/native_commands.py": [
       "commands"
     ],
