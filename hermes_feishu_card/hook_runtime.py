@@ -146,6 +146,13 @@ _CONTEXT_COMPACTION_STATUS_RE = re.compile(
     r"\bCompacting\s+context\b",
     re.IGNORECASE,
 )
+# Producer: agent/chat_completion_helpers.py `_buffer_fallback_notice` ->
+# `_emit_pending_fallback_notice` (status rail). Anchored, so an answer that
+# merely quotes the phrase stays an answer.
+_MODEL_FALLBACK_NOTICE_RE = re.compile(
+    r"\A⚠️?\s*(?:Model fallback|模型回退)\s*[:：]",
+    re.IGNORECASE,
+)
 MEDIA_RE = re.compile(r"MEDIA:([^\s\]]+)")
 LOCAL_FILE_RE = re.compile(
     r"(?<![:\w/])(/[^\s`]+\.(?:png|jpg|jpeg|webp|gif|pdf|txt|md|csv|xlsx|docx|mp3|wav|ogg|mp4|mov|webm))"
@@ -5010,6 +5017,20 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "notice_id": _hfc_content_notice_id("gateway-online", text),
             "notice_terminal": True,
         }
+    if _MODEL_FALLBACK_NOTICE_RE.match(text):
+        # A provider/model switch is durable state the operator must see (the turn
+        # continues on a DIFFERENT model), but it travels the status rail, not the
+        # notice producers: `_emit_diagnostic_status` -> gateway `_status_callback_sync`
+        # -> `adapter.send`, so this classifier — the one hop every native send still
+        # takes — is where it becomes a card. Before this rule it fell through as a
+        # native text line ("为什么没有被notice消息收编").
+        return {
+            "title": "模型回退",
+            "level": "warning",
+            "notice_kind": "model-fallback",
+            "notice_id": _hfc_content_notice_id("model-fallback", text),
+            "notice_terminal": True,
+        }
     return None
 
 
@@ -5194,13 +5215,15 @@ async def _hfc_send_system_notice_card(
                 message_id = _hfc_independent_notice_message_id(
                     chat_id, str(content or ""), notice, anchor=message_id
                 )
-            elif notice_kind in {"background-task", "gateway-shutdown", "gateway-online"}:
+            elif notice_kind in {"background-task", "gateway-shutdown", "gateway-online",
+                                 "model-fallback"}:
                 # Fork (LOCAL_PATCHES 3.5): gateway status notices (restarting /
                 # shutting down / back online) are standalone messages, not
                 # progress on the current turn — they get their own minimal
                 # notice card instead of folding into the session card. Their
                 # independent id comes from the content hash below, so a
-                # repeated notice updates its own card.
+                # repeated notice updates its own card. model-fallback joins
+                # them: the switch is its own piece of news, not turn progress.
                 anchored_scope = "independent"
             else:
                 anchored_scope = "session"

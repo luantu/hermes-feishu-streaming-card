@@ -3,7 +3,8 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：V5.0.2 合并后（2026-10-19，merge commit ed0972b）
+> 最后更新：2026-10-20（〇-E 模型回退通知收卡）；上一位：V5.0.2 合并后
+> （2026-10-19，merge commit ed0972b）
 
 ---
 
@@ -551,6 +552,38 @@ delete memory entries…"）由 `agent/background_review.py` → gateway
 
 ---
 
+## 〇-E、模型回退通知收纳进 notice 极简卡（2026-10-20，本地新增补丁组）
+
+Hermes 的模型回退通知（"⚠️ Model fallback: tx-deepseek-v4-1-flash via custom
+unavailable (rate limit); using glm-5.3-flash via custom. Primary retry eligible
+in ~60 s; recovery is not guaranteed."）走**状态回调管线**而非通知生产者：
+`agent/chat_completion_helpers.py::_buffer_fallback_notice` →
+`_emit_pending_fallback_notice`（agent/status_output.py，经
+`_emit_diagnostic_status`）→ gateway `run_turn_runner.py::_status_callback_sync`
+（HFC status 锚点未识别该文案，返回 False）→ `_send_or_update_status_coro` →
+`adapter.send`（飞书适配器无 `send_or_update_status`）。
+
+分类器此前没有该文案的规则，`_hfc_send_system_notice_card` 返回
+"not a system notice"，落回原生大文本（用户报"为什么没有被 notice 消息收编"）。
+
+- `hook_runtime.py::_hfc_classify_system_notice`：新增 `_MODEL_FALLBACK_NOTICE_RE`
+  （`\A⚠️?\s*(?:Model fallback|模型回退)\s*[:：]`，行首锚定——正文中引用该短语的
+  回答不误判）→ `model-fallback` 分类（title 模型回退 / level warning /
+  `notice_terminal: True`）。命中后由 send wrapper 的既有分类投递路径成卡，
+  原生文本不再重复发出。
+- `_hfc_send_system_notice_card`：`model-fallback` 加入
+  `{"background-task", "gateway-shutdown", "gateway-online"}` 独立作用域集合
+  （切换模型是独立一条消息，不折进当前回合卡）。
+- 测试：`test_model_fallback_notice_classifies_as_its_own_warning_notice`、
+  `test_quoted_or_loose_fallback_wording_is_not_a_notice`、
+  `test_status_rail_model_fallback_send_becomes_an_independent_notice_card`、
+  `test_model_fallback_notice_degrades_to_native_text_when_the_sidecar_is_off`
+  （sidecar 关闭时回落原生原文，绝不静默丢失通知）。
+
+> 上游若自行实现同类通知卡片化，合并时以上游为准并移除本节差异。
+
+---
+
 ## 一、render.py
 
 ### 1.1 GIF 动画 footer
@@ -759,6 +792,7 @@ delete memory entries…"）由 `agent/background_review.py` → gateway
 | `server.py` | `_reply_to_message_id_for_event` 仅显式 `reply_to_message_id` | 禁止自动回复锚点 |
 | `server.py` | `_is_emoji_only` | emoji 应答删卡 |
 | `hook_runtime.py` | `_bind_source_turn` / lazy-bind | 无 started 新流独立 turn_id |
+| `hook_runtime.py` | `_MODEL_FALLBACK_NOTICE_RE` / `"model-fallback"` | 模型回退通知收卡（〇-E） |
 | `hook_runtime.py` | `_hfc_content_was_carded` | 原生重复抑制 |
 | `hook_runtime.py` | `_hfc_log_native_send` / `_hfc_policy_terminal_log` | 终态/抑制日志 |
 | `hook_runtime.py` | `_is_emoji_only_answer` / `_event_was_delivered` | 队列抑制 + emoji 跳过 |

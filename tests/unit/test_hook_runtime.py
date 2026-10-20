@@ -13741,3 +13741,111 @@ def test_gateway_status_notices_take_the_independent_scope():
     source = inspect.getsource(hook_runtime._hfc_send_system_notice_card)
     assert '"gateway-shutdown", "gateway-online"' in source
     assert 'anchored_scope = "independent"' in source
+    assert '"model-fallback"' in source
+
+
+_MODEL_FALLBACK_TEXT = (
+    "⚠️ Model fallback: tx-deepseek-v4-1-flash via custom unavailable (rate limit); "
+    "using glm-5.3-flash via custom. Primary retry eligible in ~60 s; recovery is not guaranteed."
+)
+
+
+def test_model_fallback_notice_classifies_as_its_own_warning_notice():
+    """The status-rail fallback line is durable operator state, so it becomes a notice.
+
+    Producer: agent/chat_completion_helpers.py `_buffer_fallback_notice` ->
+    `_emit_pending_fallback_notice`. It travels the gateway status rail
+    (`_status_callback_sync` -> `adapter.send`), where this classifier is the one hop
+    every native send still takes; before this rule it went out as a native text line.
+    """
+    notice = hook_runtime._hfc_classify_system_notice(_MODEL_FALLBACK_TEXT)
+    assert notice is not None
+    assert notice['notice_kind'] == 'model-fallback'
+    assert notice['title'] == '模型回退'
+    assert notice['level'] == 'warning'
+    assert notice['notice_terminal'] is True
+    assert hook_runtime._hfc_notice_plain_text(notice) is None
+    assert hook_runtime._hfc_classify_system_notice("⚠ Model fallback: a via b; using c via d.") is not None
+    assert hook_runtime._hfc_classify_system_notice("⚠️ 模型回退：主模型不可用，已切换。") is not None
+
+
+@pytest.mark.parametrize('text', [
+    "解释一下 ⚠️ Model fallback: a via b unavailable; using c via d.",
+    "The Model fallback: mechanism is documented.",
+    "⚠️ Model fallback without the colon stays prose.",
+])
+def test_quoted_or_loose_fallback_wording_is_not_a_notice(text):
+    assert hook_runtime._hfc_classify_system_notice(text) is None
+
+
+def test_status_rail_model_fallback_send_becomes_an_independent_notice_card(monkeypatch):
+    """The fallback line is carded on the send hop, so no native text goes out too."""
+    route, sent = [], []
+
+    class Adapter:
+        async def _hfc_original_send(self, chat_id, content, **kwargs):
+            sent.append(content)
+            return SimpleNamespace(success=True, message_id="om_native")
+
+    async def allowed(chat_id):
+        return True
+
+    async def post(url, payload, timeout):
+        route.append((url, payload))
+        return {"ok": True, "applied": True, "delivery": {"outcome": "delivered"}}
+
+    monkeypatch.setattr(hook_runtime, "load_runtime_config", lambda: SimpleNamespace(
+        enabled=True, event_url="http://127.0.0.1:8765/events", timeout_seconds=0.1))
+    monkeypatch.setattr(hook_runtime, "_hfc_direct_card_allowed_async", allowed)
+    monkeypatch.setattr(hook_runtime, "_hfc_take_feishu_command_result_context", lambda **kwargs: None)
+    monkeypatch.setattr(hook_runtime, "_post_json_ordered_response", post)
+    token = hook_runtime._HFC_FEISHU_NOTICE_CONTEXT.set(None)
+    try:
+        result = asyncio.run(hook_runtime._hfc_send_with_native_command_result_card(
+            Adapter(), "oc_fixture", _MODEL_FALLBACK_TEXT))
+    finally:
+        hook_runtime._HFC_FEISHU_NOTICE_CONTEXT.reset(token)
+
+    assert result.success is True
+    assert sent == [], "the fallback notice must not also go out as native text"
+    [(url, payload)] = route
+    assert url.endswith("/events")
+    assert payload["event"] == "system.notice"
+    data = payload["data"]
+    assert data["notice_kind"] == "model-fallback"
+    assert data["notice_scope"] == "independent"
+    assert data["notice_terminal"] is True
+    assert data["content"] == _MODEL_FALLBACK_TEXT
+
+
+def test_model_fallback_notice_degrades_to_native_text_when_the_sidecar_is_off(monkeypatch):
+    """A classifier hit must never swallow the notice: sidecar off -> the exact native line."""
+    route, sent = [], []
+
+    class Adapter:
+        async def _hfc_original_send(self, chat_id, content, **kwargs):
+            sent.append(content)
+            return SimpleNamespace(success=True, message_id="om_native")
+
+    async def allowed(chat_id):
+        return True
+
+    async def post(url, payload, timeout):
+        route.append((url, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr(hook_runtime, "load_runtime_config", lambda: SimpleNamespace(
+        enabled=False, event_url="http://127.0.0.1:8765/events", timeout_seconds=0.1))
+    monkeypatch.setattr(hook_runtime, "_hfc_direct_card_allowed_async", allowed)
+    monkeypatch.setattr(hook_runtime, "_hfc_take_feishu_command_result_context", lambda **kwargs: None)
+    monkeypatch.setattr(hook_runtime, "_post_json_ordered_response", post)
+    token = hook_runtime._HFC_FEISHU_NOTICE_CONTEXT.set(None)
+    try:
+        result = asyncio.run(hook_runtime._hfc_send_with_native_command_result_card(
+            Adapter(), "oc_fixture", _MODEL_FALLBACK_TEXT))
+    finally:
+        hook_runtime._HFC_FEISHU_NOTICE_CONTEXT.reset(token)
+
+    assert route == []
+    assert result.success is True
+    assert sent == [_MODEL_FALLBACK_TEXT]
