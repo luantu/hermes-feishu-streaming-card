@@ -156,6 +156,14 @@ def test_split_row_is_repaired_before_native_conversion():
     )
 
 
+def test_intended_cell_break_survives_into_a_native_cell_as_br():
+    """A preserved break must reach the native cell too: real newlines flatten to spaces,
+    so only the explicit ``<br>`` token keeps the break the model asked for."""
+    answer = "| a | b | c |\n| --- | --- | --- |\n| **第一行**\n\n**第二行** | 无 | 写入 |\n"
+    card = render_card(_session(answer), native_tables=True)
+    assert _table_element(card)["rows"][0]["c0"] == "**第一行**<br>**第二行**"
+
+
 def test_column_widths_are_content_driven_and_sum_to_100():
     table = next(
         block.table

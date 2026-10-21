@@ -305,6 +305,12 @@ def repair_split_table_rows(text: str) -> str:
     arithmetic is the proof, so ordinary prose after a table is left alone. Display-only:
     the canonical session text is unchanged, and a text without the defect is returned
     byte for byte.
+
+    A ``**``-prefixed continuation spans a break in two ways, and the repair keeps them
+    apart (``_table_row_join_separator``): a marker the model left open across the break
+    is fused back into one run, while a break between two balanced runs is preserved as
+    ``<br>`` — never dropped, and never a literal ``\\n``. A cell whose spill does not
+    restore the header's column count is left exactly as it was.
     """
     if not text or "|" not in text:
         return text
@@ -369,12 +375,29 @@ def _join_split_table_row(
         return None
     if not _table_row_terminated(continuation):
         return None
-    merged_body = lines[index].rstrip("\r\n") + body
+    truncated = lines[index].rstrip("\r\n")
+    merged_body = truncated + _table_row_join_separator(truncated, body) + body
     merged_cells = _parse_markdown_row(merged_body)
     if merged_cells is None or len(merged_cells) != column_count:
         return None
     ending = continuation[len(body):]
     return merged_body + ending, cursor - index + 1
+
+
+def _table_row_join_separator(truncated: str, continuation: str) -> str:
+    """``""`` when the two pieces close one inline marker, else a hard break ``<br>``.
+
+    ``"| **代价"`` + ``"** | 无 | …"`` is a cell the model wrapped around a paragraph
+    break: the marker spans the break, so fusing it back yields ``**代价**`` and no
+    break was intended. When the tail's ``**`` run is already balanced, the
+    continuation starts a NEW bold run and the break was a break: preserve it as
+    ``<br>`` — Feishu's markdown line-break syntax — instead of dropping it or
+    emitting a literal ``\\n`` (which their supported-syntax table does not list).
+    """
+    tail = truncated.rsplit("|", 1)[-1]
+    if tail.count("**") % 2 == 1 and continuation.lstrip().startswith("**"):
+        return ""
+    return "<br>"
 
 
 def split_markdown_blocks(text: str, max_block_size: int) -> list[str]:

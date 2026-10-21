@@ -71,6 +71,26 @@ def test_streaming_arrival_without_the_continuation_yet_is_left_alone():
     assert repair_split_table_rows(partial) == partial
 
 
+def test_break_between_two_balanced_bold_runs_is_kept_as_a_br():
+    """A break the model did not open a marker across is a break, not a wrap.
+
+    Feishu's supported-syntax table expressses 换行 as ``<br>`` — a literal ``\\n``
+    is not one of its line-break forms, so the break must not be fused away either.
+    """
+    text = "| a | b | c |\n| --- | --- | --- |\n| **第一行**\n\n**第二行** | 无 | 写入 |\n"
+    repaired = repair_split_table_rows(text)
+    assert "| **第一行**<br>**第二行** | 无 | 写入 |\n" in repaired
+    assert repaired.count("<br>") == 1
+    assert repair_split_table_rows(repaired) == repaired
+    cells = _parse_markdown_row_line(repaired.split("\n")[2])
+    assert cells == ["**第一行**<br>**第二行**", "无", "写入"]
+
+
+def _parse_markdown_row_line(line: str) -> list[str] | None:
+    from hermes_feishu_card.text import _parse_markdown_row
+    return _parse_markdown_row(line)
+
+
 def test_normalize_removes_think_tags():
     raw = "<think>我在分析</think>\n最终不会出现标签"
     assert normalize_stream_text(raw) == "我在分析\n最终不会出现标签"
