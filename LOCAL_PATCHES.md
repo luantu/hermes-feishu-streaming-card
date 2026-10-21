@@ -3,8 +3,8 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：2026-10-20（〇-E 模型回退通知收卡）；上一位：V5.0.2 合并后
-> （2026-10-19，merge commit ed0972b）
+> 最后更新：2026-10-21（〇-F 表格行修复 + native_tables 开启）；上一位：〇-E 模型回退
+> 通知收卡（2026-10-20）；再上一位：V5.0.2 合并（2026-10-19，merge commit ed0972b）
 
 ---
 
@@ -584,6 +584,41 @@ in ~60 s; recovery is not guaranteed."）走**状态回调管线**而非通知�
 
 ---
 
+## 〇-F、表格行修复 + 开启原生表格（2026-10-21，本地新增补丁组）
+
+**现象**（Bailey 报"最近这一条消息没有被飞书识别为表格"）：一条 780 字回答在飞书里整块
+显示为竖线文本。**根因在模型输出**：表格最后一行被写成 `| **代价` + 空行 +
+`** | 无 | …`（加粗标记跨了段落空行）。Markdown 的表格在空行处结束，截断行只剩 1 列
+（表头 3 列），飞书解析不了就整块退化为 raw markdown。HFC 侧核对过：正文原样进入单个
+markdown 元素（4061 字节，远低于限额），`transform_table_overflow` 只在 >5 张表时生效、
+原生接管只在超限时触发——都没参与。库里最近 118 条含表格回答只有这 1 条畸形。
+
+- `text.py` 新增 `repair_split_table_rows()`（+ `_table_row_terminated` /
+  `_join_split_table_row`）：行被空行切断、且满足①该行未以 `|` 收尾、②列数少于表头、
+  ③空行后的续行以 `**` 开头且拼回后**恰好等于表头列数**时才重新拼接；三个条件缺一不修，
+  所以表格后的普通段落不会被吞进表。幂等，无缺陷文本按字节返回。
+- `render.py::_primary_text_for_session` 在答案分支调用它（与 `task_answer_code_projection`
+  同一层，展示专用）；会话里保存的原文不动，`result.primary_text`、legacy owner 投影与
+  卡片正文因此保持一致。流式期间续行未到达时不做修改，到达后下一次渲染即修复。
+- 测试：`tests/unit/test_text.py`（修复/否定 5 例/幂等/流式半条）、
+  `tests/unit/test_native_tables.py`（markdown 版与 native 版都必须修复，否则开原生表格只是
+  把缺陷换个位置）。
+- **运维配置（非代码）**：`/Volumes/ExtWorkspace/.hermes/feishu-card/config.yaml` 两个 profile
+  的 `card` 段加 `native_tables: true`（备份 `config.yaml.bak-before-native-tables`），
+  经 `card-config` CLI 确认来源为 `profile.card.native_tables (explicit)`。实测现场内容：
+  体积 +20~26%（4063→4861B、11591→14643B，均 safe），列宽按内容分配、`row_height: auto`
+  长单元格不再被挤压；单元格 >1200 字符或整卡超限自动回退 markdown。
+
+### 已知遗留：多重分卡通路（1.6）两处缺陷，本次未修
+
+`render_cards` / `_split_content_by_tables`（>5 张表格时拆分多张卡片）：①
+`_split_content_by_tables` 调用 `_markdown_structure_blocks` 未从 `text.py` 引入 →
+>5 张表格时 NameError；②`render_cards` 里 `part_text` 计算后未传给 `render_card`，
+额外的分卡会重复整篇正文。需要先定设计（主卡/续卡谁持第几段、时间线是否重复），
+再一并修，故本次只记录。
+
+---
+
 ## 一、render.py
 
 ### 1.1 GIF 动画 footer
@@ -793,6 +828,8 @@ in ~60 s; recovery is not guaranteed."）走**状态回调管线**而非通知�
 | `server.py` | `_is_emoji_only` | emoji 应答删卡 |
 | `hook_runtime.py` | `_bind_source_turn` / lazy-bind | 无 started 新流独立 turn_id |
 | `hook_runtime.py` | `_MODEL_FALLBACK_NOTICE_RE` / `"model-fallback"` | 模型回退通知收卡（〇-E） |
+| `text.py` | `repair_split_table_rows` | 表格行被空行切断时拼接（〇-F） |
+| `render.py` | `repair_split_table_rows(` 于 `_primary_text_for_session` | 展示层表格修复（〇-F） |
 | `hook_runtime.py` | `_hfc_content_was_carded` | 原生重复抑制 |
 | `hook_runtime.py` | `_hfc_log_native_send` / `_hfc_policy_terminal_log` | 终态/抑制日志 |
 | `hook_runtime.py` | `_is_emoji_only_answer` / `_event_was_delivered` | 队列抑制 + emoji 跳过 |

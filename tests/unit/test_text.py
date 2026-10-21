@@ -5,11 +5,70 @@ from hermes_feishu_card.text import (
     StreamingTextNormalizer,
     count_markdown_tables,
     normalize_stream_text,
+    repair_split_table_rows,
     scan_markdown_blocks,
     should_flush_text,
     split_markdown_blocks,
     transform_table_overflow,
 )
+
+
+# The defect observed in a real answer (2026-10-21): the model wrote `**代价` and closed the
+# bold marker after a paragraph break, so the blank line ended the table and Feishu rendered
+# the whole table as raw text.
+_SPLIT_ROW_ANSWER = (
+    "引言。\n\n"
+    "| | 订阅侧 | API 侧 |\n"
+    "| --- | --- | --- |\n"
+    "| 缓存 | 永久保留 | 30 分钟 |\n"
+    "| **代价\n"
+    "\n"
+    "** | 无 | 写入 = 2.5× 输入价 |\n"
+    "\n"
+    "结尾段。\n"
+)
+
+
+def test_split_table_row_is_rejoined_into_one_complete_row():
+    repaired = repair_split_table_rows(_SPLIT_ROW_ANSWER)
+    assert "| **代价** | 无 | 写入 = 2.5× 输入价 |\n" in repaired
+    table = [b for b in scan_markdown_blocks(repaired) if b.kind == "table"][0]
+    assert [len(row) for row in table.table.rows] == [3, 3]
+    assert repaired.count("**") == 2
+    assert "结尾段。" in repaired
+
+
+def test_repaired_text_is_stable_and_healthy_text_is_untouched():
+    repaired = repair_split_table_rows(_SPLIT_ROW_ANSWER)
+    assert repair_split_table_rows(repaired) == repaired
+    healthy = (
+        "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n"
+        "后记 **加粗** 与 | 竖线 |\n"
+    )
+    assert repair_split_table_rows(healthy) == healthy
+    assert repair_split_table_rows("") == ""
+    assert repair_split_table_rows(None) is None
+
+
+@pytest.mark.parametrize("text", [
+    # pipe-terminated row: complete, never rejoined
+    "| a | b | c |\n| --- | --- | --- |\n| 1 |\n\n**说明** | 有竖线 |\n",
+    # continuation does not close a bold marker
+    "| a | b | c |\n| --- | --- | --- |\n| 1\n\n普通段落 | 有竖线 |\n",
+    # joined row would not restore the header's column count
+    "| a | b | c |\n| --- | --- | --- |\n| 1\n\n** 段落 | 只有一列 |\n",
+    # continuation itself is unterminated
+    "| a | b | c |\n| --- | --- | --- |\n| 1\n\n** 段落 | 未闭合\n",
+    # prose paragraph after a healthy table
+    "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n**注意** | 这只是正文\n",
+])
+def test_only_a_provable_split_row_is_rejoined(text):
+    assert repair_split_table_rows(text) == text
+
+
+def test_streaming_arrival_without_the_continuation_yet_is_left_alone():
+    partial = "| a | b | c |\n| --- | --- | --- |\n| **代价\n\n"
+    assert repair_split_table_rows(partial) == partial
 
 
 def test_normalize_removes_think_tags():

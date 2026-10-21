@@ -122,6 +122,40 @@ def test_no_table_keeps_the_markdown_layout():
     assert [element["tag"] for element in _main_elements(card)] == ["markdown"]
 
 
+# A real answer (2026-10-21) broke its last row with a paragraph break around a bold marker;
+# Feishu then rendered the whole table as raw text. The display repair must apply in BOTH
+# layouts — otherwise turning native tables on would move the defect instead of fixing it.
+BROKEN_ROW_TABLE = (
+    "| | 订阅侧 | API 侧 |\n"
+    "| --- | --- | --- |\n"
+    "| 缓存 | 永久保留 | 30 分钟 |\n"
+    "| **代价\n"
+    "\n"
+    "** | 无 | 写入 = 2.5× 输入价 |\n"
+)
+
+
+def test_split_row_is_repaired_in_the_markdown_body():
+    card = render_card(_session(BROKEN_ROW_TABLE))
+    content = "".join(element["content"] for element in _main_elements(card))
+    assert "| **代价** | 无 | 写入 = 2.5× 输入价 |" in content
+    assert "| **代价\n" not in content
+
+
+def test_split_row_is_repaired_before_native_conversion():
+    card = render_card(_session(BROKEN_ROW_TABLE), native_tables=True)
+    table = _table_element(card)
+    assert [column["display_name"] for column in table["columns"]] == [
+        "Column 1", "订阅侧", "API 侧",
+    ]
+    assert len(table["rows"]) == 2
+    assert table["rows"][1] == {"c0": "**代价**", "c1": "无", "c2": "写入 = 2.5× 输入价"}
+    # No stray Markdown copy of the broken row may survive beside the table.
+    assert "** | 无" not in "".join(
+        element.get("content", "") for element in _main_elements(card)
+    )
+
+
 def test_column_widths_are_content_driven_and_sum_to_100():
     table = next(
         block.table

@@ -35,6 +35,7 @@ from .content_plan import plan_main_content, render_content_plan
 from .text import (
     TableOverflowResult,
     normalize_stream_text,
+    repair_split_table_rows,
     split_markdown_blocks,
     transform_table_overflow,
 )
@@ -962,6 +963,10 @@ def _primary_text_for_session(
 ) -> str:
     if session.status in {"completed", "failed"} or session.answer_text:
         text = normalize_stream_text(session.answer_text)
+        # Display-only repair (LOCAL_PATCHES 〇-F): a row a blank line split — e.g. a bold
+        # marker carried across a paragraph break — ends the table in Feishu's parser and
+        # renders the whole table as raw text. Canonical session text stays untouched.
+        text = repair_split_table_rows(text)
         if (presentation == "task" and session.delivery_kind == "chat"
                 and not session.terminal_reasoning_notice):
             return task_answer_code_projection(text, max_block_size=MAIN_CONTENT_CHUNK_CHARS)

@@ -293,6 +293,90 @@ def _stable_table_headers(headers: tuple[str, ...], column_count: int) -> list[s
     return result
 
 
+def repair_split_table_rows(text: str) -> str:
+    """Rejoin a table row that a blank line split, when the continuation proves the row.
+
+    Models occasionally carry a bold marker across a paragraph break inside a table row
+    (``| **代价`` / blank / ``** | 无 | …``). Markdown ends the table at that blank line,
+    the truncated row is short of the header's column count, and Feishu then renders the
+    whole table as raw text (user report 2026-10-21). Only a row that is (a) NOT
+    pipe-terminated, (b) short of the header's column count, and (c) closed by a
+    ``**``-prefixed continuation restoring EXACTLY that column count is rejoined — the
+    arithmetic is the proof, so ordinary prose after a table is left alone. Display-only:
+    the canonical session text is unchanged, and a text without the defect is returned
+    byte for byte.
+    """
+    if not text or "|" not in text:
+        return text
+    lines = text.splitlines(keepends=True)
+    if len(lines) < 3:
+        return text
+    repaired: list[str] = []
+    index = 0
+    while index < len(lines):
+        headers = _parse_markdown_row(lines[index].rstrip("\r\n"))
+        separator = (
+            _parse_table_separator(lines[index + 1].rstrip("\r\n"))
+            if index + 1 < len(lines)
+            else None
+        )
+        if headers is None or separator is None or len(headers) != len(separator):
+            repaired.append(lines[index])
+            index += 1
+            continue
+        repaired.append(lines[index])
+        repaired.append(lines[index + 1])
+        index += 2
+        column_count = len(headers)
+        while index < len(lines):
+            row_line = lines[index]
+            if not row_line.strip():
+                break
+            cells = _parse_markdown_row(row_line.rstrip("\r\n"))
+            if cells is None:
+                break
+            if len(cells) < column_count and not _table_row_terminated(row_line):
+                joined = _join_split_table_row(lines, index, column_count)
+                if joined is not None:
+                    merged, consumed = joined
+                    repaired.append(merged)
+                    index += consumed
+                    continue
+            repaired.append(row_line)
+            index += 1
+    return "".join(repaired)
+
+
+def _table_row_terminated(line: str) -> bool:
+    body = line.rstrip("\r\n").rstrip()
+    return body.endswith("|") and not body.endswith("\\|")
+
+
+def _join_split_table_row(
+    lines: list[str], index: int, column_count: int
+) -> tuple[str, int] | None:
+    """Return ``(merged_line, consumed_lines)`` for a blank-line-split row."""
+    cursor = index + 1
+    blanks = 0
+    while cursor < len(lines) and not lines[cursor].strip():
+        blanks += 1
+        cursor += 1
+    if not blanks or cursor >= len(lines):
+        return None
+    continuation = lines[cursor]
+    body = continuation.rstrip("\r\n")
+    if not body.strip().startswith("**") or "|" not in body:
+        return None
+    if not _table_row_terminated(continuation):
+        return None
+    merged_body = lines[index].rstrip("\r\n") + body
+    merged_cells = _parse_markdown_row(merged_body)
+    if merged_cells is None or len(merged_cells) != column_count:
+        return None
+    ending = continuation[len(body):]
+    return merged_body + ending, cursor - index + 1
+
+
 def split_markdown_blocks(text: str, max_block_size: int) -> list[str]:
     """Split markdown without cutting tables or fenced code blocks in half."""
     if not text:
