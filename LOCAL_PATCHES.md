@@ -535,6 +535,10 @@ delete memory entries…"）由 `agent/background_review.py` → gateway
   非动作注记（staged memory 审批提示）原样保留为列表后的段落；只有 1 项或没有该标题的
   文本一律不重排（返回 None，content 不覆盖）。`notice_id` 仍以原始文本计算（去重语义不变）。
   两个 `self-improvement` 分支共用 `_hfc_self_improvement_notice()`。
+- **2026-10-23 修正：注记也可能在最前面。** 首版只把"前导动作"转列表，遇到
+  `💾 自我改进回顾：<staged memory 长句> · 技能 'x' 已创建 · 技能 'x' 已修补` 这种
+  **注记在前**的顺序就整条不重排。现改为按段类型**原地**分块：连续动作段 → 无序列表，
+  连续句子段 → 段落，块之间空一行，顺序与生产端输出一致；动作总数 <2 时仍不重排。
 - 测试：`test_apply_gateway_fragment_installs_bg_review_notice_hook`、
   `test_self_improvement_review_notice_classification`、decomposed 断言；
   两个 fixture 的 `run_turn_runner.py` 增加 `_make_bg_review_callbacks`。

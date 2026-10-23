@@ -3942,6 +3942,33 @@ def test_trailing_staged_memory_note_stays_an_intact_paragraph():
     assert "- Background review" not in content
 
 
+def test_leading_staged_memory_note_keeps_the_actions_below_it():
+    """The note may LEAD the summary (observed 2026-10-23); actions still become bullets."""
+    text = (
+        "💾 自我改进回顾：Background review may not delete memory entries unattended. "
+        "The proposed batch was staged for your approval — review it with /memory pending "
+        "(approve to apply, discard to drop). · 技能 'coherent-zr-optics' 已创建 · "
+        "技能 'coherent-zr-optics' 已修补"
+    )
+    content = hook_runtime._hfc_classify_system_notice(text)["content"]
+    note = ("Background review may not delete memory entries unattended. The proposed batch "
+            "was staged for your approval — review it with /memory pending "
+            "(approve to apply, discard to drop).")
+    assert content == (
+        "💾 自我改进回顾：\n" + note + "\n\n"
+        "- 技能 'coherent-zr-optics' 已创建\n"
+        "- 技能 'coherent-zr-optics' 已修补"
+    )
+    assert "·" not in content
+
+
+def test_one_action_plus_a_note_is_not_reflowed():
+    notice = hook_runtime._hfc_classify_system_notice(
+        "💾 自我改进回顾：技能 'a' 已修补 · Background review may not delete memory entries."
+    )
+    assert "content" not in notice
+
+
 def test_english_review_summary_is_reflowed_too():
     content = hook_runtime._hfc_classify_system_notice(
         "💾 Self-improvement review: Skill 'a' patched · Skill 'b' created"

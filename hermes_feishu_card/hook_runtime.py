@@ -5102,15 +5102,16 @@ _HFC_REVIEW_SENTENCE_END_RE = re.compile(r"[.。！？!?](?:\s|$)")
 
 
 def _hfc_review_summary_bullets(text: str) -> str | None:
-    """Render the ``·``-joined review summary as one bullet per action.
+    """Render the ``·``-joined review summary as a bullet per action, in original order.
 
     Hermes joins the review's actions onto ONE line with " · "
-    (``agent/background_review.py::_publish_review_summary``), so three actions made an
-    unreadable run-on (user request 2026-10-21). The heading keeps its own line, each
-    leading action becomes a bullet, and a trailing non-action note (the staged-memory
-    approval hint) stays an intact paragraph below the list. Returns None for every
-    other shape — a lone action, or text without the summary heading — so those notices
-    keep their original content unchanged.
+    (``agent/background_review.py::_publish_review_summary``), so several actions made an
+    unreadable run-on (user request 2026-10-21). The heading keeps its own line; every
+    action segment becomes a ``- `` bullet, and every sentence-like segment (the
+    staged-memory approval hint) stays an intact paragraph in the position the producer
+    emitted it — that note can LEAD the summary as well as trail it (observed
+    2026-10-23). Returns None unless the summary carries at least two actions, so a lone
+    action and every non-summary notice keep their original content unchanged.
     """
     for prefix in _HFC_REVIEW_SUMMARY_PREFIXES:
         if text.startswith(prefix):
@@ -5120,17 +5121,23 @@ def _hfc_review_summary_bullets(text: str) -> str | None:
         return None
     segments = [segment.strip() for segment in body.split(_HFC_REVIEW_ITEM_SEPARATOR)]
     segments = [segment for segment in segments if segment]
-    items: list[str] = []
-    for segment in segments:
-        if _HFC_REVIEW_SENTENCE_END_RE.search(segment):
-            break
-        items.append(segment)
-    if len(items) < 2:
+    if sum(1 for segment in segments
+           if not _HFC_REVIEW_SENTENCE_END_RE.search(segment)) < 2:
         return None
-    lines = [head, *[f"- {item}" for item in items]]
-    remainder = f" {_HFC_REVIEW_ITEM_SEPARATOR} ".join(segments[len(items):])
-    if remainder:
-        lines.extend(["", remainder])
+    blocks: list[tuple[bool, list[str]]] = []
+    for segment in segments:
+        is_action = not _HFC_REVIEW_SENTENCE_END_RE.search(segment)
+        if blocks and blocks[-1][0] is is_action:
+            blocks[-1][1].append(segment)
+        else:
+            blocks.append((is_action, [segment]))
+    lines = [head]
+    for index, (is_action, block) in enumerate(blocks):
+        if index:
+            lines.append("")
+        lines.extend(
+            [f"- {segment}" for segment in block] if is_action else block
+        )
     return "\n".join(lines)
 
 
