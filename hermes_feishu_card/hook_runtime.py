@@ -4956,12 +4956,7 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
             "notice_id": _hfc_content_notice_id("skill-loading", text),
         }
     if "self-improvement review" in lowered:
-        return {
-            "title": "自我改进",
-            "level": "info",
-            "notice_kind": "self-improvement",
-            "notice_id": _hfc_content_notice_id("self-improvement", text),
-        }
+        return _hfc_self_improvement_notice(text)
     if "context compression" in lowered or "compression model" in lowered:
         return {
             "title": "上下文压缩提示",
@@ -4988,13 +4983,9 @@ def _hfc_classify_system_notice(content: Any) -> dict[str, Any] | None:
         or "background review" in lowered
     ):
         # Background review summaries (skills patched / memory gate), zh and
-        # en; delivered via the bg-review status lane.
-        return {
-            "title": "自我改进",
-            "level": "info",
-            "notice_kind": "self-improvement",
-            "notice_id": _hfc_content_notice_id("self-improvement", text),
-        }
+        # en; delivered via the bg-review status lane. A multi-action summary
+        # is reflowed into bullets (see _hfc_review_summary_bullets).
+        return _hfc_self_improvement_notice(text)
     if ("gateway shutting down" in lowered or "gateway restart" in lowered
             # The restart/shutdown notice wording itself (both locales), which
             # carries no "gateway" keyword.
@@ -5103,6 +5094,58 @@ def _hfc_classify_background_notice(text: str) -> dict[str, Any] | None:
 def _hfc_content_notice_id(kind: str, content: str) -> str:
     digest = sha256(f"{kind}:{content}".encode("utf-8")).hexdigest()[:10]
     return f"{kind}:{digest}"
+
+
+_HFC_REVIEW_SUMMARY_PREFIXES = ("💾 自我改进回顾：", "💾 Self-improvement review:")
+_HFC_REVIEW_ITEM_SEPARATOR = "·"
+_HFC_REVIEW_SENTENCE_END_RE = re.compile(r"[.。！？!?](?:\s|$)")
+
+
+def _hfc_review_summary_bullets(text: str) -> str | None:
+    """Render the ``·``-joined review summary as one bullet per action.
+
+    Hermes joins the review's actions onto ONE line with " · "
+    (``agent/background_review.py::_publish_review_summary``), so three actions made an
+    unreadable run-on (user request 2026-10-21). The heading keeps its own line, each
+    leading action becomes a bullet, and a trailing non-action note (the staged-memory
+    approval hint) stays an intact paragraph below the list. Returns None for every
+    other shape — a lone action, or text without the summary heading — so those notices
+    keep their original content unchanged.
+    """
+    for prefix in _HFC_REVIEW_SUMMARY_PREFIXES:
+        if text.startswith(prefix):
+            head, body = prefix, text[len(prefix):]
+            break
+    else:
+        return None
+    segments = [segment.strip() for segment in body.split(_HFC_REVIEW_ITEM_SEPARATOR)]
+    segments = [segment for segment in segments if segment]
+    items: list[str] = []
+    for segment in segments:
+        if _HFC_REVIEW_SENTENCE_END_RE.search(segment):
+            break
+        items.append(segment)
+    if len(items) < 2:
+        return None
+    lines = [head, *[f"- {item}" for item in items]]
+    remainder = f" {_HFC_REVIEW_ITEM_SEPARATOR} ".join(segments[len(items):])
+    if remainder:
+        lines.extend(["", remainder])
+    return "\n".join(lines)
+
+
+def _hfc_self_improvement_notice(text: str) -> dict[str, Any]:
+    """The review notice, with its action summary reflowed into bullets when it has one."""
+    notice: dict[str, Any] = {
+        "title": "自我改进",
+        "level": "info",
+        "notice_kind": "self-improvement",
+        "notice_id": _hfc_content_notice_id("self-improvement", text),
+    }
+    formatted = _hfc_review_summary_bullets(text)
+    if formatted is not None:
+        notice["content"] = formatted
+    return notice
 
 
 _HFC_GATEWAY_ONLINE_TEXT = "♻️ Gateway online — Hermes is back and ready."

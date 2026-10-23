@@ -3,7 +3,7 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：2026-10-21（〇-F 表格行修复 + native_tables 开启）；上一位：〇-E 模型回退
+> 最后更新：2026-10-21（〇-D 自我改进回顾多列项改无序列表；〇-F 表格行修复 + native_tables 开启）；上一位：〇-E 模型回退
 > 通知收卡（2026-10-20）；再上一位：V5.0.2 合并（2026-10-19，merge commit ed0972b）
 
 ---
@@ -528,6 +528,13 @@ delete memory entries…"）由 `agent/background_review.py` → gateway
 - `hook_runtime.py::_hfc_classify_system_notice`：新增
   `自我改进回顾` / `self-improvement review` / `background review` →
   `self-improvement` 分类（zh+en）。
+- **2026-10-21 补充：多列项改无序列表。** 生产端把动作拼成一行
+  （`agent/background_review.py::_publish_review_summary` 用 `" · ".join(...)`），
+  多个技能时变成一条读不动的长句（Bailey 要求重整）。新增
+  `_hfc_review_summary_bullets()`：标题行独占一行，前导动作每项一条 `- `；尾部
+  非动作注记（staged memory 审批提示）原样保留为列表后的段落；只有 1 项或没有该标题的
+  文本一律不重排（返回 None，content 不覆盖）。`notice_id` 仍以原始文本计算（去重语义不变）。
+  两个 `self-improvement` 分支共用 `_hfc_self_improvement_notice()`。
 - 测试：`test_apply_gateway_fragment_installs_bg_review_notice_hook`、
   `test_self_improvement_review_notice_classification`、decomposed 断言；
   两个 fixture 的 `run_turn_runner.py` 增加 `_make_bg_review_callbacks`。

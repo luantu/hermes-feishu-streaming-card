@@ -3899,6 +3899,58 @@ def test_self_improvement_review_notice_classification():
     assert en["notice_kind"] == "self-improvement"
 
 
+def test_multiaction_review_summary_is_reflowed_into_bullets():
+    """Hermes joins the review's actions with " · " onto one line; several actions made
+    an unreadable run-on (user request 2026-10-21)."""
+    text = (
+        "💾 自我改进回顾：技能 'term-question-answering' 已修补 · "
+        "技能 'race-day-weather-check' 已修补 · 技能 'nos-redis-databus' 已修补 · "
+        "技能 'ruijie-cli-manual-lookup' 已修补 · 技能 'app-identification-techniques' 已修补 "
+        "(references/stun-webrtc-identification.md) · 技能 'llm-cost-estimation' 已创建 · "
+        "技能 'llm-cost-estimation' 已修补"
+    )
+    notice = hook_runtime._hfc_classify_system_notice(text)
+    assert notice["notice_kind"] == "self-improvement"
+    lines = notice["content"].split("\n")
+    assert lines[0] == "💾 自我改进回顾："
+    assert len(lines) == 8
+    assert lines[1] == "- 技能 'term-question-answering' 已修补"
+    assert lines[5] == ("- 技能 'app-identification-techniques' 已修补 "
+                        "(references/stun-webrtc-identification.md)")
+    assert lines[-1] == "- 技能 'llm-cost-estimation' 已修补"
+    assert "·" not in notice["content"]
+    # The dedup id stays keyed on the producer's original text.
+    assert notice["notice_id"] == hook_runtime._hfc_content_notice_id("self-improvement", text)
+
+
+def test_single_action_and_non_summary_reviews_keep_their_content():
+    single = hook_runtime._hfc_classify_system_notice("💾 自我改进回顾：技能 'demo' 已修补")
+    assert "content" not in single
+    plain = hook_runtime._hfc_classify_system_notice("self-improvement review finished")
+    assert "content" not in plain
+
+
+def test_trailing_staged_memory_note_stays_an_intact_paragraph():
+    text = (
+        "💾 自我改进回顾：技能 'demo' 已修补 · 技能 'x' 已创建 · Background review may not "
+        "delete memory entries unattended. The proposed batch was staged for your approval "
+        "— review it with /memory pending."
+    )
+    content = hook_runtime._hfc_classify_system_notice(text)["content"]
+    assert content.startswith("💾 自我改进回顾：\n- 技能 'demo' 已修补\n- 技能 'x' 已创建\n\n")
+    assert content.endswith("review it with /memory pending.")
+    assert "- Background review" not in content
+
+
+def test_english_review_summary_is_reflowed_too():
+    content = hook_runtime._hfc_classify_system_notice(
+        "💾 Self-improvement review: Skill 'a' patched · Skill 'b' created"
+    )["content"]
+    assert content == (
+        "💾 Self-improvement review:\n- Skill 'a' patched\n- Skill 'b' created"
+    )
+
+
 def test_force_independent_notice_never_quotes_or_threads(monkeypatch):
     captured = {}
 
