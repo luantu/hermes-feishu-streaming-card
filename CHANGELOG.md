@@ -1,5 +1,91 @@
 # Changelog
 
+## v5.0.12 — 2026-10-28
+
+- Restrict HFC source-anchor publication to Feishu, preserving LOCAL and other platform sources (#474).
+- Bound the Feishu terminal source-anchor exception to a verified current turn while preserving all other source, claim and routing checks (#469).
+- Validate existing managed-patch upgrade and restore independently of package installation. See the release notes for final evidence and remaining limits.
+- Thanks to @Alex-HJY and @leavrcn for the reports, analysis and retest evidence; existing credits and release history remain intact.
+
+## v5.0.11 — 2026-10-28
+
+- Verify the original admitted owner before the first card decision and again after policy lookup, preventing a stale automation profile/route from starting a card that cannot accept its terminal handoff (#471). Keep native fallback and terminal identity checks intact.
+- Add an exact admission-completion source cohort for Hermes `9b904dcc22c23fe8b82834339bbdd96495072e59` (#471), retaining full source, claim, route, epoch/generation and single-use acknowledgement checks. The installer adapter has a separately verified, restricted existing-PM migration path; fresh installs, old v1 receipts and unpreservable manual SDKs remain rejected. Arbitrary main revisions are not supported.
+- Thanks to @lv86snorlax for the #471 report and source analysis, credited separately from code authorship. See [Chinese release notes](docs/release-notes-v5.0.11.md) and [English release notes](docs/release-notes-v5.0.11.en.md) for evidence and remaining gates.
+
+## v5.0.10 — 2026-10-27
+
+- Verify internal asynchronous completion against the original admission record and retain source, owner, generation, epoch and profile boundaries (#469).
+- Treat an explicitly accepted terminal response as a single-use acknowledgement of that exact submission, preserving strict authority checks before submission and preventing a later generation change from duplicating the same native text.
+- Preserve unrelated Hermes config edits while inspecting and reversing HFC-owned configuration changes; conflicts and unverifiable records remain fail-closed (#470).
+- Add bounded rejection diagnostics for #451; the reporter's locally modified multi-profile deployment remains a separate field-validation boundary.
+- Exact candidate, platform, ordinary-wheel, API and public-install evidence is recorded separately in the [release notes](docs/release-notes-v5.0.10.en.md). Thanks to @leavrcn and @kludgezol for issue evidence and analysis; historical releases and credits remain intact.
+
+## v5.0.9 — 2026-10-26
+
+- Separate verified native admission user identity from Feishu mention open IDs; retain native delivery before card acceptance when identity is unknown (#451).
+- Correct raw Windows byte I/O, isolated official config children and verified recovery transactions (#463).
+- Recover provable PR458 schema-1 flat wheels while preserving workspace schema-1 and content-addressed schema-2 ownership; add fixed recovery acknowledgement categories and migration guidance (#459/#462).
+- Integrate audited Ruff/CodeQL/setup-python updates and deterministic concurrent repair confirmation tests (#464/#465/#466/#467).
+- Candidate verification and remaining boundaries are recorded in the [release notes](docs/release-notes-v5.0.9.en.md); previous tags, assets, commits and credits remain intact.
+
+## v5.0.8 — 2026-10-25
+
+- Combine owned external PM wheels and verified legacy observer rebinding (#458/#459/#461), preserving original authors and recovery evidence.
+- Address actual PM launcher/install-root and official-image writer compatibility (#462) without relaxing unknown-source or unrelated-config guards.
+- Exact acceptance and remaining limits are tracked in the [release notes](docs/release-notes-v5.0.8.en.md).
+
+## v5.0.7 — 2026-10-24
+
+- Verify Hermes v0.22.5 completion ownership and per-turn callback ordering (#456, #453), retaining pinned v0.22.4 and historical regressions.
+- Add bounded terminal-handoff diagnostics for the still-unreproduced multi-tool report (#451); acceptance evidence is tracked in the [release notes](docs/release-notes-v5.0.7.en.md).
+- Unsupported-source CLI returns 1 in local probes; the reported exit 0 is not reproduced.
+- Thanks to @coder-zhw, @Kevinzz224, @ywarmy, @coytus, @Lite-G and @leavrcn for issue evidence and analysis, separate from code authorship. Historical credits and releases remain intact.
+
+## v5.0.6 — 2026-10-23
+
+- Put each Linux/macOS tarball and Windows ZIP under its matching `hermes-feishu-card-v5.0.6-{linux,macos,windows}/` directory. Remove the extraction-target `.` entry; normalize tar uid/gid to 0, directories and shell installers to 0755, and other regular files to 0644 (#454).
+- Share archive construction and validation, requiring the exact nine-file inventory and byte contents. Reject unsafe paths, links, special files, duplicate entries and unexpected metadata. Actual extraction gates check the destination inode/uid/gid/mode and sentinels for 0700/1777 targets, with an old-layout negative control.
+- After unpacking an installer asset, enter its versioned platform directory before running `./install.sh` or `.\install.ps1`. Existing published tags/assets and historical release records are retained.
+- Thanks to @leavrcn for #454 and reproduction evidence, credited separately from code authorship. All prior credits remain intact.
+
+Local macOS evidence reproduced target-mode rewriting with the old archive under `tar -p`; Linux GNU tar/root acceptance, exact-commit full CI/CodeQL and public assets/install remain pending in the [readiness record](docs/release-readiness.md). See [Chinese](docs/release-notes-v5.0.6.md) and [English](docs/release-notes-v5.0.6.en.md) release notes.
+
+## v5.0.5 — 2026-10-22
+
+- Accept the reviewed admission source cohorts at cf4f3a7, rc.2-v0.22.3, v0.22.4 and pinned main 4e58c72. Verify full source/loaded topology and complete admission identity before accepting legitimate source reconstruction; preserve old source behavior, single-use completion and native fallback for unknown admission paths (#451, PR #452).
+- Verify readiness at the existing policy boundary before first card admission, including notice/interaction first events. Preserve already-pinned ordinary contexts, independent plugin owners, terminal ownership and failure behavior. Expose admission completion as a separate compatibility capability.
+- Add reviewed official config-writer families for those snapshots. Retain exact config-byte planning, prior families, drift rejection, PM generation wheel provenance and byte-for-byte recovery.
+- Include PR #448/#449 regression scope selection, complete duration-balanced shards and synchronized gates. Give upstream workers independent ordinary-wheel prefixes and measured timing weights to remove shared-runtime contention without dropping cases, platforms, required checks or the 25-minute timeout. Synchronize the changed-recheck test with actual diagnosis/publication before teardown; no runtime change.
+- Keep old d923/0ab compatibility baselines while pinning current stable/main independently. Preserve all earlier release history and credits.
+- Repairs and CI maintenance are authored by @baileyh8. Thanks to @coytus for #451 field evidence and @Lite-G for source analysis, credited separately from code authorship.
+
+See [Chinese release notes](docs/release-notes-v5.0.5.md) and [English release notes](docs/release-notes-v5.0.5.en.md). Exact release CI, Feishu API, package/public installation and asset acceptance are tracked separately; actual Gateway/model, reporter tool-heavy reproduction and desktop/Android visual/click acceptance remain unverified.
+
+## v5.0.4 — 2026-10-20
+
+- Keep completion preview read-only so legacy and queued terminal payloads retain observed rates; reuse the frozen payload for exact Base staging and terminal transport retries. Reject changed observation bindings/call sites through the pinned v0.22.2 AST contract.
+- Supply opt-in `output_rate` on eligible legacy Hermes installs through an observe-only official plugin. Legacy remains the sole event producer; rates use exact per-invocation usage independently of cumulative legacy footer counts. Bound observations by TTL/capacity, reclaim consumed entries under pressure, and hide unknown, mixed-route or isolated-host samples.
+- Roll back only verified official plugin-enable postimages for both legacy and Hybrid v3; preserve unknown or concurrently edited config bytes and recovery evidence. Support private atomic writes without `os.fchmod` on Windows. Preserve Hybrid bootstrap only when the observer marker is confirmed absent; disable admission on uninspectable metadata.
+- Own legacy plugin enablement in a versioned companion record using the official configuration preimage/restore flow; preserve reinstall idempotence and verified failure rollback. Support the config writer on Windows without weakening the existing POSIX source-recovery gate.
+- Thanks to @Lite-G for the report in #441 and the original implementation in #442.
+- Recall the exact native preflight-compression and compaction-complete notices after 15 seconds (#434, reported by Timeral). Preserve native send results, route ownership, compression heartbeats, Working updates, failure warnings and unknown text.
+- Thanks to JohnZhong505 for the #443 report/evidence and Lite-G for additional source analysis; these acknowledgements are separate from repair code authorship. All previous credits remain intact.
+
+- Preserve exact completion across the verified Session Authority admission/waiter Task boundary (#443), including drain-owned delivery after native extraction. Retain the original execution claim, Base ledger, native media/TTS and unknown-topology fallback.
+
+See [Chinese release notes](docs/release-notes-v5.0.4.md) and [English release notes](docs/release-notes-v5.0.4.en.md) for scope and verification limits.
+
+## v5.0.3 — 2026-10-19
+
+- Accept only the verified old/new Hermes channel-pin inheritance expressions while retaining strict binding, ordering and restore checks (#437, PR #438). Pin the compatibility matrix to main `0ab43d4f67e41be75f4f6c0fa14a86dbcfd3e5b3`.
+- Add opt-in `output_rate` completion-footer metrics from matching per-invocation usage/timing (PR #436, phase one of #392). Hide unavailable, malformed or mixed-model samples; preserve defaults and checkpoint schema.
+- Create a lazy continuation after an expired interaction so subsequent output follows the native fallback question, including sidecar-first expiry; preserve original resolution and stale/duplicate rejection (PR #430).
+- Update pinned official GitHub Actions and Ruff 0.17.1 (#388, #389, #390, #439).
+- Thanks to Lite-G and Thxzzzzz for their code, reports and tests, and Dependabot for dependency updates. Original commits and historical credits remain intact.
+
+See [Chinese release notes](docs/release-notes-v5.0.3.md) and [English release notes](docs/release-notes-v5.0.3.en.md) for verification scope.
+
 ## v5.0.2 — 2026-10-17
 
 - Recall exact known en/zh redirect, interrupt and steer receipts (including active-subagent steering) through the same busy-entry and delay classifier; support the bare simplified-Chinese compression status (#434).

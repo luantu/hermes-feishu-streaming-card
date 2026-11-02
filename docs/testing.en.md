@@ -1,5 +1,7 @@
 # Testing
 
+CI selects documentation, focused or full regression for pull requests. Main and release gates always run the full matrix. Linux Python 3.9–3.14 and macOS retain all cases, distributed across twelve isolated Linux shards, ten macOS shards and twelve upstream compatibility shards with complete-coverage verification. The target is under 20 minutes per workflow, subject to actual runner and queue measurements. See the [regression policy](wiki/regression-ci.md).
+
 [中文](testing.md) | [English](testing.en.md)
 
 ## Contributor preflight (Issue #330)
@@ -27,6 +29,30 @@ Review and redact raw local logs before attaching them to a public issue. Prefli
 If test dependencies are missing, run `python -m pip install -e ".[test]"` in your chosen development environment. The full matrix requires a separate clone of the official Hermes `v2026.8.3` Git checkout, including `.git`, at commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`, selected with `HFC_FIXED_TAG_SOURCE_ROOT`; see the `fixed-hermes-fixture` job in `.github/workflows/tests.yml`. Do not substitute a running production Hermes checkout for the fixed test source.
 
 ## Unit Tests
+
+The pinned upstream matrix was refreshed on 2026-10-22 to Hermes `v0.22.4`
+(`4d04303818b61bf3aa09278af48356315515965b`) and main
+(`4e58c721c8cf9b51c46636ea84ea6a5cb540880a`). Issue #451 also retains
+`cf4f3a7396814ffcaef69d9af09f7cfdade3ddbe` and `rc.2-v0.22.3`
+(`f83b4df3ce1ab2ec62f1e0e90f22e0a1db21cb68`) as independent inputs.
+The source manifest binds every relevant file hash, including the new persistence,
+prepare and hygiene fragments. CI runs install, repeat install, diagnosis and
+byte-for-byte restore against these sources.
+
+The earlier `v0.22.2` (`d923a5eb487a17c0a68801bba9ef0f56c81040a8`)
+and main (`0ab43d4f67e41be75f4f6c0fa14a86dbcfd3e5b3`) remain
+`baseline_0222` and `baseline_main_0ab`. Legacy observer, writer and rate
+contracts continue using those inputs when latest changes. The verified channel
+pin expression accepting `inherit_channel_pin` remains supported; rebinding,
+missing tuples and unknown inheritance conditions still fail closed.
+
+Ordinary-wheel child processes compare exact configuration bytes with the official
+writer. PM A-to-B generation tests cover the earlier `7bda2a`, v0.22.4 and new
+main, checking effective imports from `site-packages`.
+`HFC_REQUIRE_CONFIG_WRITER_CONTRACT=1` and `HFC_REQUIRE_PM_GENERATION=1`
+make missing required fixtures, wheel or interpreter fail. Only named fixture
+variables reach isolated workers. These source and child-process checks do not
+establish actual Gateway/model execution, Feishu API or client acceptance.
 
 ```bash
 python3 -m pytest tests/unit -q

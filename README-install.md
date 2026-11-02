@@ -9,7 +9,9 @@ load the new protocol. See the [runtime configuration guide](docs/user-guide.en.
 
 [中文](README.md) | [English](README.en.md)
 
-**Release version: v5.0.2.** The default `latest` installer selects the published stable release. Supports explicitly bound split source/HOME layouts and preserves instance ownership; see [release notes](docs/release-notes-v5.0.2.en.md).
+V5.0.12 addresses LOCAL source-anchor pollution (#474) and a Feishu source-anchor mismatch during terminal handoff (#469), preserving native ownership and routing checks. Existing installations must refresh the managed hook through the normal installer and restart Gateway through its service owner. See the [release notes](docs/release-notes-v5.0.12.en.md) for acceptance and scope.
+
+**Release version: v5.0.12.** The default `latest` selects the published stable release. V5.0.11 verifies admission completion and the first display-policy owner on pinned Hermes `9b904dcc22` (#471). The installation adapter is limited to an existing official PM generation, HFC already enabled with `allow_tool_override: false`, and a schema2 member without an observer marker. The SDK must be absent or PM-managed 1.7.5. Fresh installations, old v1 receipts, missing/true flags, and manually installed SDK 1.6.8 remain rejected before admission. See the [release notes](docs/release-notes-v5.0.11.en.md) for candidate validation and recovery/uninstall scope; availability follows the published Release. Do not delete protection records or edit Hermes source to bypass checks.
 
 This package contains lightweight installers for `hermes-feishu-streaming-card`.
 They install the Python package, configure Feishu credentials, install the Hermes
@@ -307,6 +309,28 @@ then verifies the running package/Python identity. It refuses missing linger,
 unknown same-name units, drift, or unsafe shutdown. Remove the owned unit with
 `hermes-feishu-card disable`; standalone `start` remains transient by default.
 
+## Extracting release assets (v5.0.6 and later)
+
+Use a new dedicated extraction directory and verify the published checksums first.
+Each archive contains nine files under `hermes-feishu-card-v5.0.12-linux/`,
+`hermes-feishu-card-v5.0.12-macos/` or `hermes-feishu-card-v5.0.12-windows/`.
+The old flat layout allowed `./install.sh` immediately in the extraction target;
+enter the versioned platform directory first with these assets.
+
+```bash
+mkdir hfc-install-v5.0.12
+tar -xzf hermes-feishu-card-v5.0.12-linux.tar.gz -C hfc-install-v5.0.12
+cd hfc-install-v5.0.12/hermes-feishu-card-v5.0.12-linux
+./install.sh --version v5.0.12
+```
+
+For macOS, use the `macos` asset and subdirectory. On Windows, extract the ZIP,
+enter `hermes-feishu-card-v5.0.12-windows`, then run `.\install.ps1`.
+Tar metadata uses uid/gid 0, directories and shell installers 0755, other regular
+files 0644. These archive modes do not represent Windows ACL validation.
+Published v5.0.6 and earlier assets and tags are retained. See the [v5.0.6 release notes](docs/release-notes-v5.0.6.en.md)
+for the #454 evidence and verification boundary.
+
 ## macOS / Linux
 
 ```bash
@@ -318,6 +342,20 @@ bash install.sh
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+Native Windows uses the portable transaction boundary for explicit PM
+install, restore and uninstall: every byte read or write requests `O_BINARY`,
+existing files are opened with an exclusive handle, and the original bytes,
+digest, directory identity and reparse state are rechecked before replacement
+or cleanup. Source restoration and backup/manifest deletion form one family
+transaction: a failed or interrupted evidence deletion restores the verified
+installed source bytes and exact evidence before reporting failure. Unknown
+Hermes sources remain refused. Automatic recovery and
+`integrity migrate-safe` still require POSIX directory-relative operations;
+stop before those steps and use the documented explicit restore flow instead
+of deleting ownership evidence by hand. The Windows CI entry runs the fixed,
+unmodified Hermes v0.22.5 fixture on Python 3.12 and 3.14; a local POSIX mock is
+not native Windows acceptance evidence.
 
 ## Environment Variables
 
@@ -358,7 +396,7 @@ a privileged container, or mount host system-service directories.
 ```
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-export HFC_VERSION=v5.0.2
+export HFC_VERSION=v5.0.12
 bash install-docker.sh
 ```
 

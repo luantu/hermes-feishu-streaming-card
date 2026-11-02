@@ -3,7 +3,12 @@
   "groups": {
     "runtime": [
       "tests/unit/test_hook_runtime.py",
-      "tests/integration/test_server.py"
+      "tests/integration/test_server.py",
+      "tests/unit/test_legacy_observed_rate.py",
+      "tests/integration/test_session_authority_completion.py",
+      "tests/unit/test_admission_completion_state.py",
+      "tests/unit/test_admission_completion_detection.py",
+      "tests/unit/test_issue451_stage_diagnostics.py"
     ],
     "render": [
       "tests/unit/test_render.py",
@@ -29,14 +34,31 @@
     ],
     "install": [
       "tests/unit/test_patcher.py",
+      "tests/unit/test_issue_456_453_contracts.py",
       "tests/unit/test_gateway_contracts.py",
       "tests/unit/test_stale_interrupted_turn.py",
       "tests/unit/test_cron_contracts.py",
       "tests/integration/test_cli_install.py",
       "tests/unit/test_installer_family_boundaries.py",
       "tests/unit/test_pm_dependency.py",
+      "tests/unit/test_legacy_9b904.py",
+      "tests/unit/test_legacy_9b904_uninstall.py",
+      "tests/unit/test_legacy_home_revocation.py",
       "tests/unit/test_decomposed_patcher.py",
-      "tests/unit/test_extracted_clarify_patcher.py"
+      "tests/unit/test_extracted_clarify_patcher.py",
+      "tests/unit/test_legacy_observed_rate.py",
+      "tests/integration/test_session_authority_completion.py",
+      "tests/unit/test_admission_completion_detection.py",
+      "tests/unit/test_pm_wheel_store.py",
+      "tests/unit/test_windows_native_io.py",
+      "tests/unit/test_legacy_rebind.py",
+      "tests/unit/test_legacy_handoff.py",
+      "tests/unit/test_cli_setup_order.py",
+      "tests/unit/test_issue470_config_ownership.py",
+      "tests/integration/test_legacy_observer_install.py",
+      "tests/integration/test_pm_rebind.py",
+      "tests/integration/test_official_enable_root.py",
+      "tests/unit/test_launch_source_paths.py"
     ],
     "process": [
       "tests/unit/test_process.py",
@@ -102,7 +124,9 @@
       "tests/unit/test_terminal_delivery.py",
       "tests/unit/test_terminal_transport.py",
       "tests/unit/test_native_admission.py",
-      "tests/unit/test_existing_owner_projection.py"
+      "tests/unit/test_existing_owner_projection.py",
+      "tests/integration/test_session_authority_completion.py",
+      "tests/unit/test_admission_completion_state.py"
     ],
     "interaction": [
       "tests/unit/test_card_action_admission.py",
@@ -130,7 +154,9 @@
       "tests/unit/test_localized_transient_notices.py",
       "tests/unit/test_busy_recall_patcher.py",
       "tests/unit/test_long_running_recall_patch.py",
-      "tests/unit/test_issue326_boundaries.py"
+      "tests/unit/test_issue326_boundaries.py",
+      "tests/unit/test_compression_notice_templates.py",
+      "tests/integration/test_compression_notice_egress.py"
     ],
     "ownership": [
       "tests/unit/test_runtime_ownership.py",
@@ -161,7 +187,10 @@
       "tests/unit/test_clarify_delivery_admission.py",
       "tests/unit/test_plugin_turn_metrics.py",
       "tests/unit/test_clarify_timeout_status.py",
-      "tests/unit/test_clarify_timeout_admission.py"
+      "tests/unit/test_clarify_timeout_admission.py",
+      "tests/integration/test_legacy_observer_install.py",
+      "tests/integration/test_official_plugin_config_bytes.py",
+      "tests/unit/test_plugin_config_bytes.py"
     ],
     "storage": [
       "tests/unit/test_session_store.py",
@@ -212,11 +241,21 @@
       "tests/unit/test_hybrid_gateway_ownership.py",
       "tests/unit/test_bound_recovery_io.py",
       "tests/unit/test_recovery.py",
+      "tests/unit/test_windows_native_io.py",
       "tests/unit/test_clarify_delivery_admission.py"
     ],
     "loaded_config": [
       "tests/unit/test_config_snapshot.py",
       "tests/integration/test_running_card_config.py"
+    ],
+    "ci": [
+      "tests/unit/test_ci_workflow.py",
+      "tests/unit/test_ci_regression.py",
+      "tests/unit/test_official_image_tools.py",
+      "tests/unit/test_preflight.py"
+    ],
+    "archives": [
+      "tests/unit/test_release_archives.py"
     ]
   },
   "sources": {
@@ -240,7 +279,8 @@
       "client"
     ],
     "hermes_feishu_card/cli.py": [
-      "cli"
+      "cli",
+      "install"
     ],
     "hermes_feishu_card/config_rules.py": [
       "config",
@@ -333,6 +373,9 @@
     ],
     "hermes_feishu_card/install/recovery.py": [
       "install"
+    ],
+    "hermes_feishu_card/install/transaction_lock.py": [
+      "install_transactions"
     ],
     "hermes_feishu_card/install/runtime_python.py": [
       "install"
@@ -528,6 +571,10 @@
     "hermes_feishu_card/install/ast_contracts.py": [
       "install"
     ],
+    "hermes_feishu_card/install/completion_contracts.py": [
+      "install",
+      "upstream"
+    ],
     "hermes_feishu_card/install/cron_contracts.py": [
       "install",
       "upstream"
@@ -620,6 +667,90 @@
     "hermes_feishu_card/transient_notices.py": [
       "runtime",
       "notices"
+    ],
+    "hermes_feishu_card/observed_rate.py": [
+      "runtime",
+      "render"
+    ],
+    "hermes_feishu_card/install/legacy_observer.py": [
+      "install",
+      "runtime"
+    ],
+    "hermes_feishu_card/install/legacy_9b904.py": [
+      "install"
+    ],
+    "hermes_feishu_card/install/legacy_9b904_contract.py": [
+      "install"
+    ],
+    "hermes_feishu_card/install/legacy_9b904_transaction.py": [
+      "install"
+    ],
+    "hermes_feishu_card/install/legacy_9b904_uninstall.py": [
+      "install"
+    ],
+    "hermes_feishu_card/install/legacy_home_revocation.py": [
+      "install",
+      "runtime"
+    ],
+    "hermes_feishu_card/install/plugin_config_bytes.py": [
+      "plugin",
+      "install"
+    ],
+    "hermes_feishu_card/install/plugin_config_delta.py": [
+      "plugin",
+      "install"
+    ],
+    "hermes_feishu_card/admission_completion.py": [
+      "runtime",
+      "delivery"
+    ],
+    "hermes_feishu_card/completion_diagnostics.py": [
+      "runtime",
+      "delivery"
+    ],
+    "hermes_feishu_card/install/admission_extraction.py": [
+      "install"
+    ],
+    "tools/ci_plan.py": [
+      "ci"
+    ],
+    "tools/ci_run.py": [
+      "ci"
+    ],
+    "tools/ci_shard.py": [
+      "ci"
+    ],
+    "tools/official_image_acceptance.py": [
+      "ci"
+    ],
+    "tools/official_image_diagnose.py": [
+      "ci"
+    ],
+    "tests/unit/test_official_image_tools.py": [
+      "ci"
+    ],
+    "tools/ci_durations.json": [
+      "ci"
+    ],
+    ".github/workflows/tests.yml": [
+      "ci"
+    ],
+    "scripts/release_archives.py": [
+      "archives"
+    ],
+    ".github/workflows/release-assets.yml": [
+      "archives",
+      "ci"
+    ],
+    "hermes_feishu_card/install/pm_wheel_store.py": [
+      "install"
+    ],
+    "hermes_feishu_card/install/legacy_rebind.py": [
+      "install"
+    ],
+    "hermes_feishu_card/install/legacy_handoff.py": [
+      "install",
+      "install_transactions"
     ]
   }
 }

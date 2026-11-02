@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import ast
-from contextlib import contextmanager
 from dataclasses import dataclass
-import errno
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import re
-import threading
 import time
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from . import decomposed_ownership
+from .errors import RecoveryRefused as RecoveryRefused
+from .transaction_lock import (
+    _root_lock as _root_lock, _PROCESS_LOCKS as _PROCESS_LOCKS,
+    _PROCESS_LOCKS_GUARD as _PROCESS_LOCKS_GUARD,
+    _LOCK_NAME as _LOCK_NAME, _LOCK_TIMEOUT_SECONDS as _LOCK_TIMEOUT_SECONDS,
+    _acquire_os_lock as _acquire_os_lock, _release_os_lock as _release_os_lock,
+    _is_lock_contention as _is_lock_contention,
+)
 from .source_layout import (
     BACKUP_SUFFIX as BACKUP_SUFFIX, MANIFEST_NAME as MANIFEST_NAME,
     DECOMPOSED_MANIFEST_VERSION, DECOMPOSED_SOURCE_TARGETS,
@@ -63,10 +68,6 @@ _OWNED_GATEWAY_MARKER_LINE_RE = re.compile(
 )
 _STATUS_PREFIX = "!recovery:"
 _MANIFEST_ERROR = "_recovery_error"
-_LOCK_NAME = ".hermes_feishu_card_recovery.lock"
-_LOCK_TIMEOUT_SECONDS = 10.0
-_PROCESS_LOCKS: Dict[str, threading.Lock] = {}
-_PROCESS_LOCKS_GUARD = threading.Lock()
 _OwnedWriteSnapshot = Tuple[int, int, str]
 _DirectoryIdentity = Tuple[int, int]
 _SECURE_DIRFD_TRANSACTIONS_SUPPORTED = bound_io.DIRFD_BINDING_SUPPORTED
@@ -82,6 +83,10 @@ def _require_secure_dirfd_transactions() -> None:
             "secure recovery requires directory-relative filesystem operations "
             "on this platform"
         )
+
+
+def _portable_restore_supported() -> bool:
+    return os.name == "nt"
 
 
 
@@ -153,10 +158,6 @@ class RecoveryPlan:
     findings: Tuple[RecoveryFinding, ...]
 
 
-class RecoveryRefused(ValueError):
-    pass
-
-
 @dataclass(frozen=True)
 class RecoveryResult:
     status: str
@@ -177,35 +178,6 @@ class _RecoveryState:
     clear_install_state: bool = False
 
 
-@contextmanager
-def _root_lock(root: Path) -> Iterator[None]:
-    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
-    root_key = str(root.resolve())
-    with _PROCESS_LOCKS_GUARD:
-        process_lock = _PROCESS_LOCKS.setdefault(root_key, threading.Lock())
-    remaining = max(0.0, deadline - time.monotonic())
-    if not process_lock.acquire(timeout=remaining):
-        raise RecoveryRefused("timed out waiting for recovery lock")
-
-    lock_handle = None
-    try:
-        lock_path = root / _LOCK_NAME
-        if lock_path.is_symlink():
-            raise RecoveryRefused("recovery lock path must not be a symbolic link")
-        flags = os.O_RDWR | os.O_CREAT
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(str(lock_path), flags, 0o600)
-        lock_handle = os.fdopen(descriptor, "r+b")
-        _acquire_os_lock(lock_handle, deadline)
-        try:
-            yield
-        finally:
-            _release_os_lock(lock_handle)
-    finally:
-        if lock_handle is not None:
-            lock_handle.close()
-        process_lock.release()
 
 
 def execute_recovery(
@@ -696,6 +668,8 @@ def _commit_recovery_changes(
     changes: List[Tuple[Path, Optional[str]]],
     *,
     accept_hermes_upgrade: bool = False,
+    before_mutation: Optional[Callable[[], None]] = None,
+    verify_result: Optional[Callable[[], None]] = None,
 ) -> None:
     _require_secure_dirfd_transactions()
     ordered_changes = [change for change in changes if change[1] is not None]
@@ -754,6 +728,8 @@ def _commit_recovery_changes(
             raise RecoveryRefused("recovery evidence changed; rerun diagnosis")
 
         for target, contents in ordered_changes:
+            if before_mutation is not None:
+                before_mutation()
             _assert_controlled_ancestry_unchanged(
                 target, target_ancestries, directory_snapshots
             )
@@ -793,6 +769,8 @@ def _commit_recovery_changes(
             _assert_bound_target_unchanged(
                 binding, post_write_snapshots[target]
             )
+        if verify_result is not None:
+            verify_result()
     except Exception as exc:
         rollback_error = _rollback_recovery_changes(
             changed,
@@ -1023,49 +1001,6 @@ def _plan_from_evidence(
     )
 
 
-def _acquire_os_lock(handle, deadline: float) -> None:
-    while True:
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                if not handle.read(1):
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except OSError as exc:
-            if not _is_lock_contention(exc):
-                raise
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RecoveryRefused("timed out waiting for recovery lock")
-            time.sleep(min(0.05, remaining))
-
-
-def _is_lock_contention(exc: OSError) -> bool:
-    contention_errors = {errno.EACCES, errno.EAGAIN}
-    if os.name == "nt":
-        contention_errors.add(errno.EDEADLK)
-    return exc.errno in contention_errors
-
-
-def _release_os_lock(handle) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _fingerprint(parts: Dict[str, str]) -> str:
@@ -1683,6 +1618,19 @@ def plan_recovery(
     *,
     accept_hermes_upgrade: bool = False,
 ) -> RecoveryPlan:
+    from .legacy_observer import ObserverConfigChanged, inspect as inspect_observer
+    try:
+        inspect_observer(detection.root)
+    except ObserverConfigChanged:
+        return RecoveryPlan(detection.root, "refused", False,
+                            sha256(b"legacy observer config changed").hexdigest(), (),
+                            (RecoveryFinding("observer_config_changed", "error",
+                                "Observer config changed; preview integrity rebind-legacy before retrying restore."),))
+    except (OSError, ValueError, UnicodeError):
+        return RecoveryPlan(detection.root, "refused", False,
+                            sha256(b"unsafe legacy observer evidence").hexdigest(), (),
+                            (RecoveryFinding("user_modified", "error",
+                                             "Legacy observer ownership cannot be verified."),))
     if detection.decomposed or decomposed_ownership.is_managed(detection.root):
         return _plan_decomposed_recovery(detection, accept_hermes_upgrade=accept_hermes_upgrade)
     return _plan_from_evidence(
@@ -2692,6 +2640,7 @@ def _safe_message(code: str) -> str:
         "v3_manifest_invalid": "The V3 install manifest is missing or invalid.",
         "v3_manifest_recovery_required": "The V3 install transaction is not in the installed phase.",
         "v3_patch_invalid": "The V3 Hybrid patch ownership is inconsistent.",
+        "observer_config_changed": "Observer config changed; preview integrity rebind-legacy before retrying restore.",
         "v3_runtime_binding_changed": "The V3 runtime or plugin binding changed since install.",
         "v3_target_changed": "A V3-owned Hermes target changed since install.",
     }
@@ -2712,6 +2661,8 @@ def _deduplicate_findings(findings) -> Tuple[RecoveryFinding, ...]:
 
 def _plan_decomposed_recovery(detection, *, accept_hermes_upgrade=False):
     try:
+        from .legacy_observer import inspect as inspect_observer
+        inspect_observer(detection.root)
         snapshot, _, _, state = decomposed_ownership._inspect(detection.root)
         fingerprint = decomposed_ownership._fingerprint(snapshot)
         executable = state == "owned_incomplete" or (state in decomposed_ownership.EXPLICIT_UPGRADE_STATES and accept_hermes_upgrade and detection.supported)
@@ -2791,12 +2742,31 @@ def install_decomposed(detection, *, no_repair=False, expected_fingerprint=None,
         return True
 
 
-def restore_decomposed(detection):
-    _require_secure_dirfd_transactions()
+def restore_decomposed(detection, *, refuse_adoption: bool = False,
+                       adoption_marker: Optional[Tuple[int, int, str]] = None,
+                       adoption_home: Optional[Path] = None):
+    if not _secure_dirfd_transactions_supported() and not _portable_restore_supported():
+        # Unsupported platforms refuse before taking a lock or reading/mutating
+        # ownership state. Windows alone has the portable family transaction.
+        _require_secure_dirfd_transactions()
+    if ((adoption_marker is None) != (adoption_home is None)
+            or (adoption_marker is not None and (refuse_adoption or not _secure_dirfd_transactions_supported()))):
+        raise ValueError("legacy adoption source restore requires secure ownership evidence")
     with _root_lock(detection.root):
+        guard = finish = None
+        if adoption_marker is not None:
+            from .legacy_9b904_transaction import prepare_source_restore
+            guard, finish = prepare_source_restore(detection.root, adoption_home, adoption_marker)
+        if refuse_adoption:
+            from . import legacy_observer
+            raw = legacy_observer._read(detection.root / legacy_observer.MARKER)
+            if raw is not None and legacy_observer._decode(raw)["protocol"] == legacy_observer.ADOPTION_PROTOCOL:
+                raise ValueError("legacy adoption restore or uninstall needs a coordinated PM transaction")
         snapshot, originals, _, state = decomposed_ownership._inspect(detection.root, render_hooks=False)
         if state == "clean":
-            return
+            if finish is not None:
+                finish()
+            return False
         if state in decomposed_ownership.EXPLICIT_UPGRADE_STATES:
             raise ValueError("decomposed source drift; refusing restore until upgrade is accepted")
         fresh = _plan_decomposed_recovery(detection)
@@ -2804,6 +2774,89 @@ def restore_decomposed(detection):
             raise ValueError("decomposed evidence changed before restore")
         changes = [(detection.root / name, raw.decode("utf-8")) for name, raw in originals.items()
                    if snapshot[name] != raw]
-        changes.extend((detection.root / (name + BACKUP_SUFFIX), None) for name in originals)
-        changes.append((detection.root / MANIFEST_NAME, None))
-        _commit_recovery_changes(detection, fresh, changes)
+        if _secure_dirfd_transactions_supported():
+            changes.extend((detection.root / (name + BACKUP_SUFFIX), None) for name in originals)
+            changes.append((detection.root / MANIFEST_NAME, None))
+            _commit_recovery_changes(detection, fresh, changes, before_mutation=guard, verify_result=finish)
+            return True
+        from .file_transaction import (
+            _assert_restore_evidence_set_unchanged,
+            _remove_targets_portably,
+            _snapshot_restore_evidence,
+            _write_targets_portably,
+        )
+        evidence = {
+            name: detection.root / name
+            for name in (
+                *DECOMPOSED_SOURCE_TARGETS,
+                *(name + BACKUP_SUFFIX for name in DECOMPOSED_SOURCE_TARGETS),
+                MANIFEST_NAME,
+            )
+        }
+        identities, directories = _snapshot_restore_evidence(detection.root, evidence)
+        if decomposed_ownership._fingerprint(decomposed_ownership._snapshot(detection.root)) != fresh.fingerprint:
+            raise ValueError("decomposed evidence changed before portable restore")
+        post_write = _write_targets_portably(
+            changes,
+            expected_identities=identities,
+            expected_directories=directories,
+            preserve_earlier_writes_on_rollback_failure=True,
+        )
+        source_expected = {}
+        for name, raw in originals.items():
+            path = detection.root / name
+            expected = post_write.get(path, identities.get(path))
+            if expected is None or expected[2] != sha256(raw).hexdigest():
+                raise ValueError("portable restore could not verify original source")
+            source_expected[path] = expected
+        # This is a read-only fence before cleanup. It never becomes rollback
+        # authorization; only the controlled post-write snapshots below may.
+        _assert_restore_evidence_set_unchanged(source_expected)
+        try:
+            cleanup = [detection.root / (name + BACKUP_SUFFIX) for name in originals]
+            cleanup.append(detection.root / MANIFEST_NAME)
+            cleanup_contents = {
+                detection.root / (name + BACKUP_SUFFIX): snapshot[name + BACKUP_SUFFIX].decode("utf-8")
+                for name in originals
+            }
+            cleanup_contents[detection.root / MANIFEST_NAME] = snapshot[MANIFEST_NAME].decode("utf-8")
+            _remove_targets_portably(
+                cleanup,
+                expected_identities=identities,
+                expected_directories=directories,
+                recovery_contents=cleanup_contents,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            # A failed evidence deletion must leave the original owned state,
+            # not restored source plus a partial backup/manifest family. Roll
+            # back only files this transaction wrote and only while their
+            # controlled post-write snapshot still matches.
+            rollback = [
+                (detection.root / name, snapshot[name].decode("utf-8"))
+                for name in originals
+                if snapshot[name] is not None and snapshot[name] != originals[name]
+            ]
+            rollback_expected = {
+                detection.root / name: post_write[detection.root / name]
+                for name in originals
+                if snapshot[name] is not None and snapshot[name] != originals[name]
+            }
+            try:
+                if rollback:
+                    _write_targets_portably(
+                        rollback,
+                        expected_identities=rollback_expected,
+                        expected_directories=directories,
+                        preserve_earlier_writes_on_rollback_failure=True,
+                    )
+            except (OSError, UnicodeError, ValueError) as rollback_exc:
+                raise ValueError(
+                    "portable restore rollback failed; manual review required"
+                ) from rollback_exc
+            if decomposed_ownership._inspect(detection.root)[3] != state:
+                raise ValueError(
+                    "portable restore rollback did not restore owned state"
+                ) from exc
+            raise
+        if decomposed_ownership._inspect(detection.root)[3] != "clean":
+            raise ValueError("portable restore left owned evidence")

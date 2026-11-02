@@ -13,7 +13,7 @@
 | 状态 | 内存 session + 私有有界文件检查点/账本 | 明确保留时间、容量、原子写与损坏处理；展示恢复不恢复执行 |
 | 构建与检查 | setuptools；pytest；GitHub Actions/CodeQL/Dependabot | 普通 wheel 与公开安装独立验收；不把扫描无告警解释为无漏洞 |
 
-Ruff 0.17.0 与 mypy 2.4.0 从已提取模块逐步接入，范围以 `pyproject.toml` 的显式列表为准。
+Ruff 0.17.2 与 mypy 2.4.0 从已提取模块逐步接入，范围以 `pyproject.toml` 的显式列表为准。
 在 Python 3.12 开发环境安装 `.[test,quality]` 后执行 `python -m ruff check` 和 `python -m mypy`。
 质量工具的运行环境不改变 >=3.9 的产品支持声明；3.9 仍走独立运行回归。
 暂未设置全仓格式化、coverage 门禁；禁止借工具引入全仓格式改写或批量忽略现有问题。
@@ -44,6 +44,8 @@ Ruff 0.17.0 与 mypy 2.4.0 从已提取模块逐步接入，范围以 `pyproject
 不为可逆的小文档修改新增只重复实现的测试。已有安全协议、源码指纹、权限和恢复契约不能为了通过测试而弱化。
 
 ## 测试环境和已知工具限制
+
+CI 按[回归分级](regression-ci.md)选择普通 PR 的验证范围；main 与发布 gate 保留完整矩阵。完整测试通过并行分片提速，不减少受支持 Python 版本。相同精确提交已有完整 CI 证据时，无需再跑重复的本地全量；本地失败复现和聚焦验证仍需完成。
 
 先执行 `python tools/preflight.py --check-only`。它只读，不启动服务，`ready` 不代表 pytest 已运行。
 

@@ -21,7 +21,9 @@ Use it when connecting [Hermes Agent](https://github.com/NousResearch/hermes-age
 
 [What’s new in V5](#whats-new-in-v5) · [Upgrade from V4.x](#upgrade-from-v4x-to-v5) · [Install](#quick-install) · [Configure](#configuration) · [Recent releases](#recent-releases) · [User guide](docs/user-guide.en.md) · [Contributors](#contributors)
 
-**V5: follow the task, continue the conversation, keep the complete result.** This page describes v5.0.2; installable versions are listed in [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases). See the [release notes](docs/release-notes-v5.0.2.en.md).
+**V5: follow the task, continue the conversation, keep the complete result.** This page describes v5.0.12; installable versions are listed in [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases). See the [release notes](docs/release-notes-v5.0.12.en.md).
+
+Once published, download v5.0.12 packages and checksums from the [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.12).
 
 ## What's new in V5
 
@@ -46,6 +48,24 @@ card:
 ```
 
 This combination starts with the process panel collapsed and keeps it available after completion. The `task` preset itself expands the panel by default; the second line explicitly selects collapse. Upgrading does not switch `classic`, `focused` or `detailed` to `task`.
+
+V5.0.12 addresses LOCAL source-anchor pollution (#474) and a Feishu source-anchor mismatch during terminal handoff (#469), preserving native ownership and routing checks. Existing installations must refresh the managed hook through the normal installer and restart Gateway through its service owner. See the [release notes](docs/release-notes-v5.0.12.en.md) for acceptance and scope.
+
+V5.0.11 verifies admission completion and the first display-policy owner on pinned Hermes `9b904dcc22` (#471). The installation adapter is limited to an existing official PM generation, HFC already enabled with `allow_tool_override: false`, and a schema2 member without an observer marker. The SDK must be absent or PM-managed 1.7.5. Fresh installations, old v1 receipts, missing/true flags, and manually installed SDK 1.6.8 remain rejected before admission. See the [release notes](docs/release-notes-v5.0.11.en.md) for candidate validation and recovery/uninstall scope; availability follows the published Release. Do not delete protection records or edit Hermes source to bypass checks.
+
+V5.0.10 addresses verified asynchronous completion handoff and terminal acknowledgement races, and preserves unrelated Hermes configuration edits during owned-config recovery (#469/#470, with #451 diagnostics). Exact acceptance and remaining field uncertainty are recorded in the [release notes](docs/release-notes-v5.0.10.en.md).
+
+V5.0.9 repairs native admission identity, Windows byte I/O/config child isolation, historical PM wheel recovery and fixed recovery diagnostics (#451/#459/#462/#463). See the [release notes](docs/release-notes-v5.0.9.en.md) for acceptance boundaries.
+
+The v5.0.8 combines owned external PM wheels, verified migration rebinding and PM launcher/official-image installation compatibility (#458/#459/#462). See the [release notes](docs/release-notes-v5.0.8.en.md) for validation and limits.
+
+The v5.0.7 release addresses Hermes v0.22.5 compatibility, per-turn reasoning/tool callbacks and terminal handoff diagnostics. See the [release notes](docs/release-notes-v5.0.7.en.md) for validation status and limits.
+
+V5.0.6 puts each platform installer in a versioned top-level directory, addressing the old tar root entry that could rewrite extraction-target permissions ([#454](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/454)). After extraction, enter `hermes-feishu-card-v5.0.6-linux/`, `hermes-feishu-card-v5.0.6-macos/` or `hermes-feishu-card-v5.0.6-windows/` before running the installer. See [release notes](docs/release-notes-v5.0.6.en.md) for archive and actual-extraction gates.
+
+V5.0.5 supports the reviewed Hermes v0.22.4, rc.2, cf4 and pinned main sources for admission completion and official configuration writers, retaining earlier sources and native fallback for unknown admission sources. See [release notes](docs/release-notes-v5.0.5.en.md) for scope and verification limits.
+
+V5.0.4 supplies opt-in `output_rate` on eligible legacy installs, finishes cards across verified Session Authority Task boundaries, and recalls exact Preflight/compaction-complete notices after 15 seconds. Rate display remains off by default; unknown source retains native Hermes delivery. See [release notes](docs/release-notes-v5.0.4.en.md).
 
 V5.0.2 fixes recall for known English/simplified-Chinese busy receipts and bare Chinese compression notices. Queue/demoted-subagent notices, onboarding guidance and ongoing Working heartbeats stay visible; unknown translations remain native. See the [notice lifecycle](docs/wiki/notice-lifecycle.md).
 
@@ -110,7 +130,7 @@ These are real historical screenshots, not a claim that every detail matches V5.
 **Keep your existing bot.** Reuse the actual Hermes directory, configuration, credentials and profile. Example paths are not substitutes for your split-HOME, Docker or multi-instance layout.
 
 1. Record current HFC/Hermes versions and service managers. Back up configuration, `.env` and installer recovery material. After tasks finish, stop Gateway, Desktop and sidecar through their existing managers.
-2. Pin the installer to `v5.0.2` and supply the same configuration and credentials paths. Run it only after that tag is published. The installer checks the provenance and compatibility of the old installation.
+2. Pin the installer to `v5.0.12` and supply the same configuration and credentials paths. Run it only after that tag is published. The installer checks the provenance and compatibility of the old installation.
 3. If diagnostics require restoring old hooks first, use the official `restore` command they provide, then reinstall. Stop on unknown source drift; never edit installed `gateway/run.py` or delete manifests/backups to bypass checks.
 4. Opt into the task layout with the two fields above if desired. Keep credentials, routing, native-table settings and other reading preferences from your existing configuration.
 5. Restore the original service managers and restart Gateway/Desktop as directed. Check `status`, `doctor --explain` and `card-config --running`, then send a real message to verify the card and footer.
@@ -121,7 +141,7 @@ macOS / Linux example—replace these paths with those used by your current inst
 export HERMES_DIR="$HOME/.hermes/hermes-agent"
 export HFC_CONFIG="$HOME/.hermes/config.yaml"
 export HFC_ENV_FILE="$HOME/.hermes/.env"
-curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/v5.0.2/install.sh | bash -s -- --version v5.0.2 --config "$HFC_CONFIG" --env-file "$HFC_ENV_FILE"
+curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/v5.0.12/install.sh | bash -s -- --version v5.0.12 --config "$HFC_CONFIG" --env-file "$HFC_ENV_FILE"
 ```
 
 See the **[V4.x → V5 upgrade guide](docs/upgrade-v4-to-v5.en.md)** for Windows, Docker, split HOME, verification and rollback. Updating HFC is separate from updating Hermes; Feishu `/update` is not the plugin-version upgrade command.
@@ -157,7 +177,7 @@ Start or restart Hermes Gateway as directed by setup, then message the bot and c
 - **Docker:** inside an existing Hermes container, run the repository's installer:
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v5.0.2
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v5.0.12
 bash install-docker.sh
 ```
 
@@ -247,10 +267,12 @@ In V5, add `--running` to verify loaded defaults, or use `--minimal-yaml` to pri
 | Keep live thinking out of the answer area | `card.stream_thinking_to_body: false` |
 | Show only the latest live-thinking text | `card.thinking_body_tail_chars: 2400` (default `0`: unlimited) |
 | Reduce successful tool rows after completion | `card.hide_completed_tool_activity: true`, retaining unsuccessful tools |
-| Text sizes, footer and subscription quota | `card.text_sizes`, `card.footer_fields`; optional `subscription_usage` |
+| Text sizes, footer and subscription quota | `card.text_sizes`, `card.footer_fields`; optional `subscription_usage`, `output_rate` |
 | Native replies in selected chats | Exact matches in `bindings.native_chats`; configure within each profile when using multiple profiles |
 | Multiple bots, groups and profiles | [Configuration and routing](docs/user-guide.en.md) |
 | Optional CardKit entity streaming | [Settings and permissions](docs/wiki/cardkit-streaming.md) |
+
+Development branch: eligible Hermes 0.22.x legacy installs enable the official plugin solely to observe invocation metrics. Existing installs need HFC install again and a Gateway restart for this data source. `output_rate` stays off by default and depends only on complete, exact per-invocation observations, independently of the possibly session-cumulative legacy footer token figure. An unloaded plugin, `plugins.isolation: host`, incomplete usage/timing, mixed model/provider routes or ambiguous same-session turns hide it. Hybrid behavior is unchanged. See [observed timing](docs/wiki/observed-timing.md) for measurement and restore boundaries.
 
 Existing configs without `integrity` retain `notify` behavior; automatic repair is not silently enabled. See [safety controls and troubleshooting](docs/wiki/v4.1-safety-controls.md).
 
@@ -286,20 +308,35 @@ HFC uses a **sidecar-only** architecture: Hermes executes tasks, the installer m
 
 | Version | Highlights |
 |---|---|
-| [v5.0.2](docs/release-notes-v5.0.2.en.md) | Known en/zh transient-notice recall; preserve queue guidance and native heartbeat cleanup |
-| [v5.0.1](docs/release-notes-v5.0.1.en.md) | Hermes 0.22.x completion/approval compatibility and persistent PM dependencies |
-| [v5.0.0](docs/release-notes-v5.0.0.en.md) | Task sections, interaction continuity, turn metrics and installation boundaries |
-| [v4.7.7](docs/release-notes-v4.7.7.en.md) | Opt-in native tables; preserve long cells and indivisible Markdown tables |
-| [v4.7.6](docs/release-notes-v4.7.6.en.md) | Split HOME binding, multi-instance ownership and diagnostics |
-| [v4.7.5](docs/release-notes-v4.7.5.en.md) | PM runtime binding, DM card admission and layout limitations |
-| [v4.7.4](docs/release-notes-v4.7.4.en.md) | Independent sidecar runtime, heartbeat ownership and exit cleanup |
-| [v4.7.3](docs/release-notes-v4.7.3.en.md) | Bounded heartbeat scans, responsive health snapshots and recovery guidance |
-| [v4.7.2](docs/release-notes-v4.7.2.en.md) | Update shutdown protection, SDK callbacks, integrity recovery and configuration map |
-| [v4.7.1](docs/release-notes-v4.7.1.en.md) | Slash-confirm callback repair and visible confirmation results |
+| [v5.0.12](docs/release-notes-v5.0.12.en.md) | Feishu-only source anchor and bounded completion source matching |
+| [v5.0.11](docs/release-notes-v5.0.11.en.md) | Pinned Hermes main admission and first display-policy ownership checks |
+| [v5.0.10](docs/release-notes-v5.0.10.en.md) | Verified asynchronous completion, single-use terminal acknowledgement and owned-config recovery |
+| [v5.0.9](docs/release-notes-v5.0.9.en.md) | Native admission identity, Windows installation and historical PM recovery |
+| [v5.0.8](docs/release-notes-v5.0.8.en.md) | Owned PM wheels, safe migration rebinding and official-image installation compatibility |
+| [v5.0.7](docs/release-notes-v5.0.7.en.md) | Hermes v0.22.5 compatibility, per-turn callbacks and terminal diagnostics (candidate) |
+| [v5.0.6](docs/release-notes-v5.0.6.en.md) | Versioned archive roots, normalized metadata and extraction safety checks |
+| [v5.0.5](docs/release-notes-v5.0.5.en.md) | Verified Hermes v0.22.4/main admission and config writers; isolated complete CI |
+| [v5.0.4](docs/release-notes-v5.0.4.en.md) | Legacy observed rate, exact compression notice recall and cross-Task completion |
+| [v5.0.3](docs/release-notes-v5.0.3.en.md) | Verified Hermes channel inheritance, expired-interaction continuation and optional output rate |
 
 See [release history](docs/release-history.en.md) for earlier versions, and [CHANGELOG](CHANGELOG.md) or [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases) for the full record.
 
 ## Contributors
+
+- V5.0.12: thanks to [Alex-HJY](https://github.com/Alex-HJY) for the #474 report, analysis and field-patch evidence, and [leavrcn](https://github.com/leavrcn) for the #469 retest and mismatch evidence. Issue evidence is separate from code authorship; earlier credits remain.
+- V5.0.11: thanks to [lv86snorlax](https://github.com/lv86snorlax) for the pinned-source report and analysis in [#471](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/471). Repair authorship follows the Git commits; previous credits are retained.
+- V5.0.10: thanks to [leavrcn](https://github.com/leavrcn) for #469/#470 and [kludgezol](https://github.com/kludgezol) for the multi-profile follow-up in #451. Reports and analysis are credited separately from code authorship; all earlier credits remain.
+- V5.0.9: thanks to [coytus](https://github.com/coytus) for the #451 report and [leavrcn](https://github.com/leavrcn) for its native-identity comparison, reproduction and candidate evidence; thanks to [mingyangtech666](https://github.com/mingyangtech666) for #463 and the original #458 implementation, [mouyong](https://github.com/mouyong) for #462, and [ywarmy](https://github.com/ywarmy) for #459 follow-up evidence. Dependabot supplied #464/#465/#466. Original commits and earlier credits are retained; issue evidence is separate from code authorship.
+- V5.0.7: thanks to [coder-zhw](https://github.com/coder-zhw) (#456), [Kevinzz224](https://github.com/Kevinzz224) and [ywarmy](https://github.com/ywarmy) (#453), and [coytus](https://github.com/coytus), [Lite-G](https://github.com/Lite-G) and [leavrcn](https://github.com/leavrcn) (#451) for reports, analysis and reproduction evidence; code authorship follows Git commits.
+- V5.0.6: thanks to [leavrcn](https://github.com/leavrcn) for the archive-metadata report and reproduction evidence in [#454](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/454). This is issue-evidence credit; code authorship follows the Git commits. All historical credits remain intact.
+- V5.0.5: repairs and CI maintenance by [baileyh8](https://github.com/baileyh8) ([PR #448](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/448), [PR #449](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/449), [PR #452](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/452)). Thanks to [coytus](https://github.com/coytus) for the [#451](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/451) field report and [Lite-G](https://github.com/Lite-G) for source analysis; these are evidence and analysis credits, separate from this repair's code authorship.
+
+
+- V5.0.4: thanks to [Lite-G](https://github.com/Lite-G) for #441 evidence and the original code in [PR #442](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/442), and [Timeral](https://github.com/Timeral) for #434 field retest evidence. Code authorship and issue evidence are credited separately.
+
+- #443: thanks to [JohnZhong505](https://github.com/JohnZhong505) for the [Session Authority completion report and evidence](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/443), and [Lite-G](https://github.com/Lite-G) for additional source analysis. These credits acknowledge issue evidence and analysis, separately from this repair's code authorship; all historical credits remain intact.
+
+- V5.0.3: [Lite-G](https://github.com/Lite-G) contributed per-invocation output rate in [PR #436](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/436) and the Hermes compatibility report/fix in [#437](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/437) / [PR #438](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/438). [Thxzzzzz](https://github.com/Thxzzzzz) contributed expired-interaction continuation in [PR #430](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/430). Thanks to Dependabot for #388, #389, #390 and #439. Original commit authors and all historical credits are retained.
 
 - V5.0.2: thanks to [Timeral](https://github.com/Timeral) for the reproduction and source analysis in [#434](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/434).
 
@@ -387,9 +424,13 @@ The default listener is `127.0.0.1`. Non-loopback deployment requires explicit o
 
 [MIT License](LICENSE).
 
+Thanks to [mingyangtech666](https://github.com/mingyangtech666) for the external PM workspace wheel proposal in PR #458, and [ywarmy](https://github.com/ywarmy) for PM migration and configuration recovery evidence in Issue #459. The original contribution and subsequent transaction hardening are retained separately.
+
 <details>
 <summary>Optional service and affiliate disclosure</summary>
 
 [ScrapingAnt](https://scrapingant.com/?ref=zwq4ngy) is an optional web scraping service, not a plugin dependency. This is an affiliate link; a qualifying first paid subscription may earn the project a commission.
 
 </details>
+
+Thanks to [mouyong](https://github.com/mouyong) for the PM launcher and official-image installation evidence in Issue #462. Report evidence is credited separately from Git code authorship.

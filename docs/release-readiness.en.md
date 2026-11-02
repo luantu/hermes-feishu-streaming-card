@@ -2,12 +2,61 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-This branch targets `5.0.2`; published availability is determined by the GitHub Release tag and assets. Opt-in native tables preserve oversized cells via Markdown fallback; indivisible Markdown tables retain their full source for the shared payload/handoff gate.
+This branch targets `5.0.12`; this batch addresses source-anchor mutation and comparison boundaries in #474/#469. Independent reproduction, QA/review, ordinary-wheel old-patch upgrade/restore, exact full CI and public installation/assets are required. Real Gateway/model and client evidence is recorded separately; simulation does not establish field acceptance. See the [release notes](release-notes-v5.0.12.en.md).
 
-For #434, candidate `74f409e` passed 146 focused tests, local full regression (6687 passed / 33 skipped) and all 18 CI checks. Version 5.0.2 metadata and exact merge/tag gates are separate checks. No new real Feishu or client visual acceptance is claimed.
+## v5.0.11 historical record
 
-Full tests, exact-merge CI, assets/checksums and public-tag installation remain release gates. See [release notes](release-notes-v5.0.2.en.md) and the [acceptance record](reviews/2026-10-03-task-cards-acceptance.md). Platform API smoke, real Gateway execution, desktop visuals and Android/iOS acceptance are separate evidence; missing coverage is not a pass.
+This branch targets `5.0.11`; #471 includes pinned Hermes `9b904dcc22` admission ownership and a restricted installation migration. Candidate acceptance covers HFC already enabled, a strict-false flag, a schema2 member without a marker, and an existing official PM generation. Fresh installs, old v1 receipts and manually installed SDKs remain unsupported and are rejected before admission. An ordinary wheel has passed the restore/reinstall cycle; HOME-scoped uninstall has passed private real-PM failure/retry and two-HOME loopback checks; exact final CI, public installation and assets require separate acceptance. Earlier full CI for `66a29a7` does not cover the new installer changes. The reporter deployment, real Gateway/model and Feishu clients have not been retested. See the [release notes](release-notes-v5.0.11.en.md).
 
+## v5.0.10 historical record
+
+This branch targets `5.0.10`; this batch addresses #469/#470 and adds #451 diagnostics. Independent review/QA, exact full CI, ordinary-wheel provenance, controlled real Feishu API, public installation and release assets are separate release gates. Actual reporter deployments and real Gateway/model execution remain unverified; desktop/Android visual and click checks remain unverified, and iOS/new-user trials are outside scope. Final evidence is published with the [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.10).
+
+## Historical records through v5.0.9
+
+The earlier records below are not evidence that the v5.0.10 gates passed.
+
+This branch targets `5.0.9`; this batch repairs #451/#459/#462/#463 and integrates #464/#465/#466 through #467. Independent QA/review, exact final CI, native Windows, ordinary wheel/public install and release assets are separate release gates, with each result bound to its actual commit and recorded in Release. Actual Gateway/model and desktop/Android visual/click acceptance are unverified; iOS/new-user trials are excluded. Final evidence will be linked from the [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.9).
+
+## Historical records through v5.0.8
+
+The records below are retained evidence and are not v5.0.9 passes.
+
+This branch targets `5.0.8`; this batch combines #458/#459/#461 and handles #462. Final publication and exact evidence are recorded in the [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.8).
+
+Current candidate: #456, #453 and #451. Pinned v0.22.5 reproduces the original completion-contract rejection; v0.22.4 renders/restores successfully. Unsupported CLI exits 1 locally; exit 0 remains unreproduced. Callback overwrite is confirmed in generated source; 22 contract regressions passed. Expanded four/five-call, footer, normal/waiter and actual Base-function cases did not reproduce #451; bounded diagnostics are added and the issue stays open. Final ordinary-wheel v0.22.5 install/reinstall/doctor/13-source restore passed. Real API no-waiter passed full-answer/terminal-marker readback with 2 successful PATCHes and zero failures; the first waiter attempt failed the old helper assertion before terminal readback. Both cards were recalled and deletion read back. Final CI/CodeQL, public installation and assets remain separate pending gates. Gateway/model, reporter reproduction and desktop/Android visuals/clicks are unverified; iOS/new-user trials are excluded. See [release notes](release-notes-v5.0.7.en.md).
+
+## V5.0.6 acceptance record
+
+| Field | Status |
+| --- | --- |
+| Old-archive local reproduction | Non-root macOS bsdtar with `-p` rewrites 0700/1777 target modes to 0755; normal extraction preserves them locally. Owner-only normalization still rewrites mode; a versioned-directory prototype preserves target metadata |
+| Environment readiness | Python 3.12.13 existing `.venv`; check-only reports `incomplete`, fixed Git fixture `missing`, pytest `not_run`. This is not a test pass |
+| Final docs/metadata focused checks | Existing Python 3.12.13 `.venv`, `preflight --suite focused --module docs`: 102 passed, 0 skipped; diff-check passed. Fixed Git fixture missing, overall status `partial`; not full regression |
+| Final archive inventory/metadata and actual extraction | Pending final candidate checks; require exact nine-file bytes, versioned top-level paths, tar uid/gid 0, expected modes, safe paths/types and duplicate rejection |
+| Linux GNU tar non-root/root and macOS | Pending CI; require 0700/1777 target inode/uid/gid/mode and sentinel preservation, executable modes, and old-layout negative control. Root checks stay within verified CI-owned scratch |
+| Exact candidate/merge/tag full CI and CodeQL | Pending; preserve the full supported matrix and inspect exact run commits |
+| Ordinary wheel/public installation | Pending final package provenance and real child-process checks |
+| Public assets/checksums/anonymous download | Pending published assets and actual extraction metadata verification; old v5.0.5 assets/tags remain intact |
+| Reporter host recovery / real Gateway/model / clients | No new acceptance; Linux host-service recovery, Gateway/model and real-client evidence remain separate |
+
+The records below retain earlier release evidence and limits. They do not establish v5.0.6 acceptance.
+
+## V5.0.5 acceptance record
+
+These are the checks for this release. Actual results belong to the exact-version [v5.0.5 GitHub Release acceptance record](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.5). The October 3 task-card visual record does not establish acceptance for this release.
+
+| Field | Status |
+| --- | --- |
+| Version/documentation focused checks | `129 passed` (docs, metadata, release gate and CI contracts); `v5.0.5 --metadata-only` passed; not full CI |
+| Full repair-candidate CI | Both 117-case upstream groups passed at `69cbf66`; an existing asynchronous recheck assertion failed, so the full run was not accepted. See the Release record for the final corrected candidate |
+| Exact v5.0.5 commit CI / CodeQL | Check candidate/merge SHA and actual run; results in the Release acceptance record |
+| Real Feishu API | Independent smoke for this release; results in the Release acceptance record |
+| v5.0.5 ordinary packages / public installation | Check ordinary-wheel provenance, public-tag installation and restore; results in the Release acceptance record |
+| Annotated tag / assets | Check exact commit, release CI, three-platform packages and checksums; results in the Release acceptance record |
+| Actual Gateway/model / #451 tool-heavy environment | Unverified; original reporter environment not retested |
+| Desktop / Android visuals and clicks | Unverified, independently of API smoke |
+| iOS / new-user trials | Outside this release scope |
 
 V3.9.0 was released on 2026-07-11, and V3.9.1 was released on 2026-07-11. The V4.0.13 all-command lifecycle remains intact; V4.2.0 narrows only a private-chat bare `/update` into the stricter dedicated maintenance card.
 

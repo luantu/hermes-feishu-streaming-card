@@ -2,12 +2,72 @@
 
 [中文](release-readiness.md) | [English](release-readiness.en.md)
 
-本分支目标版本为 `5.0.2`，是否已发行以 GitHub Release 的标签和资产为准。原生表格默认关闭，超长单元格整表回退 Markdown；无法拆分的 Markdown 表格保留完整原文，由共享容量与完整内容交接门禁处理。
+本分支目标版本为 `5.0.12`；本轮针对 #474/#469 修复 source 锚点写入和比较边界。候选须通过独立复现、QA/review、普通 wheel 旧补丁升级/恢复、精确完整 CI 和公开安装/资产验收。真实 Gateway/model 和客户端证据分别记录，不将模拟结果写作现场验收。见[发行说明](release-notes-v5.0.12.md)。
 
-#434 修复候选 `74f409e` 已通过 focused 146 项、本地 full（6687 passed / 33 skipped）及全部 18 项 CI 检查。5.0.2 元数据与精确 merge/tag 门禁另行验证；本次未新增真实飞书或客户端视觉验收。
+## v5.0.11 历史记录
 
-完整测试、精确合并 CI、资产校验与公开 tag 安装仍为发布门禁。见[发行说明](release-notes-v5.0.2.md)和[本轮验收记录](reviews/2026-10-03-task-cards-acceptance.md)；平台 API、真实 Gateway、桌面视觉及 Android/iOS 验收分别记录，未验证项不能写为通过。
+本分支目标版本为 `5.0.11`；#471 包含固定 Hermes `9b904dcc22` 的 admission 归属修复与受限安装迁移。已启用 HFC、strict-false flag、schema2 无 marker、已有官方 PM 的前态进入候选验收；全新安装、旧 v1 receipt 和手装 SDK 等未支持前态提前拒绝。恢复循环已有普通 wheel 证据，HOME 级卸载已完成私有真实 PM 故障/重试和双 HOME loopback 检查；最终精确提交 CI、公开安装、发行资产须独立验收。旧 `66a29a7` 完整 CI 不覆盖新安装改动。报告者现场、真实 Gateway/model 与 Feishu 客户端未复测。见[发行说明](release-notes-v5.0.11.md)。
 
+## v5.0.10 历史记录
+
+本分支目标版本为 `5.0.10`；本轮处理 #469/#470，并补充 #451 诊断。独立 QA/review、精确完整 CI、普通 wheel 来源、受控真实 Feishu API、公开安装与发行资产分别作为发布门禁。报告者现场及真实 Gateway/model 未验证；桌面/Android 视觉与点击未验证，iOS/新用户试用不在范围。最终证据见 [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.10)。
+
+## 截至 v5.0.9 的历史记录
+
+下列旧记录不代表 v5.0.10 发布门禁通过。
+
+本分支目标版本为 `5.0.9`；本轮修复 #451/#459/#462/#463，并经 #467 集成 #464/#465/#466。发布须分别核验独立 QA/review、精确最终 CI、原生 Windows、普通 wheel/公开安装及发行资产；各阶段结果绑定实际提交并登记在 Release。真实 Gateway/model、桌面/Android 视觉与点击未验证；iOS/新用户试用不在本轮范围。最终证据见 [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.9)。
+
+## 截至 v5.0.8 的历史记录
+
+以下保留旧证据，不代表 v5.0.9 通过。
+
+本分支目标版本为 `5.0.8`；本轮合并 #458/#459/#461 并处理 #462。最终公开状态与精确验收结果以 [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.8) 为准。
+
+| 项目 | 状态 |
+| --- | --- |
+| #456 拒装对照 | 固定 v0.22.5 源码复现完成契约拒绝；v0.22.4 渲染/还原对照通过。原版 CLI 拒装实测 exit 1，报告的 exit 0 未复现 |
+| #453 回调覆盖 | 原版官方渲染输出确认 reasoning/tool 绑定后被清空或覆盖；22 项契约回归通过，最终提交 CI 独立核验 |
+| #451 多工具重复 | 4/5 API、footer、normal/waiter 与真实 Base 完成函数对照未复现；补充有界分类诊断，保留 issue 开放 |
+| 支持版本 CI | 新增固定 v0.22.5，保留 v0.22.4 及全部历史来源；候选/merge/tag完整CI与CodeQL待验 |
+| 普通包/PM/公开安装 | 最终普通 wheel 的 v0.22.5 安装/重装/doctor/13 文件精确恢复通过；公开 tag 安装独立待验 |
+| 真实 Feishu API | no-waiter 完整答案/终态标记读回通过，2 PATCH 成功/0 失败；首 waiter 旧脚本断言失败、终态读回未验证。两张卡均已撤回确认 |
+| 资产与版本记录 | 待annotated tag、checksums、匿名下载与实际解压；保留全部旧tag资产 |
+| 真实 Gateway/model、报告者现场、桌面/Android视觉与点击 | 未验证；iOS与新用户试用不在本轮范围 |
+
+以下保留历史验收记录，不代表本轮通过。
+
+## V5.0.6 本轮验收记录
+
+| 字段 | 状态 |
+| --- | --- |
+| 旧包本地复现 | 非 root macOS bsdtar 的 `-p` 将 0700/1777 目标改为 0755；本机默认解压保留原 mode。仅归零 owner 仍改写 mode，版本化目录原型保留目标元数据 |
+| 环境准备 | 已有 `.venv` 为 Python 3.12.13；check-only 报 `incomplete`、固定 Git fixture `missing`、pytest `not_run`，不记测试通过 |
+| 最终文档/metadata 聚焦检查 | 已有 Python 3.12.13 `.venv` 运行 `preflight --suite focused --module docs`：102 passed、0 skipped；diff-check 通过。固定 Git fixture 缺失，整体状态 `partial`；不记为完整回归 |
+| 最终归档清单/元数据与实际解压 | 待最终候选检查；要求九文件字节、版本化顶层路径、tar uid/gid 0、规定 mode、安全路径/类型及重复拒绝 |
+| Linux GNU tar 非 root/root 与 macOS | 待 CI；要求 0700/1777 目标 inode/uid/gid/mode、哨兵和可执行 mode 保留，旧布局负向控制有效。root 仅在核验归属的 CI scratch 内运行 |
+| 精确候选/merge/tag 完整 CI 与 CodeQL | 待验；保留完整支持矩阵，核对实际 run commit |
+| 普通 wheel / 公开安装 | 待最终包来源与真实子进程检查 |
+| 公开资产/checksums/匿名下载 | 待正式资产及实际解压元数据验收；保留旧 v5.0.5 资产和 tag |
+| 报告者现场恢复 / 真实 Gateway/model / 客户端 | 本轮未新增验收；Linux 宿主服务恢复、Gateway/model 和真实客户端证据分别登记 |
+
+以下保留此前版本验收记录及其限制，不能用作 v5.0.6 的通过证明。
+
+## V5.0.5 本轮验收记录
+
+以下列出本轮验收项；实际结果见精确版本 [v5.0.5 GitHub Release 验收记录](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.5)。10-03 的任务卡片视觉历史不代表本轮通过。
+
+| 字段 | 状态 |
+| --- | --- |
+| 版本与文档定向检查 | `129 passed`（文档、metadata、release gate 与 CI 契约）；`v5.0.5 --metadata-only` 通过；不是完整 CI |
+| 修复候选完整 CI | `69cbf66` 两组上游各 117 项通过；既有 recheck 异步断言失败，不记为完整通过。修正版最终结果见 Release 验收记录 |
+| v5.0.5 精确提交 CI / CodeQL | 核对候选、合并 SHA 与实际 run；实际结果见 Release 验收记录 |
+| 真实 Feishu API | 本轮独立 smoke；实际结果见 Release 验收记录 |
+| v5.0.5 普通包与公开安装 | 核对普通 wheel 来源、公开 tag 安装与恢复；实际结果见 Release 验收记录 |
+| Annotated tag / 资产 | 核对精确 commit、release CI、三平台安装包与 checksums；实际结果见 Release 验收记录 |
+| 真实 Gateway/model / #451 工具密集现场 | 未验证；报告者原场景未复测 |
+| 桌面及 Android 视觉/实际点击 | 未验证，独立于 API smoke |
+| iOS / 新用户试用 | 本轮范围外 |
 
 V3.9.0 和 V3.9.1 已于 2026-07-11 发布。V4.0.13 的通用命令链仍保持“重启前反馈进入命令卡”的历史契约；V4.2.0 只把私聊裸 `/update` 收束到更严格的专用维护卡。
 

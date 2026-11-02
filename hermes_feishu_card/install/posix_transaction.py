@@ -16,6 +16,7 @@ from typing import Callable
 from uuid import uuid4
 
 from .file_transaction import (
+    BINARY_FLAG,
     _RestoreIdentity,
     _RestoreEvidenceSnapshot,
     _CLI_SNAPSHOT_UNSET,
@@ -169,7 +170,7 @@ def read_file_state(
     digest = hashlib.sha256()
     chunks: list[bytes] = []
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | BINARY_FLAG
         descriptor = (os.open(target, flags) if parent_fd is None
                       else os.open(target, flags, dir_fd=parent_fd))
         opened = os.fstat(descriptor)
@@ -358,7 +359,12 @@ def stage_file(
     staged: BoundStage | None = None
     try:
         basename = f".{target_name}.{uuid4().hex}.tmp"
-        descriptor = os.open(basename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+        descriptor = os.open(
+            basename,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | BINARY_FLAG,
+            0o600,
+            dir_fd=parent_fd,
+        )
         snapshot = os.fstat(descriptor)
         staged = BoundStage(
             target.parent / basename, parent_fd, basename, (snapshot.st_dev, snapshot.st_ino),
@@ -412,10 +418,13 @@ def stage_file(
             os.close(descriptor)
 
 
-def replace_stage(binding: BoundTarget, staged: BoundStage, *, check_parent: bool) -> None:
+def replace_stage(binding: BoundTarget, staged: BoundStage, *, check_parent: bool,
+                  before_replace: Callable[[], None] | None = None) -> None:
     staged.assert_owned()
     if check_parent:
         binding.assert_parent()
+    if before_replace is not None:
+        before_replace()
     os.replace(staged.basename, binding.basename, src_dir_fd=staged.parent_fd, dst_dir_fd=binding.parent_fd)
     staged.consumed = True
     staged.release()

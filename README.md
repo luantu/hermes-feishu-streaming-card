@@ -15,7 +15,9 @@
 
 [V5 新变化](#v5-新变化) · [从 V4x 升级](#从-v4x-升级到-v5) · [快速安装](#快速安装) · [配置方法](#配置方法) · [近期更新](#近期更新) · [使用手册](docs/user-guide.md) · [贡献者](#贡献者)
 
-**V5：任务看得清，交互接得上，结果留得全。** 本页介绍 v5.0.2；可安装版本以 [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases) 为准。见[完整发行说明](docs/release-notes-v5.0.2.md)。
+**V5：任务看得清，交互接得上，结果留得全。** 本页介绍 v5.0.12；可安装版本以 [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases) 为准。见[完整发行说明](docs/release-notes-v5.0.12.md)。
+
+v5.0.12 正式发布后，安装包与 checksums 以 [GitHub Release](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.12) 为准。
 
 ## V5 新变化
 
@@ -40,6 +42,24 @@ card:
 ```
 
 这组设置让执行过程默认收起，完成后仍可展开。`task` 预设本身默认展开；第二行明确选择收起。升级不会自动把 `classic`、`focused` 或 `detailed` 改成 `task`。
+
+V5.0.12 处理 LOCAL 会话锚点污染（#474）及 Feishu 完成交接的 source 锚点差异（#469）。保留原执行归属和路由校验；旧安装须通过正常安装器刷新受管 hook，并由原服务管理方重启 Gateway。验收结果和边界见[发行说明](docs/release-notes-v5.0.12.md)。
+
+V5.0.11 为固定 Hermes `9b904dcc22` 增加 admission 完成交接与首个展示策略的归属核验（#471）。安装适配限定为已有官方 PM generation、HFC 已启用且 `allow_tool_override: false`、schema2 member 无 observer marker 的前态；SDK 须不存在或为官方 PM 管理的 1.7.5。全新安装、旧 v1 receipt、缺失或 true 的 flag、手装 SDK 1.6.8 等前态仍提前拒绝。候选验收和恢复/卸载范围见[发行说明](docs/release-notes-v5.0.11.md)，以正式 Release 为准。不要删除保护记录或手改 Hermes 源码绕过检查。
+
+V5.0.10 处理已核验的异步完成交接、终局确认竞态，以及配置恢复时保留用户无关编辑的问题（#469/#470，并补充 #451 诊断）；验收记录和现场限制见[发行说明](docs/release-notes-v5.0.10.md)。
+
+V5.0.9 修复原生 admission 身份、Windows 字节 I/O 与配置子进程隔离、历史 PM wheel 恢复及固定恢复诊断（#451/#459/#462/#463）；验收范围见[发行说明](docs/release-notes-v5.0.9.md)。
+
+V5.0.8合并 PM 外部 wheel 来源保护与迁移安全重绑，并处理实际 PM 启动目录和官方镜像配置写入兼容（#458/#459/#462）；验收进度与限制见[发行说明](docs/release-notes-v5.0.8.md)。
+
+V5.0.7 针对 Hermes v0.22.5 安装兼容、思考/工具回调及终局交接诊断；验证进度和边界见[发行说明](docs/release-notes-v5.0.7.md)。
+
+V5.0.6 将三平台安装包收进各自的版本化顶层目录，修复旧 tar 包根条目可能改写解压目标目录权限的问题（[#454](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/454)）。解压后先进入 `hermes-feishu-card-v5.0.6-linux/`、`hermes-feishu-card-v5.0.6-macos/` 或 `hermes-feishu-card-v5.0.6-windows/` 再运行安装器；归档与实际解压门禁见[发行说明](docs/release-notes-v5.0.6.md)。
+
+V5.0.5 适配已核验的 Hermes v0.22.4、rc.2、cf4 与固定 main，补齐 admission 完成交接和官方配置 writer，并保留旧来源与未知来源的原生回退。兼容范围和验收限制见[发行说明](docs/release-notes-v5.0.5.md)。
+
+V5.0.4 为 eligible legacy 安装补齐可选 `output_rate`，修复已核验 Session Authority 跨 Task 投递后的完成卡收尾，并将精确 Preflight/压缩完成提示接入 15 秒撤回。生成速率默认关闭，未知源码保留 Hermes 原生交付。见[发行说明](docs/release-notes-v5.0.4.md)。
 
 V5.0.2 修复已知中英文 busy 回执和中文裸压缩提示的自动撤回。排队、子代理降级排队说明、onboarding 指南与持续 Working 心跳保持原行为，未知翻译保留原生路径。见[通知生命周期](docs/wiki/notice-lifecycle.md)。
 
@@ -104,7 +124,7 @@ V5 的桌面验收已核对“已超时”状态、失效选项和“查看续�
 **已有机器人不必重新创建。** 沿用实际 Hermes 目录、配置文件、凭据文件和 profile；不要把示例路径直接套到分离 HOME、Docker 或多实例环境。
 
 1. 记下当前 HFC / Hermes 版本及服务启动方式，备份现有配置、`.env` 和安装器恢复资料。等任务结束，使用原服务管理器停止 Gateway、Desktop 和 sidecar。
-2. 使用下面的安装脚本固定安装 `v5.0.2`，继续传入原来的配置与凭据路径。只有该 tag 正式发布后才执行；安装器会检查旧安装的来源与兼容性。
+2. 使用下面的安装脚本固定安装 `v5.0.12`，继续传入原来的配置与凭据路径。只有该 tag 正式发布后才执行；安装器会检查旧安装的来源与兼容性。
 3. 如果诊断要求先恢复旧 hook，按其给出的官方 `restore` 命令处理后重装。未知源码漂移应停止并排查，不手改 `gateway/run.py`，不删除 manifest 或 backup 强行继续。
 4. 需要新版任务布局时合并上面的两行配置；其余凭据、路由、原生表格和阅读预设按原配置保留。
 5. 按安装输出恢复原服务管理器，重启 Gateway / Desktop，运行 `status`、`doctor --explain` 和 `card-config --running`，再给机器人发一条消息确认卡片和 footer。
@@ -115,7 +135,7 @@ macOS / Linux 示例（先把路径改为你当前安装所用的值）：
 export HERMES_DIR="$HOME/.hermes/hermes-agent"
 export HFC_CONFIG="$HOME/.hermes/config.yaml"
 export HFC_ENV_FILE="$HOME/.hermes/.env"
-curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/v5.0.2/install.sh | bash -s -- --version v5.0.2 --config "$HFC_CONFIG" --env-file "$HFC_ENV_FILE"
+curl -fsSL https://raw.githubusercontent.com/baileyh8/hermes-feishu-streaming-card/v5.0.12/install.sh | bash -s -- --version v5.0.12 --config "$HFC_CONFIG" --env-file "$HFC_ENV_FILE"
 ```
 
 Windows、Docker、分离 HOME 的完整步骤，以及验证与回退方法，见 **[V4.x → V5 升级指南](docs/upgrade-v4-to-v5.md)**。升级 HFC 与升级 Hermes 是两件事；飞书 `/update` 不能当作本插件的版本升级命令。
@@ -151,7 +171,7 @@ python3 -m hermes_feishu_card.cli doctor --config ~/.hermes/config.yaml --hermes
 - **Docker：** 在已有 Hermes 容器中，使用仓库内的安装脚本：
 
 ```bash
-export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v5.0.2
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx HFC_VERSION=v5.0.12
 bash install-docker.sh
 ```
 
@@ -241,10 +261,12 @@ V5 可追加 `--running` 核对进程已加载值，或用 `--minimal-yaml` 生�
 | 实时思考不进入正文 | `card.stream_thinking_to_body: false` |
 | 正文只看最新思考 | `card.thinking_body_tail_chars: 2400`（默认 `0` 不截断） |
 | 完成后精简成功工具行 | `card.hide_completed_tool_activity: true`，保留异常工具 |
-| 字号、页脚与订阅额度 | `card.text_sizes`、`card.footer_fields`；可选 `subscription_usage` |
+| 字号、页脚与订阅额度 | `card.text_sizes`、`card.footer_fields`；可选 `subscription_usage`、`output_rate` |
 | 指定会话使用原生回复 | `bindings.native_chats` 精确匹配；多 profile 在对应 profile 下配置 |
 | 多机器人、群聊与 profile | [配置与路由](docs/user-guide.md#配置) |
 | 可选 CardKit 流式更新 | [开关与权限要求](docs/wiki/cardkit-streaming.md) |
+
+开发分支：Hermes 0.22.x legacy 安装在核验逐调用 hook 后，通过官方流程启用只观察指标的插件；旧安装需重新执行 HFC install 并重启 Gateway 才获得此数据源。`output_rate` 仍默认关闭，仅依赖完整、精确的逐调用观测，与可能为会话累计值的 legacy 页脚 token 数独立；插件未加载、`plugins.isolation: host`、usage/计时不完整、混合模型/provider 或同 session 轮次归属不明确时隐藏。Hybrid 行为不变。口径与恢复边界见[观测耗时](docs/wiki/observed-timing.md)。
 
 旧配置缺少 `integrity` 时保持 `notify`，不会静默开启自动修复。完整配置及边界见[安全控制与排障](docs/wiki/v4.1-safety-controls.md)。
 
@@ -280,20 +302,35 @@ HFC 采用 **sidecar-only** 架构：Hermes 运行任务，安装器管理必要
 
 | 版本 | 重点 |
 |---|---|
-| [v5.0.2](docs/release-notes-v5.0.2.md) | 已知中英文瞬态提示撤回，保留排队信息与原生心跳收尾 |
-| [v5.0.1](docs/release-notes-v5.0.1.md) | Hermes 0.22.x completion/审批兼容与 PM 持久依赖登记 |
-| [v5.0.0](docs/release-notes-v5.0.0.md) | 任务分区、交互续答、本轮统计与安装恢复边界 |
-| [v4.7.7](docs/release-notes-v4.7.7.md) | 可选原生表格；保留长单元格和无法拆分的 Markdown 表格 |
-| [v4.7.6](docs/release-notes-v4.7.6.md) | 分离 HOME 绑定、多实例身份校验与诊断修复 |
-| [v4.7.5](docs/release-notes-v4.7.5.md) | PM 环境绑定、私聊按钮准入修复及目录布局限制说明 |
-| [v4.7.4](docs/release-notes-v4.7.4.md) | 独立侧车环境、心跳归属隔离与退出残留回收 |
-| [v4.7.3](docs/release-notes-v4.7.3.md) | 缺心跳扫描降频、健康接口响应与恢复说明 |
-| [v4.7.2](docs/release-notes-v4.7.2.md) | 更新停机保护、SDK 按钮回调、完整性恢复与配置地图 |
-| [v4.7.1](docs/release-notes-v4.7.1.md) | 命令确认回调修复与结果卡刷新 |
+| [v5.0.12](docs/release-notes-v5.0.12.md) | Feishu 专用锚点与受限完成来源比较 |
+| [v5.0.11](docs/release-notes-v5.0.11.md) | 固定 Hermes main admission 与首个展示策略的归属核验 |
+| [v5.0.10](docs/release-notes-v5.0.10.md) | 异步完成交接、终局单次确认与配置归属恢复 |
+| [v5.0.9](docs/release-notes-v5.0.9.md) | 原生 admission 身份、Windows 安装与历史 PM 恢复 |
+| [v5.0.8](docs/release-notes-v5.0.8.md) | PM 外部 wheel、迁移安全重绑与官方镜像安装兼容 |
+| [v5.0.7](docs/release-notes-v5.0.7.md) | Hermes v0.22.5 兼容、每轮回调与终局诊断（候选） |
+| [v5.0.6](docs/release-notes-v5.0.6.md) | 版本化归档顶层目录、规范元数据与实际解压安全门禁 |
+| [v5.0.5](docs/release-notes-v5.0.5.md) | Hermes v0.22.4/main admission 与配置 writer 兼容、保留完整矩阵的 CI 隔离 |
+| [v5.0.4](docs/release-notes-v5.0.4.md) | Legacy 逐调用生成速率、精确压缩提示撤回与跨 Task 完成卡收尾 |
+| [v5.0.3](docs/release-notes-v5.0.3.md) | Hermes 频道继承兼容、过期交互续答与可选生成速率 |
 
 更早版本见[历史更新](docs/release-history.md)；完整记录见 [CHANGELOG](CHANGELOG.md) 与 [GitHub Releases](https://github.com/baileyh8/hermes-feishu-streaming-card/releases)。
 
 ## 贡献者
+
+- V5.0.12：感谢 [Alex-HJY](https://github.com/Alex-HJY) 的 #474 报告、分析和现场补丁证据，以及 [leavrcn](https://github.com/leavrcn) 的 #469 复测与差异定位。问题证据与代码作者分别记录，既有署名保留。
+- V5.0.11：感谢 [lv86snorlax](https://github.com/lv86snorlax) 在 [#471](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/471) 提供固定源码、故障报告与源码分析；修复代码作者以 Git 提交为准。既有贡献署名保留。
+- V5.0.10：感谢 [leavrcn](https://github.com/leavrcn) 的 #469/#470 报告与分析，以及 [kludgezol](https://github.com/kludgezol) 在 #451 补充多 profile 现场证据。问题证据与代码作者分别记录，此前署名全部保留。
+- V5.0.9：感谢 [coytus](https://github.com/coytus) 的 #451 报告，以及 [leavrcn](https://github.com/leavrcn) 在 #451 提供的原生身份对照、复现与候选验证；感谢 [mingyangtech666](https://github.com/mingyangtech666) 的 #463 与 #458 原实现、[mouyong](https://github.com/mouyong) 的 #462，以及 [ywarmy](https://github.com/ywarmy) 的 #459 补充证据；Dependabot 提供 #464/#465/#466。原提交和历史署名保留，问题证据与代码作者分别记录。
+- V5.0.7：感谢 [coder-zhw](https://github.com/coder-zhw)（#456）、[Kevinzz224](https://github.com/Kevinzz224) 和 [ywarmy](https://github.com/ywarmy)（#453），以及 [coytus](https://github.com/coytus)、[Lite-G](https://github.com/Lite-G)、[leavrcn](https://github.com/leavrcn)（#451）提供报告、分析及复测证据；代码作者以 Git 提交为准。
+- V5.0.6：感谢 [leavrcn](https://github.com/leavrcn) 提供 [#454](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/454) 的归档元数据问题报告与复现证据。这是问题证据署名，代码作者以 Git 提交为准；全部历史贡献记录保留。
+- V5.0.5：修复与 CI 维护由 [baileyh8](https://github.com/baileyh8) 完成（[PR #448](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/448)、[PR #449](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/449)、[PR #452](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/452)）。感谢 [coytus](https://github.com/coytus) 提供 [#451](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/451) 现场报告，以及 [Lite-G](https://github.com/Lite-G) 的源码分析；这两项是问题证据和分析署名，与本次代码作者分开记录。
+
+
+- V5.0.4：感谢 [Lite-G](https://github.com/Lite-G) 在 #441 提供问题证据并在 [PR #442](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/442) 贡献原始代码；感谢 [Timeral](https://github.com/Timeral) 在 #434 提供现场复测证据。原始代码作者与问题证据分别保留。
+
+- #443：感谢 [JohnZhong505](https://github.com/JohnZhong505) 提供 [Session Authority completion 问题证据](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/443)，以及 [Lite-G](https://github.com/Lite-G) 的补充源码分析。这些是问题报告与分析署名，独立于本轮修复代码作者；全部历史贡献记录保留。
+
+- V5.0.3：感谢 [Lite-G](https://github.com/Lite-G) 在 [PR #436](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/436) 贡献逐调用生成速率，并在 [#437](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/437) / [PR #438](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/438) 提供 Hermes 兼容修复；感谢 [Thxzzzzz](https://github.com/Thxzzzzz) 在 [PR #430](https://github.com/baileyh8/hermes-feishu-streaming-card/pull/430) 贡献交互过期后续答修复；感谢 Dependabot 的 #388、#389、#390、#439。保留原始提交作者和全部历史署名。
 
 - V5.0.2：感谢 [Timeral](https://github.com/Timeral) 在 [#434](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/434) 提供复现与源码定位。
 
@@ -381,9 +418,13 @@ HFC 采用 **sidecar-only** 架构：Hermes 运行任务，安装器管理必要
 
 [MIT License](LICENSE)。
 
+感谢 [mingyangtech666](https://github.com/mingyangtech666) 的 PR #458 提供 PM workspace 外部 wheel 方案；[ywarmy](https://github.com/ywarmy) 在 Issue #459 提供 PM 迁移与配置恢复证据。后续安全事务补充与原始贡献分别保留。
+
 <details>
 <summary>可选服务与赞助披露</summary>
 
 [ScrapingAnt](https://scrapingant.com/?ref=zwq4ngy) 是可选网页抓取服务，不是本插件的依赖。此链接为 Affiliate link；符合条件的首次付费订阅可能为项目带来佣金。
 
 </details>
+
+感谢 [mouyong](https://github.com/mouyong) 在 Issue #462 提供 PM 启动目录及官方容器安装对照证据；问题证据与代码作者身份分别记录。

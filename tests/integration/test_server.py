@@ -4985,6 +4985,30 @@ async def test_changed_recheck_creates_one_fresh_successor_and_moves_delivery_on
             report_marker="report-b", recovery_fingerprint="recovery-b"
         ), detection),
     )
+    recheck_started = asyncio.Event()
+    release_recheck = asyncio.Event()
+    recheck_published = asyncio.Event()
+    original_report = sidecar_server._bounded_operations_report
+    report_calls = 0
+
+    async def controlled_report(*args, **kwargs):
+        nonlocal report_calls
+        report_calls += 1
+        if report_calls > 1:
+            recheck_started.set()
+            await release_recheck.wait()
+        return await original_report(*args, **kwargs)
+
+    original_publish = sidecar_server._publish_operations_card
+
+    async def track_publish(app, report, operation):
+        updated = await original_publish(app, report, operation)
+        if updated and operation.state == "diagnosed":
+            recheck_published.set()
+        return updated
+
+    monkeypatch.setattr(sidecar_server, "_bounded_operations_report", controlled_report)
+    monkeypatch.setattr(sidecar_server, "_publish_operations_card", track_publish)
     app = create_app(feishu_client)
     test_client = TestClient(TestServer(app))
     await test_client.start_server()
@@ -5009,7 +5033,28 @@ async def test_changed_recheck_creates_one_fresh_successor_and_moves_delivery_on
         second = await test_client.post("/card/actions", json=payload)
         first_body = await first.json()
         second_body = await second.json()
+        await _wait_until(recheck_started.is_set)
+        store = app[sidecar_server.OPERATIONS_STORE_KEY]
+        preparing = store.current_successor(first_body["operation_id"])
+        assert preparing is not None and preparing.state == "preparing"
+        assert second_body["operation_id"] == first_body["operation_id"]
+        assert preparing.recovery_fingerprint == "recovery-a"
+        deliveries = app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+        assert original_id not in deliveries
+        assert set(deliveries) == {preparing.operation_id}
+
+        def recheck_completed():
+            current = store.current_successor(first_body["operation_id"])
+            return (
+                current is not None
+                and current.state == "diagnosed"
+                and recheck_published.is_set()
+            )
+
+        release_recheck.set()
+        await _wait_until(recheck_completed)
     finally:
+        release_recheck.set()
         await test_client.close()
 
     assert first_body["ok"] is True
@@ -5020,14 +5065,18 @@ async def test_changed_recheck_creates_one_fresh_successor_and_moves_delivery_on
     assert successor is not None
     assert store.current_successor(second_body["operation_id"]) is successor
     assert successor.recovery_fingerprint == "recovery-b"
+    assert report_calls == 2
     assert original_id not in app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
     assert set(app[sidecar_server.OPERATIONS_DELIVERIES_KEY]) == {
         successor.operation_id
     }
 
 
+@pytest.mark.parametrize(
+    "repeat_after_completion", [False, True], ids=["preparing", "diagnosed"]
+)
 async def test_full_capacity_repeated_recheck_returns_same_successor_and_moves_delivery_once(
-    monkeypatch,
+    monkeypatch, repeat_after_completion,
 ):
     feishu_client = FakeFeishuClient()
     report = operations_report()
@@ -5038,6 +5087,22 @@ async def test_full_capacity_repeated_recheck_returns_same_successor_and_moves_d
             report,
             SimpleNamespace(root=Path("/private/hermes")),
         ),
+    )
+    recheck_started = asyncio.Event()
+    release_recheck = asyncio.Event()
+    original_report = sidecar_server._bounded_operations_report
+    report_calls = 0
+
+    async def controlled_report(*args, **kwargs):
+        nonlocal report_calls
+        report_calls += 1
+        if report_calls > 1:
+            recheck_started.set()
+            await release_recheck.wait()
+        return await original_report(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sidecar_server, "_bounded_operations_report", controlled_report
     )
     app = create_app(feishu_client)
     store = OperationStore(secret=b"store", max_records=2)
@@ -5084,15 +5149,34 @@ async def test_full_capacity_repeated_recheck_returns_same_successor_and_moves_d
         )
         first_response = await test_client.post("/card/actions", json=payload)
         first_body = await first_response.json()
+        await asyncio.wait_for(recheck_started.wait(), timeout=5)
+
+        def recheck_completed():
+            current = store.current_successor(first_body["operation_id"])
+            return current is not None and current.state == "diagnosed"
+
+        assert transfer_calls == [(original_id, first_body["operation_id"])]
+        if repeat_after_completion:
+            release_recheck.set()
+            await _wait_until(recheck_completed, attempts=500)
         repeated_response = await test_client.post("/card/actions", json=payload)
         repeated_body = await repeated_response.json()
+        if not repeat_after_completion:
+            assert repeated_body["operation_id"] == first_body["operation_id"]
+            assert transfer_calls == [(original_id, first_body["operation_id"])]
+        release_recheck.set()
+        await _wait_until(recheck_completed, attempts=500)
     finally:
+        release_recheck.set()
         await test_client.close()
 
     assert first_body["ok"] is True
     assert repeated_body["ok"] is True
     current = store.current_successor(first_body["operation_id"])
     assert current is not None
+    assert current.state == "diagnosed"
+    assert current.operation_id != first_body["operation_id"]
+    assert report_calls == 2
     assert store.current_successor(repeated_body["operation_id"]) is current
     assert "正在重新检测" in str(first_body["card"])
     assert any(
@@ -5109,11 +5193,16 @@ async def test_full_capacity_repeated_recheck_returns_same_successor_and_moves_d
     }
 
 
-async def test_private_repair_is_exactly_once_under_concurrent_confirmation(monkeypatch):
+@pytest.mark.parametrize("after_completion", [False, True])
+async def test_private_repair_is_exactly_once_under_concurrent_confirmation(
+    monkeypatch, after_completion
+):
     feishu_client = FakeFeishuClient()
     report = operations_report()
     detection = SimpleNamespace(root=Path("/private/hermes"))
     calls = []
+    repair_started = threading.Event()
+    release_repair = threading.Event()
 
     monkeypatch.setattr(
         sidecar_server,
@@ -5123,6 +5212,8 @@ async def test_private_repair_is_exactly_once_under_concurrent_confirmation(monk
 
     def fake_execute(current_detection, expected_fingerprint=None):
         calls.append((current_detection, expected_fingerprint))
+        repair_started.set()
+        assert release_repair.wait(10), "repair was not released by the test"
         return SimpleNamespace(status="repaired", message="Verified recovery completed.")
 
     monkeypatch.setattr(sidecar_server, "execute_recovery", fake_execute)
@@ -5150,29 +5241,61 @@ async def test_private_repair_is_exactly_once_under_concurrent_confirmation(monk
                 repair, chat_id="oc_private", operator="ou_first"
             ),
         )
-        confirm = operations_button((await first.json())["card"], "确认修复")
-        responses = await asyncio.gather(
-            *[
-                test_client.post(
-                    "/card/actions",
-                    json=operations_action_payload(
-                        confirm, chat_id="oc_private", operator=f"ou_{index}"
-                    ),
-                )
-                for index in range(8)
-            ]
+        confirmation = await first.json()
+        executing_operation_id = confirmation["operation_id"]
+        confirm = operations_button(confirmation["card"], "确认修复")
+
+        async def confirm_once(index):
+            return await test_client.post(
+                "/card/actions",
+                json=operations_action_payload(
+                    confirm, chat_id="oc_private", operator=f"ou_{index}"
+                ),
+            )
+
+        responses = [await confirm_once(0)]
+        await _wait_until(repair_started.is_set)
+        first_body = await responses[0].json()
+        assert first_body["ok"] is True
+        assert "正在安全修复" in str(first_body["card"])
+        assert first_body["operation_id"] == executing_operation_id
+        if after_completion:
+            release_repair.set()
+            await wait_for_card_update(feishu_client, "安全修复已完成")
+        responses.extend(
+            await asyncio.gather(*(confirm_once(i) for i in range(1, 8)))
         )
         bodies = [await response.json() for response in responses]
+        if not after_completion:
+            # The worker remains behind the barrier until every duplicate has
+            # returned its exact executing owner. Fast completion cannot hide
+            # a missing in-progress assertion.
+            assert not release_repair.is_set()
+            for body in bodies:
+                assert body["ok"] is True
+                assert "正在安全修复" in str(body["card"])
+                assert body["operation_id"] == executing_operation_id
+            release_repair.set()
         await wait_for_card_update(feishu_client, "安全修复已完成")
+        current_deliveries = app[sidecar_server.OPERATIONS_DELIVERIES_KEY]
+        assert len(current_deliveries) == 1
+        completed_operation_id = next(iter(current_deliveries))
     finally:
+        release_repair.set()
         await test_client.close()
 
     assert len(calls) == 1
     assert calls[0][1] == "recovery-a"
     assert app[METRICS_KEY].recovery_attempts == 1
     assert app[METRICS_KEY].recovery_successes == 1
+    assert len(feishu_client.sent) == 1
+    assert completed_operation_id != executing_operation_id
     assert all(response.status == 200 for response in responses)
-    assert all("正在安全修复" in str(body["card"]) for body in bodies)
+    if after_completion:
+        for body in bodies[1:]:
+            assert body["ok"] is True
+            assert "安全修复已完成" in str(body["card"])
+            assert body["operation_id"] == completed_operation_id
     assert "安全修复已完成" in str(feishu_client.updated[-1][1])
 
 
@@ -14709,3 +14832,22 @@ def test_operations_handoff_unavailable_is_safe_manual_review_warning():
     assert "oc_private_identifier" not in content
     assert "secret-path" not in content
     assert inspect_card_limits(card).safe
+
+
+@pytest.mark.parametrize("tokens,available", [
+    ({"output_tokens": 100, "output_tps": 42, "rate_basis": "decode"}, True),
+    ({"output_tokens": 100, "output_tps": 0.2, "rate_basis": "request"}, True),
+    ({"output_tokens": 100, "output_tps": 10 ** 400, "rate_basis": "decode"}, False),
+    ({"output_tokens": 100, "output_tps": 42, "rate_basis": "estimate"}, False),
+    ({"output_tps": 42, "rate_basis": "decode"}, False),
+])
+async def test_health_counts_only_valid_retained_invocation_rates(tokens, available):
+    app = create_app(FakeFeishuClient())
+    session = CardSession("synthetic-conversation", "synthetic-turn", "synthetic-chat")
+    session.status = "completed"
+    session.tokens = tokens
+    app[SESSIONS_KEY]["synthetic-turn"] = session
+    response = await sidecar_server._health(make_mocked_request("GET", "/health", app=app))
+    timing = json.loads(response.body)["timing"]
+    assert timing["token_rate_status"] == ("available" if available else "unavailable")
+    assert timing.get("token_rate_samples", 0) == int(available)

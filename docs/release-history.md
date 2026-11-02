@@ -4,6 +4,12 @@
 
 | 版本 | 重点 |
 |---|---|
+| [v5.0.2](release-notes-v5.0.2.md) | 已知中英文瞬态提示撤回，保留排队信息与原生心跳收尾 |
+| [v5.0.1](release-notes-v5.0.1.md) | Hermes 0.22.x completion/审批兼容与 PM 持久依赖登记 |
+| [v5.0.0](release-notes-v5.0.0.md) | 任务分区、交互续答、本轮统计与安装恢复边界 |
+| [v4.7.7](release-notes-v4.7.7.md) | 可选原生表格；保留长单元格和无法拆分的 Markdown 表格 |
+| [v4.7.6](release-notes-v4.7.6.md) | 分离 HOME 绑定、多实例身份校验与诊断修复 |
+| [v4.7.5](release-notes-v4.7.5.md) | PM 运行环境绑定、私聊卡片准入与布局边界 |
 | [v4.7.3](release-notes-v4.7.3.md) | 缺心跳扫描降频、健康接口响应与恢复说明 |
 | [v4.7.2](release-notes-v4.7.2.md) | Update safety, SDK callbacks, integrity recovery / 更新与回调修复 |
 | [v4.7.1](release-notes-v4.7.1.md) | 命令确认回调修复与结果卡更新 |

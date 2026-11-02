@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-feishu-streaming-card"
-version = "5.0.2"
+version = "5.0.12"
 description = "Hermes Gateway Feishu streaming card sidecar plugin"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -32,7 +32,7 @@ test = [
   "tomli>=1.1.0; python_version < '3.11'",
 ]
 quality = [
-  "ruff==0.17.0; python_version >= '3.10'",
+  "ruff==0.17.2; python_version >= '3.10'",
   "mypy==2.4.0; python_version >= '3.10'",
 ]
 
@@ -72,8 +72,23 @@ include = [
   "hermes_feishu_card/event_rules.py",
   "hermes_feishu_card/transient_notices.py",
   "hermes_feishu_card/native_admission.py",
+  "hermes_feishu_card/admission_completion.py",
+  "hermes_feishu_card/completion_diagnostics.py",
+  "hermes_feishu_card/install/admission_extraction.py",
   "hermes_feishu_card/turn_events.py",
   "hermes_feishu_card/turn_metrics.py",
+  "hermes_feishu_card/observed_rate.py",
+  "hermes_feishu_card/install/legacy_observer.py",
+  "hermes_feishu_card/install/legacy_9b904.py",
+  "hermes_feishu_card/install/legacy_9b904_contract.py",
+  "hermes_feishu_card/install/legacy_9b904_transaction.py",
+  "hermes_feishu_card/install/legacy_9b904_uninstall.py",
+  "hermes_feishu_card/install/legacy_home_revocation.py",
+  "hermes_feishu_card/install/transaction_lock.py",
+  "hermes_feishu_card/install/legacy_rebind.py",
+  "hermes_feishu_card/install/legacy_handoff.py",
+  "hermes_feishu_card/install/plugin_config_bytes.py",
+  "hermes_feishu_card/install/plugin_config_delta.py",
   "hermes_feishu_card/canonical_turn.py",
   "hermes_feishu_card/interaction_input.py",
   "hermes_feishu_card/interaction_rules.py",
@@ -90,6 +105,7 @@ include = [
   "hermes_feishu_card/owner_display_policy.py",
   "hermes_feishu_card/existing_owner_projection.py",
   "hermes_feishu_card/message_navigation.py",
+  "hermes_feishu_card/install/completion_contracts.py",
   "hermes_feishu_card/install/ast_contracts.py",
   "hermes_feishu_card/install/base_contracts.py",
   "hermes_feishu_card/install/gateway_contracts.py",
@@ -98,6 +114,7 @@ include = [
   "hermes_feishu_card/install/posix_transaction.py",
   "hermes_feishu_card/install/source_layout.py",
   "hermes_feishu_card/install/pm_dependency.py",
+  "hermes_feishu_card/install/pm_wheel_store.py",
   "hermes_feishu_card/install/errors.py",
   "hermes_feishu_card/install/git_evidence.py",
   "hermes_feishu_card/install/decomposed_ownership.py",
@@ -117,8 +134,23 @@ files = [
   "hermes_feishu_card/event_rules.py",
   "hermes_feishu_card/transient_notices.py",
   "hermes_feishu_card/native_admission.py",
+  "hermes_feishu_card/admission_completion.py",
+  "hermes_feishu_card/completion_diagnostics.py",
+  "hermes_feishu_card/install/admission_extraction.py",
   "hermes_feishu_card/turn_events.py",
   "hermes_feishu_card/turn_metrics.py",
+  "hermes_feishu_card/observed_rate.py",
+  "hermes_feishu_card/install/legacy_observer.py",
+  "hermes_feishu_card/install/legacy_9b904.py",
+  "hermes_feishu_card/install/legacy_9b904_contract.py",
+  "hermes_feishu_card/install/legacy_9b904_transaction.py",
+  "hermes_feishu_card/install/legacy_9b904_uninstall.py",
+  "hermes_feishu_card/install/legacy_home_revocation.py",
+  "hermes_feishu_card/install/transaction_lock.py",
+  "hermes_feishu_card/install/legacy_rebind.py",
+  "hermes_feishu_card/install/legacy_handoff.py",
+  "hermes_feishu_card/install/plugin_config_bytes.py",
+  "hermes_feishu_card/install/plugin_config_delta.py",
   "hermes_feishu_card/canonical_turn.py",
   "hermes_feishu_card/interaction_input.py",
   "hermes_feishu_card/interaction_rules.py",
@@ -135,6 +167,7 @@ files = [
   "hermes_feishu_card/owner_display_policy.py",
   "hermes_feishu_card/existing_owner_projection.py",
   "hermes_feishu_card/message_navigation.py",
+  "hermes_feishu_card/install/completion_contracts.py",
   "hermes_feishu_card/install/ast_contracts.py",
   "hermes_feishu_card/install/base_contracts.py",
   "hermes_feishu_card/install/gateway_contracts.py",
@@ -143,6 +176,7 @@ files = [
   "hermes_feishu_card/install/posix_transaction.py",
   "hermes_feishu_card/install/source_layout.py",
   "hermes_feishu_card/install/pm_dependency.py",
+  "hermes_feishu_card/install/pm_wheel_store.py",
   "hermes_feishu_card/install/errors.py",
   "hermes_feishu_card/install/git_evidence.py",
   "hermes_feishu_card/install/decomposed_ownership.py",

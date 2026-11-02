@@ -3,8 +3,66 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：2026-10-21（〇-D 自我改进回顾多列项改无序列表；〇-F 表格行修复 + native_tables 开启）；上一位：〇-E 模型回退
-> 通知收卡（2026-10-20）；再上一位：V5.0.2 合并（2026-10-19，merge commit ed0972b）
+> 最后更新：2026-11-02（〇-K V5.0.12 合并）；上一位：〇-D 自我改进回顾多列项改无序列表
+> +〇-F 表格行修复 + native_tables 开启（2026-10-21/23）；再上一位：〇-E 模型回退通知收卡
+> （2026-10-20）；再上一位：V5.0.2 合并（2026-10-19，merge commit ed0972b）
+
+---
+
+## 〇-K、V5.0.12 合并记录（2026-11-02，v5.0.2 → v5.0.12）
+
+上游 **v5.0.2 → v5.0.12**（157 提交，tag v5.0.3…v5.0.12，169 文件 +36631/−768）。
+主题：Session Authority 跨 Task 终态交接（新增 `admission_completion.py` /
+`completion_diagnostics.py` / `install/admission_extraction.py`）、PM 安装事务与
+observer identity/legacy 9b904 迁移、Feishu source anchor 隔离（#474/#469）、
+portable/Windows 文件事务、official image 验收工具、新 footer 字段 `output_rate`
+（opt-in，本机未启用）。
+
+### 冲突与解冲突策略（2 文件）
+
+- **hook_runtime.py（6 块）**：采用上游新契约（`_warn_stage_diagnostic`、
+  admission `native/handoff` 分支、`attempt.consume/revoke`、`valid_consumed`、
+  `diagnose_attempt`），同时保留本地行为与诊断：`_hfc_record_carded_content`
+  （PROXY 路径的原生重复抑制）与既有 `_hfc_info` 阶段日志行。
+- **tests/unit/test_decomposed_patcher.py（2 块）**：两侧互不重叠 → 全保留
+  （上游 13 个新测试 + 本地 2 个 ledgered 基线测试；`_SECURE_DIRFD_ONLY` /
+  `_symlink_or_skip_windows_privilege` 与 `LEDGERED_FIXTURE` 并存）。
+
+### 合并暴露的契约差异（已修）
+
+上游新增 `tests/integration/test_compression_notice_egress.py` 断言：压缩状态通知
+在卡片不可调度时必须保留适配器原生结果（fail-open）。本地"卡片房间抑制整篇原生答案"
+的启发式把 `📦 Preflight compression…` / `✓ Context compaction complete…` 当成答案，
+返回了合成的 `carded_suppressed`。修复：`_hfc_looks_like_system_notice` 增补
+`_transient_notice_recall_seconds() is not None`（这两条本就在 15s 撤回策略里）→ 7 个
+新测试转绿。
+
+### ⚠️ 安装准入变化（本机运行手册更新）
+
+v5.0.11+ 的 `setup`/`install` 都先走 PM admission，要求**官方 config writer + launch
+source 家族**。本机是自定义外置磁盘启动器（`Hermes 消息网关` → `gateway.js` →
+`hermes-runtime` bootstrap），不在任何 FAMILIES/LAUNCH_SOURCES 内，两个入口均报
+`error: official config writer is unknown; PM admission refused`（exit 1，fail-closed，
+无受支持绕过；`integrity rebind-legacy` 只处理 observer runtime binding，不能替代）。
+本机继续既定方法：两个 PM 环境 `uv pip install --python <env>/bin/python --reinstall
+--no-deps /Volumes/ExtWorkspace/.hermes/feishu-card` → `launchctl kickstart -k` 两个服务。
+兼容性已核对：旧补丁块引用的 **34 个 HFC 符号在新 hook_runtime 全部存在**，但 v5.0.12
+新增/更新的 patch 块（source anchor 隔离、admission extraction）本机不会安装，
+对应新能力在旧补丁集下不生效，直到安装前提被满足（需官方 writer 家族或上游支持自定义
+launcher）。
+
+### 测试与验收
+
+- 固定 fixture 重建：`/private/tmp/hermes-agent-v2026.8.3-v430-audit`（自本机 Hermes
+  checkout 按 pin `3c27eb6234bf91b8ceee9e9071591b31e9b148cb` fetch 单提交），preflight
+  `--check-only` = ready（9 文件摘要校验）。
+- 聚焦四组（runtime/render/notices/appearance）：基线 worktree（备份分支
+  `backup/pre-upstream-v5.0.12-20261023`）2360 用例 **53 失败** → 合并后 3110 用例
+  **53 失败**，失败集合逐条一致（零新增；**750 个上游新测试全部通过**）。
+- 全量本地跑（fixture 在位的合并后 + 基线 worktree）当日本机未跑完（新增 official
+  image 验收用例使单轮 >1h）；不以此替代 CI 结论。
+- fork 锚点 45/45 在位（含 `repair_split_table_rows`、`_MODEL_FALLBACK_NOTICE_RE`、
+  `_hfc_review_summary_bullets`、event_rules 三个策略函数、native_tables 等）。
 
 ---
 

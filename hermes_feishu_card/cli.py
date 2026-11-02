@@ -356,6 +356,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="inspect or explicitly migrate runtime integrity controls",
     )
     integrity_subparsers = integrity.add_subparsers(dest="integrity_command")
+    integrity_rebind = integrity_subparsers.add_parser("rebind-legacy")
+    integrity_rebind.add_argument("--hermes-dir", required=True)
+    integrity_rebind.add_argument("--hermes-home", required=True)
+    integrity_rebind.add_argument("--yes", action="store_true")
     integrity_migrate = integrity_subparsers.add_parser("migrate-safe")
     integrity_migrate.add_argument("--config", required=True)
     integrity_migrate.add_argument("--hermes-dir", required=True)
@@ -533,7 +537,7 @@ def _run_setup(args: argparse.Namespace) -> int:
     print(_format_hermes_detection(detection))
     _print_hermes_streaming_guidance(Path(args.hermes_dir), **({"hermes_home": setup_home} if setup_home is not None else {}))
 
-    if args.repair and not args.no_repair:
+    if args.repair and not args.no_repair and not getattr(detection, "decomposed", False):
         repair_code = _run_repair(
             argparse.Namespace(
                 hermes_dir=args.hermes_dir,
@@ -1397,6 +1401,8 @@ def _build_doctor_report(
             integrity_plan = plan_integrity_repair(detection)
         except (IntegrityRepairRefused, OSError, RuntimeError, ValueError):
             integrity_plan = None
+    from .install.legacy_observer import observer_status
+    install_state["legacy_observer"] = observer_status(detection.root)
     profile_id = str(getattr(args, "_profile_id", "") or "")
     route = _diagnostic_route(config, profile_id)
     try:
@@ -2032,7 +2038,13 @@ def _hermes_runtime_cwd(runtime_python: Path) -> Path | None:
     return root if root.exists() else None
 
 
-def _ensure_hermes_runtime_package(detection: HermesDetection, *, hermes_home: Path | None = None):
+def _ensure_hermes_runtime_package(
+    detection: HermesDetection,
+    *,
+    hermes_home: Path | None = None,
+    registrations=None,
+    observer_state=None,
+):
     runtime_python = _detect_hermes_runtime_python(detection.root, **({"hermes_home": hermes_home} if hermes_home is not None else {}))
     if runtime_python is None:
         print("runtime package: skipped (Hermes venv Python not found)")
@@ -2041,6 +2053,11 @@ def _ensure_hermes_runtime_package(detection: HermesDetection, *, hermes_home: P
     if pm_dependency.available(detection.root):
         registration = pm_dependency.ensure(detection.root, runtime_python, home=hermes_home,
                                             spec=_runtime_install_spec(), version=PACKAGE_VERSION)
+        managed_here = registrations is None
+        if registration is not None and registrations is not None:
+            registrations.append(registration)
+            if observer_state is not None:
+                observer_state["pm_registration_seen"] = True
         # Admission publishes a new generation; the old interpreter is stale.
         try:
             selected = _detect_hermes_runtime_python(detection.root, **({"hermes_home": hermes_home} if hermes_home is not None else {}))
@@ -2050,11 +2067,19 @@ def _ensure_hermes_runtime_package(detection: HermesDetection, *, hermes_home: P
             if (report["status"] != "ok" or report.get("version") != PACKAGE_VERSION
                     or not _runtime_report_uses_installed_package(report, selected)):
                 raise ValueError("PM selected runtime did not import the expected ordinary HFC wheel")
-            probe = pm_dependency._call(detection.root, selected, hermes_home, {"operation": "probe"})
+            if registration is not None and getattr(registration, 'source_family', None) is not None:
+                probe = pm_dependency._verified_call(detection.root, selected, hermes_home,
+                    {"operation": "probe"}, registration.source_family)
+            else:
+                probe = pm_dependency._call(detection.root, selected, hermes_home, {"operation": "probe"})
             if not pm_dependency.verify_installed(Path(probe['home']) / 'plugins' / pm_dependency.NAME, selected):
                 raise ValueError("PM installed package does not match the cached exact HFC wheel")
-        except (OSError, ValueError):
             if registration is not None:
+                # Keep the opening interpreter for PM rollback. The observer
+                # handoff verifies the selected generation separately.
+                registration.post_python = selected
+        except (OSError, ValueError):
+            if registration is not None and managed_here:
                 registration.rollback()
             raise
         print(f"runtime package: {PACKAGE_VERSION} registered with Hermes PM ({selected})")
@@ -2234,6 +2259,13 @@ def _summarize_process_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _diagnose_install_state(detection: HermesDetection) -> dict[str, Any]:
+    from .install import legacy_observer
+    try:
+        legacy_observer.inspect(detection.root)
+    except (OSError, UnicodeError, ValueError):
+        return {"checked": True, "status": "refused", "manual_action_required": True,
+                "automatic_repair_available": False,
+                "message": "Legacy observer config ownership requires review"}
     from .install import decomposed_ownership
     from .install import recovery as recovery_owner
     if detection.decomposed or decomposed_ownership.is_managed(detection.root):
@@ -3008,6 +3040,21 @@ def _run_stop(args: argparse.Namespace) -> int:
 
 
 def _run_integrity(args: argparse.Namespace) -> int:
+    if getattr(args, "integrity_command", None) == "rebind-legacy":
+        from .install.legacy_rebind import rebind
+        try:
+            binding = resolve_runtime_binding(checkout_root=args.hermes_dir,
+                hermes_home=args.hermes_home, profile_id=None)
+            result = rebind(binding, apply=args.yes)
+        except (OSError, UnicodeError, ValueError) as exc:
+            from .install.legacy_rebind import RebindRefused
+            reason = str(exc) if isinstance(exc, RebindRefused) else "legacy_rebind_evidence_unverified"
+            print("legacy observer rebind: refused (" + reason + "); preserve evidence and review diagnosis", file=sys.stderr)
+            return 1
+        print("legacy observer rebind: " + result["status"] + " (" + result["reason"] + ")")
+        if not args.yes:
+            print("rerun with --yes to update verified ownership; current config is preserved")
+        return 0
     if getattr(args, "integrity_command", None) == "acknowledge-review":
         return _run_integrity_acknowledge_review(args)
     if getattr(args, "integrity_command", None) != "migrate-safe":
@@ -3087,66 +3134,154 @@ def _run_integrity(args: argparse.Namespace) -> int:
     return 0
 
 
+def _integrity_ack_refused(category: str, hint: str | None = None) -> int:
+    """Print a fixed, redacted acknowledgement refusal and its next action."""
+    print(
+        "error: manual review fence could not be acknowledged safely "
+        f"(category={category})",
+        file=sys.stderr,
+    )
+    if hint:
+        print(f"next: {hint}", file=sys.stderr)
+    return 1
+
+
+def _integrity_ack_sidecar_running() -> int:
+    print(
+        "error: stop the sidecar before acknowledging manual review "
+        "(category=integrity_ack_sidecar_running)",
+        file=sys.stderr,
+    )
+    print(
+        "next: stop the actual service manager or auto-updater and confirm both "
+        "health is unreachable and the sidecar PID file is absent; a KeepAlive "
+        "restart keeps this gate closed",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _run_integrity_acknowledge_review(args: argparse.Namespace) -> int:
     try:
         first_binding = _verified_integrity_acknowledgement_binding(
             args.hermes_dir
         )
+    except Exception:
+        return _integrity_ack_refused(
+            "integrity_ack_plan_unverified",
+            "verify the installed Hermes plan and rerun doctor; keep the marker, "
+            "manifest, preimage and journal",
+        )
+    try:
         config = (
             load_config(args.config, env_file=args.env_file)
             if args.env_file is not None
             else load_config(args.config)
         )
+    except Exception:
+        return _integrity_ack_refused(
+            "integrity_ack_config_unverified",
+            "verify the config path and its private environment without printing "
+            "tokens or raw paths",
+        )
+    try:
         target_state = _integrity_state_directory(args)
         review = inspect_runtime_integrity_review(target_state)
-        if not _integrity_acknowledgement_process_stopped(target_state, config):
-            print(
-                "error: stop the sidecar before acknowledging manual review",
-                file=sys.stderr,
-            )
-            return 1
+    except Exception:
+        return _integrity_ack_refused(
+            "integrity_ack_fence_unreadable",
+            "preserve the private state directory and inspect the fence with the "
+            "supported diagnosis path",
+        )
+    try:
+        stopped = _integrity_acknowledgement_process_stopped(target_state, config)
+    except Exception:
+        return _integrity_ack_sidecar_running()
+    if not stopped:
+        return _integrity_ack_sidecar_running()
+    try:
         second_binding = _verified_integrity_acknowledgement_binding(
             args.hermes_dir
         )
-        if second_binding != first_binding:
-            raise ValueError("runtime integrity acknowledgement binding changed")
-        if not _integrity_acknowledgement_process_stopped(target_state, config):
-            print(
-                "error: stop the sidecar before acknowledging manual review",
-                file=sys.stderr,
+    except Exception:
+        return _integrity_ack_refused(
+            "integrity_ack_plan_unverified",
+            "verify the installed Hermes plan and rerun doctor; keep the marker, "
+            "manifest, preimage and journal",
+        )
+    if second_binding != first_binding:
+        return _integrity_ack_refused(
+            "integrity_ack_binding_changed",
+            "the Hermes plan changed during the check; stop, rerun doctor and "
+            "preserve the current fence",
+        )
+    try:
+        stopped = _integrity_acknowledgement_process_stopped(target_state, config)
+    except Exception:
+        return _integrity_ack_sidecar_running()
+    if not stopped:
+        return _integrity_ack_sidecar_running()
+    acknowledgement_options = {
+        "expected_state_token": review.state_token,
+        "expected_binding": first_binding,
+        "allow_legacy_unbound_empty_restart": bool(
+            args.yes is True and review.legacy_unbound_empty_restart
+        ),
+    }
+    if (
+        args.yes is True
+        and review.binding is not None
+        and review.binding != first_binding
+        and review.binding.target_identity == first_binding.target_identity
+    ):
+        acknowledgement_options["allow_same_target_plan_transition"] = True
+    rebind_target = getattr(args, "rebind_target", None)
+    if rebind_target is not None:
+        if (args.yes is not True or review.binding is None
+                or rebind_target != review.binding.target_identity
+                or not review.manual_review_required):
+            return _integrity_ack_refused(
+                "integrity_ack_rebind_target_mismatch",
+                "use the exact old 64-character target identity recorded by the "
+                "pending fence; this command does not clear an unverified fence",
             )
-            return 1
-        acknowledgement_options = {
-            "expected_state_token": review.state_token,
-            "expected_binding": first_binding,
-            "allow_legacy_unbound_empty_restart": bool(
-                args.yes is True and review.legacy_unbound_empty_restart
-            ),
-        }
-        if (
-            args.yes is True
-            and review.binding is not None
-            and review.binding != first_binding
-            and review.binding.target_identity == first_binding.target_identity
-        ):
-            acknowledgement_options["allow_same_target_plan_transition"] = True
-        rebind_target = getattr(args, "rebind_target", None)
-        if rebind_target is not None:
-            if (args.yes is not True or review.binding is None
-                    or rebind_target != review.binding.target_identity
-                    or not review.manual_review_required):
-                raise ValueError("explicit old target does not match the pending fence")
-            acknowledgement_options["rebind_from_target_identity"] = rebind_target
+        acknowledgement_options["rebind_from_target_identity"] = rebind_target
+    elif (
+        review.manual_review_required
+        and review.binding is not None
+        and review.binding != first_binding
+        and review.binding.target_identity != first_binding.target_identity
+    ):
+        return _integrity_ack_refused(
+            "integrity_ack_rebind_target_required",
+            "the pending fence belongs to a different Hermes target; read its "
+            "exact old target identity and rerun with --rebind-target "
+            "<old-target-identity> --yes; do not edit or delete the fence",
+        )
+    try:
         changed = acknowledge_runtime_integrity_review(
             target_state,
             **acknowledgement_options,
         )
-    except (OSError, RuntimeError, ValueError):
-        print(
-            "error: manual review fence could not be acknowledged safely",
-            file=sys.stderr,
+    except Exception:
+        try:
+            after = inspect_runtime_integrity_review(target_state)
+        except Exception:
+            return _integrity_ack_refused(
+                "integrity_ack_fence_unreadable",
+                "preserve the private state directory and inspect the fence with "
+                "the supported diagnosis path",
+            )
+        if after.state_token != review.state_token:
+            return _integrity_ack_refused(
+                "integrity_ack_fence_changed",
+                "the fence changed during acknowledgement; preserve it and rerun "
+                "doctor before another attempt",
+            )
+        return _integrity_ack_refused(
+            "integrity_ack_refused",
+            "preserve the fence and evidence; do not hand-edit the fence",
         )
-        return 1
     print(
         "integrity manual review: acknowledged"
         if changed
@@ -3751,27 +3886,120 @@ def _secret_values(config: dict | None) -> list[str]:
     return secrets
 
 
-def _run_install(args: argparse.Namespace) -> int:
-    registrations = []
-    try:
-        result = _run_install_core(args, registrations)
-    except BaseException:
-        for registration in registrations:
-            registration.rollback()
-        raise
-    try:
-        for registration in registrations:
-            if result == 0:
-                registration.finish()
+def _rollback_registrations(
+    registrations, *, catch_base: bool, observer_state=None
+) -> bool:
+    rollback_failed = False
+    for registration in reversed(registrations):
+        try:
+            rollback_with_evidence = getattr(
+                registration, "rollback_with_evidence", None
+            )
+            if callable(rollback_with_evidence):
+                before, after = rollback_with_evidence()
+                if observer_state is not None:
+                    observer_state["pm_rollback_before"] = before
+                    observer_state["pm_rollback_after"] = after
             else:
                 registration.rollback()
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+                snapshot = getattr(registration, "rollback_snapshot", None)
+                if observer_state is not None:
+                    if snapshot is not None:
+                        observer_state["marker_snapshot"] = snapshot
+                    elif hasattr(registration, "marker_before"):
+                        observer_state["marker_snapshot_missing"] = True
+        except BaseException as exc:
+            if observer_state is not None and hasattr(registration, "marker_before"):
+                observer_state["observer_rollback_error"] = exc
+                print(
+                    f"error: observer rollback did not complete: {exc}",
+                    file=sys.stderr,
+                )
+            if not catch_base and not isinstance(exc, (OSError, ValueError)):
+                raise
+            rollback_failed = True
+    return rollback_failed
+
+
+def _reconcile_observer_after_rollback(observer_state) -> bool:
+    if not observer_state or not observer_state.get("pm_registration_seen"):
+        return True
+    if observer_state.get("observer_rollback_error") is not None:
+        return False
+    if observer_state.get("marker_snapshot_missing"):
+        print(
+            "error: observer rollback reconciliation failed: marker snapshot unavailable",
+            file=sys.stderr,
+        )
+        return False
+    precondition = observer_state.get("observer_precondition")
+    if precondition is None:
+        return True
+    from .install import legacy_handoff
+
+    try:
+        outcome = legacy_handoff.reconcile_after_rollback(
+            precondition,
+            marker_snapshot=observer_state.get("marker_snapshot"),
+            pm_rollback_before=observer_state.get("pm_rollback_before"),
+            pm_rollback_after=observer_state.get("pm_rollback_after"),
+        )
+    except Exception as exc:
+        print(
+            f"error: observer rollback reconciliation failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    if outcome == "rebound":
+        print("observer: rebound to verified rollback runtime")
+    return True
+
+
+def _run_install(args: argparse.Namespace) -> int:
+    registrations = []
+    observer_state = {}
+    try:
+        result = _run_install_core(args, registrations, observer_state)
+    except BaseException:
+        rollback_failed = _rollback_registrations(
+            registrations, catch_base=True, observer_state=observer_state
+        )
+        if rollback_failed:
+            print(
+                "error: install rollback did not complete; evidence retained",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                _reconcile_observer_after_rollback(observer_state)
+            except BaseException as exc:
+                print(
+                    f"error: observer rollback reconciliation failed: {exc}",
+                    file=sys.stderr,
+                )
+        raise
+    if result == 0:
+        try:
+            for registration in registrations:
+                registration.finish()
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    rollback_failed = _rollback_registrations(
+        registrations, catch_base=False, observer_state=observer_state
+    )
+    if rollback_failed:
+        print(
+            "error: install rollback did not complete; evidence retained",
+            file=sys.stderr,
+        )
         return 1
+    _reconcile_observer_after_rollback(observer_state)
     return result
 
 
-def _run_install_core(args: argparse.Namespace, registrations) -> int:
+def _run_install_core(args: argparse.Namespace, registrations, observer_state=None) -> int:
     detection = detect_hermes(args.hermes_dir)
     if not detection.supported:
         print(_format_hermes_detection(detection), file=sys.stderr)
@@ -3783,16 +4011,46 @@ def _run_install_core(args: argparse.Namespace, registrations) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    profile_id = getattr(args, "profile_id", None)
+    try:
+        from .install import legacy_handoff
+        observer_precondition = legacy_handoff.prepare(
+            detection,
+            hermes_home=getattr(args, "hermes_home", None),
+            profile_id=profile_id,
+        )
+        if observer_state is not None:
+            observer_state["observer_precondition"] = observer_precondition
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     try:
         home_options = {}
         if getattr(args, "hermes_home", None) is not None:
             home_options["hermes_home"] = configured_hermes_home(
                 detection.root, {"service": {"hermes_home": str(args.hermes_home)}},
             )
-        registration = _ensure_hermes_runtime_package(detection, **home_options)
-        if registration is not None:
+        registration = _ensure_hermes_runtime_package(
+            detection,
+            registrations=registrations,
+            observer_state=observer_state,
+            **home_options,
+        )
+        if registration is not None and all(
+            existing is not registration for existing in registrations
+        ):
             registrations.append(registration)
-        _ensure_hermes_feishu_sdk(detection, **home_options)
+        if registration is not None and observer_state is not None:
+            observer_state["pm_registration_seen"] = True
+        if registration is not None and getattr(registration, 'adoption', None) is not None:
+            # Schema 3 owns the upstream-locked SDK in the PM generation. Never
+            # run the older pip fallback, which would replace it with 1.6.8.
+            if (_hermes_requires_feishu_sdk_capability(detection.root)
+                    and _check_runtime_feishu_sdk(registration.python)["status"] != "ok"):
+                raise ValueError("PM selected Feishu SDK is not verified")
+        else:
+            _ensure_hermes_feishu_sdk(detection, **home_options)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -3800,6 +4058,49 @@ def _run_install_core(args: argparse.Namespace, registrations) -> int:
     fixed_tag_result = _run_fixed_tag_v3_install(args, detection)
     if fixed_tag_result is not None:
         return fixed_tag_result
+
+    from .install import legacy_observer
+    observer_registration = None
+    try:
+        if legacy_observer.available(detection.root):
+            binding = resolve_runtime_binding(
+                checkout_root=detection.root,
+                hermes_home=getattr(args, "hermes_home", None),
+                profile_id=profile_id,
+            )
+            adoption = registration if registration is not None and getattr(registration, 'adoption', None) is not None else None
+            if (observer_precondition is not None
+                    and binding.python_identity != observer_precondition.binding.python_identity
+                    and registration is not None
+                    and adoption is None):
+                handoff = legacy_handoff.apply(
+                    observer_precondition,
+                    binding,
+                    registration,
+                )
+                registrations.append(handoff)
+                observer_registration = None
+            else:
+                observer_registration = (legacy_observer.prepare(binding, adoption=adoption)
+                                         if adoption is not None else legacy_observer.prepare(binding))
+            if observer_registration is not None:
+                registrations.append(observer_registration)
+    except (OSError, UnicodeError, ValueError) as exc:
+        if observer_state is not None:
+            rollback_error = getattr(exc, "rollback_error", None)
+            if rollback_error is not None:
+                observer_state["observer_rollback_error"] = rollback_error
+                print(
+                    f"error: observer rollback did not complete: {rollback_error}",
+                    file=sys.stderr,
+                )
+            rollback_snapshot = getattr(exc, "rollback_snapshot", None)
+            if rollback_snapshot is not None:
+                observer_state["marker_snapshot"] = rollback_snapshot
+            elif getattr(exc, "marker_written", False):
+                observer_state["marker_snapshot_missing"] = True
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     if detection.decomposed:
         from .install.recovery import install_decomposed
@@ -3811,7 +4112,7 @@ def _run_install_core(args: argparse.Namespace, registrations) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         print("install ok" if changed else "install ok (already installed)")
-        if changed:
+        if changed or observer_registration is not None:
             print("gateway.restart_required: hermes gateway start")
         return 0
 
@@ -3998,7 +4299,7 @@ def _run_install_core(args: argparse.Namespace, registrations) -> int:
             else None
         )
         gateway_restart_required = bool(
-            patched != original
+            observer_registration is not None or patched != original
             or (
                 cron_patched is not None
                 and cron_original is not None
@@ -4247,27 +4548,52 @@ def _run_restore(args: argparse.Namespace) -> int:
     if fixed_tag_result is not None:
         return fixed_tag_result
     try:
-        _restore(Path(args.hermes_dir))
+        result = _restore(Path(args.hermes_dir), retain_adoption=True, **(
+            {"hermes_home": Path(args.hermes_home)} if getattr(args, "hermes_home", None) else {}
+        ))
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print("restore ok")
+    if result in {"adoption-restored", "adoption-clean"}:
+        print("shared checkout source restored; PM dependency, SDK, config and observer receipt retained")
+        print("gateway.restart_required: restart Hermes Gateway through its service owner")
+    else:
+        print("restore ok")
     return 0
 
 
 def _run_uninstall(args: argparse.Namespace) -> int:
+    root = Path(args.hermes_dir).expanduser()
+    try:
+        from .install import legacy_observer
+        raw = legacy_observer._read(root / legacy_observer.MARKER)
+        if raw is not None and legacy_observer._decode(raw)["protocol"] == legacy_observer.ADOPTION_PROTOCOL:
+            from .install import legacy_9b904_uninstall
+            if getattr(args, "profile_id", None):
+                raise ValueError("legacy uninstall requires the bound HOME; pass --hermes-home")
+            home = getattr(args, "hermes_home", None)
+            legacy_9b904_uninstall.uninstall(root, home=Path(home) if home else None)
+            print("uninstall ok: this Hermes HOME is disabled; shared source, dependency and receipt retained")
+            print("gateway.restart_required: restart Hermes Gateway through its service owner")
+            return 0
+        _refuse_orphaned_uninstall(root, getattr(args, "hermes_home", None))
+        _refuse_adoption_removal(root)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     fixed_tag_result = _run_fixed_tag_v3_restore(args, command="uninstall")
     if fixed_tag_result is not None:
         return fixed_tag_result
     try:
-        _restore(Path(args.hermes_dir))
+        _restore(Path(args.hermes_dir), refuse_adoption=True, **(
+            {"hermes_home": Path(args.hermes_home)} if getattr(args, "hermes_home", None) else {}
+        ))
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     from .install import pm_dependency
-    root = Path(args.hermes_dir).expanduser()
     try:
         if pm_dependency.available(root):
             home = getattr(args, "hermes_home", None)
@@ -4282,6 +4608,30 @@ def _run_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_orphaned_uninstall(root: Path, explicit_home: str | Path | None) -> None:
+    """Do not restore shared source while an owned HOME ticket lacks its marker."""
+    from .install import legacy_home_revocation
+    candidates = [Path(explicit_home).expanduser().absolute()] if explicit_home else []
+    if explicit_home is None:
+        if os.environ.get("HERMES_HOME"):
+            candidates.append(Path(os.environ["HERMES_HOME"]).expanduser().absolute())
+        candidates.append(root.absolute().parent)
+    for home in candidates:
+        path = legacy_home_revocation.ticket_path(root, home)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        raise ValueError("legacy uninstall evidence exists without its observer receipt; manual review required")
+
+
+def _refuse_adoption_removal(root: Path) -> None:
+    from .install import legacy_observer
+    raw = legacy_observer._read(root / legacy_observer.MARKER)
+    if raw is not None and legacy_observer._decode(raw)["protocol"] == legacy_observer.ADOPTION_PROTOCOL:
+        raise ValueError("legacy adoption restore or uninstall needs a coordinated PM transaction")
+
+
 def _run_fixed_tag_v3_restore(
     args: argparse.Namespace,
     *,
@@ -4291,13 +4641,14 @@ def _run_fixed_tag_v3_restore(
     if not _is_v3_manifest_candidate(root / MANIFEST_NAME):
         return None
     try:
+        _refuse_adoption_removal(root)
         binding = resolve_runtime_binding(
             checkout_root=root,
             hermes_home=getattr(args, "hermes_home", None),
             profile_id=getattr(args, "profile_id", None),
         )
         result = restore_fixed_tag_hybrid_install(binding=binding)
-    except (OSError, UnicodeError, RuntimeBindingRefused, FixedTagInstallRefused) as exc:
+    except (OSError, UnicodeError, ValueError, RuntimeBindingRefused, FixedTagInstallRefused) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"{command} ok")
@@ -4317,6 +4668,8 @@ def _repair_install_state(
     dry_run: bool = False,
     accept_hermes_upgrade: bool = False,
 ) -> list[str]:
+    from .install import legacy_observer
+    legacy_observer.inspect(detection.root)
     plan = plan_recovery(
         detection,
         accept_hermes_upgrade=accept_hermes_upgrade,
@@ -4391,12 +4744,54 @@ def _repair_action_message(action: str) -> str:
     return messages[action]
 
 
-def _restore(hermes_root: Path) -> None:
+def _restore(hermes_root: Path, *, hermes_home: Path | None = None, refuse_adoption: bool = False,
+             retain_adoption: bool = False) -> str | None:
+    from .install import legacy_observer, posix_transaction as io
+    # Validate config ownership before touching source. Restore the config first:
+    # if the source transaction then fails, its still-owned marker is retained
+    # and a retry can finish safely without enabling a second event producer.
+    evidence = legacy_observer.inspect(hermes_root, home=hermes_home)
+    marker_snapshot = None
+    if evidence is not None:
+        record, raw, preimage, ownership, config = evidence
+        if record["protocol"] == legacy_observer.ADOPTION_PROTOCOL and (refuse_adoption or not retain_adoption):
+            raise ValueError("legacy adoption restore or uninstall needs a coordinated PM transaction")
+        marker_snapshot = io.read_path_snapshot(hermes_root / legacy_observer.MARKER, ValueError,
+                                                "legacy observer record changed before restore")
+        if marker_snapshot[2] != hashlib.sha256(raw).hexdigest():
+            raise ValueError("legacy observer record changed before restore")
+        binding = resolve_runtime_binding(
+            checkout_root=hermes_root, hermes_home=record["home"], profile_id=None)
+        if binding.python_identity != record["python_identity"]:
+            raise ValueError("legacy observer runtime binding changed")
+        if retain_adoption and record["protocol"] == legacy_observer.ADOPTION_PROTOCOL:
+            from .install import recovery as recovery_owner
+            detection = detect_hermes(hermes_root)
+            if not detection.decomposed:
+                raise ValueError("legacy adoption source layout is unsupported")
+            changed = recovery_owner.restore_decomposed(
+                detection, adoption_marker=marker_snapshot, adoption_home=binding.hermes_home)
+            return "adoption-restored" if changed else "adoption-clean"
+        from .install import plugin
+        if plugin._sha256(config) != ownership.pre_sha256:
+            plugin.restore_plugin_config(binding, preimage, ownership)
+    if refuse_adoption or retain_adoption:
+        _restore_legacy_sources(hermes_root, refuse_adoption=True)
+    else:
+        _restore_legacy_sources(hermes_root)
+    if marker_snapshot is not None:
+        legacy_observer.restore(hermes_root, home=hermes_home, expected_marker=marker_snapshot)
+
+
+def _restore_legacy_sources(hermes_root: Path, *, refuse_adoption: bool = False) -> None:
     from .install import decomposed_ownership
     from .install import recovery as recovery_owner
     detection = detect_hermes(hermes_root)
     if detection.decomposed or decomposed_ownership.is_managed(hermes_root):
-        recovery_owner.restore_decomposed(detection)
+        if refuse_adoption:
+            recovery_owner.restore_decomposed(detection, refuse_adoption=True)
+        else:
+            recovery_owner.restore_decomposed(detection)
         return
     run_py = hermes_root / "gateway" / "run.py"
     cron_py = hermes_root / "cron" / "scheduler.py"

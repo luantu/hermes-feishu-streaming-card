@@ -99,6 +99,9 @@ native 来源探测在快照前后分别用可信 Git 验证 HEAD 与 clean stat
 
 ### `hermes_feishu_card/install/patcher.py`
 
+V5.0.7 的 `install/completion_contracts.py` 校验 v0.22.5 完成包装器的参数、原始投递调用、后置 usage-limit offer 和原返回值。patcher 继续负责继承/MRO 归属、唯一接点与逐字恢复；不接受任意同形方法名。回调绑定移到当前轮最终配置后，保留静默回合的精确清空分支与审批回调；缓存 Agent 不得复用上一轮 sink。
+
+
 Cron 的交付位置定位在 `install/cron_contracts.py`，通用正文/docstring 位置在 `install/ast_contracts.py`；不得把媒体 hook 移到 extract/filter 之前，或用文件拆分改变旧源码接受范围。
 
 Gateway stale-result 的 AST 来源绑定判断在 `install/gateway_contracts.py`。handler 发现、marker、生成与写回仍由 patcher 管理；不得借提取放宽唯一 guard、同块赋值、原 source/pinned tuple 及禁止重赋值的条件。
@@ -120,6 +123,12 @@ Gateway stale-result 的 AST 来源绑定判断在 `install/gateway_contracts.py
 - Hermes `79445a496c` facade 拆分的路由、Base helper 契约与 V4 ownership 边界见 [拆分适配说明](hermes-decomposed-patcher.md)。源码布局不得被用作 native hook 能力证明。
 
 ### `hermes_feishu_card/install/recovery.py` and operations execution
+
+`install/legacy_handoff.py` 负责本次受管 PM 升级中的 observer runtime identity 交接。PM 写入前验证旧 marker、配置、源码及 member 归属；交接仅接受本次真实 registration 产生的新运行时，checkout/HOME/config 作用域必须不变。写入前后使用已有 root lock 与 dirfd 绑定校验，marker 只替换 python identity，配置和源码不在这里修改；失败按注册栈恢复原 marker 字节，不调用 observer 卸载来冒充回滚。既有外部运行时漂移仍要求显式 `integrity rebind-legacy`。decomposed setup 的源码修复延后到 observer admission 完成后，避免前置 repair 留下部分升级。
+
+`legacy_rebind` 核验旧源码归属时使用 `decomposed_ownership._inspect(render_hooks=False)`，不因新版 renderer 与旧已安装字节不同而拒绝；manifest、备份摘要、源码漂移与部分恢复门禁仍保留。普通源码修复仍使用实际 renderer，两个判定职责不可混用。
+
+PM 回滚可能为旧包重新生成运行环境。注册栈恢复后，须凭本次 PM 回滚的前后 binding、旧 member 身份及原源码/配置/marker 证据核验实际运行时，再仅调整 observer 的 python identity；不修改 PM facts。交接尚未完成时的安装失败也受同一边界保护。外部漂移、证据缺失或回滚失败须明确报告，不能宣称恢复完成；回归应验证故障后无需手工重绑即可重试安装。
 
 职责：
 
@@ -156,6 +165,7 @@ Gateway stale-result 的 AST 来源绑定判断在 `install/gateway_contracts.py
 - CLI 与插件 binding 共用 `install/runtime_python.py` 的隔离 PM 探测。存在 committed venv 时优先选择它并保留 venv launcher 路径；探测失败、相对路径或已删除的 generation 必须拒绝，不能落回旧 `.venv`。只有没有 PM 模块或 PM 明确返回无选择时保留 legacy 行为；插件仍验证 prefix/site-packages/可执行目标，显式 Hermes home 传给 PM 探测。
 - Hermes PM 重建会删除旧环境；独立 sidecar 不能假定长驻解释器路径永远存在。可用 `service.python_executable` 绑定独立 HFC venv；setup/start/enable 均遵守此选择，先验证 Hermes hook，再验证侧车的版本与普通 site-packages 来源。配置缺省保持原行为；指定环境失效必须拒绝启动，不静默切回 PM。
 - 旧侧车仍响应 health 不代表运行文件可用。升级后的恢复顺序是检查当前 PM 与进程来源，备份并停止侧车，通过官方 install 修复已验证的升级状态；仅 installed 且侧车停止时 acknowledge-review，再启动侧车与 Gateway。不得清除未知围栏或手工改 hook。
+- PM 迁移、schema 1 flat wheel、旧 runtime 重绑、VCS 安装边界、实际服务管理器/KeepAlive 与旧 fence target CAS 的完整顺序见 [PM 恢复](pm-recovery.md)。当前 509 management CLI 负责本候选的 schema 1 flat 重绑；v5.0.8 命令基线保留为历史，v5.0.7 CLI 没有 `rebind-legacy`。
 - `auto` 不得探测 system bus、调用 sudo/pkexec、写 `/etc` 或静默 fallback 到 system manager；`systemd-system` 只能显式使用 transient unit。
 - macOS `enable` 不可用时只提供平台解释。自建登录 LaunchAgent 可用 `RunAtLoad=true` 一次运行会分离子进程的 `start`，不可推荐 `KeepAlive=true`。无 verified pidfile 必须先确认进程归属；只有证实自建 LaunchAgent 直接运行 runner 才提供对应 `launchctl` 停止路径，不据 pidfile 缺失推断 launchd。
 - guided `setup` 在 `service.manager=auto|systemd-user`、user manager 可用且 `loginctl ... Linger=yes` 时默认进入 persistent systemd user 路径；不可用时必须显式警告重启风险并给出精确 `enable` 命令，`--transient` 是显式 opt-out。不得自动 enable linger、调用 sudo 或进入 system manager。随后以 exact Hermes venv Python、absolute config/env/Hermes root 渲染 unit；unit 与 `persistent-service.json` 都必须为 owner-only regular file，并以 `unit_sha256` 互证。
@@ -346,10 +356,20 @@ Orphaned integrity fences can be explicitly rebound with `integrity acknowledge-
 
 官方 enable 命令失败与配置所有权拒绝分别呈现：preimage 后配置漂移、官方命令修改无关配置保留各自固定错误原因，便于定位。未知异常仍只显示 `official plugin enable failed`，不转发任意异常文本。原始异常通过 cause 保留供受控排查，配置恢复、prepared manifest 和源码写入门禁不变。
 
-Hermes 对已启用的插件可只更新 `allow_tool_override: false`，不排序启用列表，也不补写缺失的 `plugins.disabled`。安装器只在 preimage 已启用 HFC 时接受这个精确分支，同时保留原列表规范化分支；两种期望均在运行官方命令前从 preimage 派生。其他插件条目和非插件配置仍须完全一致，拒绝时仍逐字恢复配置，不能通过忽略整个 `plugins` 区域或预先改写用户配置规避检查。
+Hermes 对已启用的插件可只更新 `allow_tool_override: false`，不排序启用列表，也不补写缺失的 `plugins.disabled`。安装器只在 preimage 已启用 HFC 时接受这个精确分支，同时保留原列表规范化分支；两种期望均在运行官方命令前从 preimage 派生。其他插件条目和非插件配置仍须完全一致。命令异常或非零退出时，只对从 preimage 精确派生并核验的官方 postimage 逐字回滚；未知、损坏或并发编辑的配置保留原字节和 preimage，拒绝继续源码写入。`install/plugin_config_bytes.py` 在执行官方 enable 前，用受检 fixed、v0.22.2 PM、旧 pinned main 及 #451 的新 writer family 的真实 helper 和 serializer，在 0700 私有 HOME 中规划精确 postimage bytes；配置输入为 0600，结束即清理。成功出口、异常及非零出口都只能认领这些预期字节，YAML mapping 相等、注释/CRLF 等格式变化或新读出的 hash 均不能证明所有权。writer 源码、调用分支或间接 serializer 未知时拒绝。规划不启动 PM resolver 或插件；仅在受检 config import 的可选 setup 提示元数据路径临时拒绝 provider metadata，真实官方 CLI 不替换。真实 CLI 与规划的逐字对照覆盖六个固定源码族（七个 revision）及 fresh、already-enabled、canonical-disabled 分支；该证据不覆盖上游命令自身读写之间已经丢失的并发编辑。读取当前 hash 只证明读取结果，不能据此认领配置。不能通过忽略整个 `plugins` 区域或预先改写用户配置规避检查。
 
 
 ## 官方插件的本轮 footer 指标
+
+V5.0.4 的 legacy `output_rate` 由 observe-only 插件供数，legacy 仍是唯一事件 producer。`install/legacy_observer.py` 管理 checkout 下 `.hermes_feishu_card_observer.json`（协议 `hfc-legacy-observer-v1`），绑定精确 HOME、runtime Python identity 和官方 config preimage/journal；它与原 v1/v2/v4 源码 manifest 分开版本化，不改写旧 manifest 语义。旧安装无此记录时重新 install 可迁移；重复 install 验证现有记录，不重复 enable 或覆盖 preimage。不要手工创建记录或修改 Hermes config。
+
+配置写入走 `install/plugin.py` 的官方 enable，源码写入仍由既有 patcher/事务拥有。新增 enable/marker 在源码事务之前完成；已核验归属的普通失败按逆序回滚配置和 PM registration；未知配置保留并拒绝继续。doctor/repair 验证 HFC 受管值和完整证据，允许其它配置与插件的无关编辑；旧记录用隔离临时目录重放受检 writer，真实用户状态保持只读，详见 [PM 恢复](pm-recovery.md)。restore/uninstall 在无漂移时逐字恢复 preimage，有无关编辑时从当前字节仅撤销已证明的 HFC delta，再恢复源码；源码恢复失败时保留记录供重试。Windows 的显式 install/restore/uninstall 使用 portable 独占 handle，绑定原 bytes、摘要、目录身份与 reparse 状态；清理也经同一 handle 校验后删除，不能回退为任意路径 unlink。restore 的源码写入、backup/manifest 删除是一个 family 事务：删除失败会先恢复已删证据，再把源码回滚到首阶段返回的 controlled post snapshots；只回滚仍匹配本事务写入的 source，不重新 snapshot 认领当前文件。检查期间发现并发字节修改、inode 替换或目录 swap 时保留现场并转 manual review；初写失败不进入第二次盲目回滚。POSIX 快照复核与替换并非原子 CAS，执行前须停止配置写入器并避免同时编辑。源回滚失败则保留完整证据，不能留下已还原源码但缺 backup/manifest 的组合。自动 recovery 与 `integrity migrate-safe` 仍只支持 POSIX dirfd，并在取锁或读状态前拒绝。降级旧 HFC 前先用当前版本 restore，旧版本不知道此 companion ownership。
+
+`plugins.isolation: host` 不提供进程内指标，也不改变隔离设置。插件启动只读取记录；不补装、不修复、不发送 hello/heartbeat，不新增 sidecar runtime owner。具体计量、容量与失败显示规则见[观测耗时](observed-timing.md)。
+
+固定 `v0.22.2`（`d923a5eb487a17c0a68801bba9ef0f56c81040a8`）的必跑 CI 使用独立 `baseline_0222` checkout，以普通 wheel 的独立 Python 子进程执行真实 `hermes plugins enable`，再用公开 discovery/hook API 加载观察器；不强制 observe 模式。新装、旧 V4 迁移、重复安装、doctor、restore/uninstall 均经过真实源码事务，核对配置原始字节和所有受管源码恢复。运行时探针拒绝网络连接并记录任何 HFC secret/hello/heartbeat/listener/transport 启动尝试。PM 仅注入现成 uv/Python 和隔离的最小 virtual project；admission、resolver、配置发布仍执行固定上游源码。这不是完整 Hermes dependency closure、PM worker transport、Gateway/model 或真人客户端验收。配置使用该固定版本当前 schema；上游命令附带的未知配置迁移仍按漂移拒绝。缺少 fixture、普通 wheel 或解释器时，必跑任务失败；常规平台未提供这些输入时显式 skip。
+
+Doctor JSON 的 `install_state.legacy_observer` 只读报告 `active`、`disabled`（含 reason）或 `not_installed`；active 仅表示安装准入证据有效，不证明进程已加载插件。仅确认 marker 缺失时保留 Hybrid 路径；metadata 不可检查时返回 disabled。共享配置事务的异常回滚与 Windows 私有原子写兼容同时适用于 legacy 和 v3。
 
 `post_api_request` 只接收已绑定 turn/session/platform 的归一化 usage、模型名及 request id；不保存原始 response 或 provider URL。每轮最多记录 256 个 request id，重放不重复累计，缺失任一次 usage 或超出上限时省略本轮 token 合计。上下文使用量只取最新独立请求的实际 prompt token；该请求 usage 缺失时清空旧值，不把上一请求当作最新值。容量通过既有 canonical turn carrier 的弱引用读取当前 `context_compressor.context_length`；同线程/task、当前 turn 不匹配或容量未知时不显示虚构的零值。耗时从本轮 pre-LLM 观察开始计算，不把工具等待时间称为模型推理时间。
 
@@ -378,3 +398,22 @@ Issue [#431](https://github.com/baileyh8/hermes-feishu-streaming-card/issues/431
 普通安装失败会撤回本次新增 selection，并恢复本次替换前的 owned dependency source。PM 是否已提交不能确认时，保留 source 与诊断材料，不把超时当成未安装。`restore` 只恢复 hooks，保留依赖；`uninstall` 在 hooks 恢复后通过同一 admission API 移除 HFC 自己新增的 selection 和未修改的 owned source，不认领用户预先登记的依赖。旧版非 PM 的 pip 安装路径保持独立。
 
 验证分层：离线 fixture 覆盖漂移拒绝、旧布局、V4 扩展迁移及逐字 restore；两个固定 SHA 另跑真实源码安装矩阵和原审批 queue/controls。PM 集成测试在私有 HOME 的最小 project 中执行固定上游的真实 dependency engine，注入现成 uv/Python 仅用于供应工具；A→B 两代均通过独立子进程从普通 wheel 导入，并检查唯一 entry point。portable 分支在本机做故障注入，尚未执行 Windows 主机验收。它没有运行完整 Hermes dependency closure、PM worker transport、生产 updater、实际 Gateway/model 或真实飞书客户端。全量 preflight 仍使用固定 `v2026.8.3` Git fixture；不能用其通过替代上述 pinned 检查。
+
+
+### Session Authority completion compatibility
+
+跨 Task completion 接纳 Hermes `5fc490e2b34123212d73ef316086f939567a725a`，以及 #451 核验的 `cf4f3a7396814ffcaef69d9af09f7cfdade3ddbe`、`f83b4df3ce1ab2ec62f1e0e90f22e0a1db21cb68`、`4d04303818b61bf3aa09278af48356315515965b` 和 `4e58c721c8cf9b51c46636ea84ea6a5cb540880a`。`session_ingress.py` / `session_authority.py` 必须匹配同一组完整源 SHA、实际 loaded code 与完整受检 Base 提取后 seam；不能混用不同来源的单文件摘要。新来源允许 Hermes 合法重建的 source，但仍核对完整路由与原 admission/owner/generation/epoch；旧来源保留对象身份要求。未知来源、loaded topology 或缺少 seam 保留原生回复，detect 单独报告 admission completion 子能力；不能从文件存在、版本字符串或整体 partial 推断支持。`admission_completion.py` 借原 row/marker maps，测试路由为 runtime/delivery；`install/admission_extraction.py` 归 install。普通旧版同 Task Base 路径保持既有支持面。
+
+固定 v0.22.5 的 automation producer 将身份编码为 JSON 字符串；internal event 不带 `_claimed_owner`。此路径仅在原生 execute-admission frame 的 event、ref、持久 row、automation principal/owner/request、route、执行 generation 和 runtime epoch 一致时借用原 claim；未知 list/tuple ID 在首次卡片准入前保留 native，不进行可能碰撞的拼接。source 的 dataclass 字段仍逐项校验，不能借旧消息锚点补当前身份。
+
+终局发送的排队与 HTTP 共用有界期限，取得发送锁后再次严格检查当前 owner 和 generation。sidecar 明确接管该请求后，用冻结的请求及单次回执只抑制对应的原生正文；回执不会授权新 owner 或后续事件，未确认及绑定变化继续走原生路径。`admission completion prepare rejected` 使用固定且限频的来源、route、claim、profile、generation 和 epoch 等类别，不记录 ID、HOME、payload 或正文；这些类别是排查线索，不单独证明现场根因。
+
+在 multiplex 模式中，直接 source/locals profile 或标准 `.hermes/profiles/<name>` 仍按现有规则识别；未知自定义 HOME 不能仅凭 `fallback_default` 证明 default bot，admission 在首次卡片准入前保留 native 并报告 `profile-default-unverified`。单独进程的 env profile 不覆盖 multiplex 路由。#451 报告者的现场含本地 profile 路由及限流改动，仍须在其实际部署中独立复测。
+
+当前 admission 首次决定卡片策略、且同一 identity 尚未 pin 时，hook 的既有 policy 入口对全部 `SUPPORTED_RUNTIME_EVENTS` 检查 readiness；notice 或 interaction 作为首事件也受此门禁，未知 admission 来源保留原生路径。admission 开始前已 pin 的普通上下文、官方 plugin 的独立 owner 不在本次追改范围；已接管路径继续遵守原投递 owner 与终局失败规则。此能力检测和固定源码测试不代表所有未知版本或 plugin 的零 card 证明，也不代表真实 Gateway/model 验收。
+
+
+V5.0.7 另保留 `pm-0225` 官方配置 writer 来源族（`bf0203a794a07aac3ff764972ab9087baa4e4f4e`），不替换 `pm-0224`。配置规划、官方 enable 字节、异常回滚与源码漂移拒绝一起验收。v0.22.5 PM 忽略无依赖的 metadata-only member；跨代回归使用真实可安装的无外部依赖小包触发下一代，继续检查 HFC wheel 来源和恢复。测试夹具的代次变化不能代替实际 Gateway/model 验收。
+
+
+#459/#458 的迁移恢复候选、wheel store 归属和验收边界见 [PM 迁移恢复](pm-recovery.md)。它保留严格默认，通过显式核验后重绑，不要求删除保护记录。

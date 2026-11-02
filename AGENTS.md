@@ -54,6 +54,7 @@ Python 3.9 runtime coverage remains separate from this development-tool runtime.
 | Presentation and payload budgets | `card_view.py`, `content_plan.py`, `render.py`, `presentation.py`, `reading.py`, `render_options.py`, `card_limits.py` |
 | Feishu I/O and CardKit sequencing | `feishu_client.py`, `cardkit.py` |
 | Per-turn display metrics and bounded request deduplication | `turn_metrics.py`; official plugin observations feed display only, canonical carrier borrows the Agent through a weak reference |
+| Session Authority cross-Task terminal display handoff | `admission_completion.py`; single-use event carrier borrows native admission/marker maps and exact post-extraction Base seam; no execution registry |
 | Canonical turn carrier and borrowed metrics context | `canonical_turn.py`; one thread/task registry, hook compatibility exports and plugin metrics share it without adapter cycles |
 | Pure config values, presets, validation and merge | `config_rules.py`; config/reading/runtime policy consume the same rules without reverse imports |
 | Config, installation and safe recovery | `config.py`, `cli.py`, `install/`; read-only source ownership in `install/decomposed_ownership.py`, family transactions in `install/recovery.py` |
@@ -159,6 +160,11 @@ link/contract checks; they do not require a new product release or a redundant
 local full run. Runtime/stability changes need meaningful failing reproduction,
 normal/failure/duplicate/late-event assertions and the affected integration paths.
 Run full regression before release, broad runtime claims or substantial refactors.
+Full regression may be supplied by the complete CI matrix on the exact commit;
+do not repeat an identical local full run after that evidence passes. Ordinary PRs
+use the conservative scope and isolated sharding in
+[regression CI policy](docs/wiki/regression-ci.md). Focused checks do not count as
+a full Python/platform pass. Keep all supported versions at the release gate.
 
 Full runs require `HFC_FIXED_TAG_SOURCE_ROOT` pointing to the verified clean Git
 fixture described in `docs/testing.md`; never substitute production or an archive

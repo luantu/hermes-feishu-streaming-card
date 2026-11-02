@@ -2,6 +2,75 @@
 
 架构重构、体验升级、迁移和验收统一跟踪于[完整执行计划](docs/plans/2026-10-13-refactor-upgrade.md)。实现与验收按计划逐项登记；发行范围和验证限制以对应发行说明为准。
 
+## V5.0.12
+
+- #474/#469：Feishu 专用消息锚点与受限 source 比较；候选独立 QA/review、旧补丁升级/恢复和完整发布门禁待验。
+- #459：报告者确认原 POSIX PM 环境恢复，已回复后关闭；不扩展为其他平台验收。
+- 最终结果见[发行说明](docs/release-notes-v5.0.12.md)和正式 Release。
+
+## V5.0.11
+
+- #471：为固定 Hermes `9b904dcc22` 校验 admission 源码及首次展示策略归属；未知归属保留原生交付。
+- 安装迁移限定已启用 HFC、strict-false flag、schema2 无 marker、已有官方 PM 与可重建 SDK 的前态；恢复循环已验，HOME 级卸载已完成私有真实 PM 与双 HOME loopback 检查。全新安装和旧 v1 receipt 等仍前拒；报告者现场与真实 Gateway/model、Feishu 客户端未复测。
+- 版本材料提交后的精确完整 CI、普通包、公开安装和发行资产仍须分别验证，见[发行说明](docs/release-notes-v5.0.11.md)。
+
+## V5.0.10
+
+- #469：按固定上游原生 admission 验证内部异步通知，保留提交前的身份和当前 owner 检查；终局明确接纳后只确认本次提交。
+- #470：配置检查和恢复只处理可证明属于 HFC 的改动，保留用户无关配置；旧证据、冲突和并发修改分别校验。
+- #451：补充分类型诊断；带本地热修的多 profile 现场仍需独立对照，不宣称所有重复投递现象已解决。
+- 发布候选须通过独立 QA/review、精确完整 CI、普通 wheel、真实 Feishu API、公开安装及资产核验，见[发行说明](docs/release-notes-v5.0.10.md)。
+
+## V5.0.9
+
+- #451：独立 native admission 身份与 mention open_id，未知身份在卡片接管前保留原生交付。
+- #463：Windows 二进制 I/O、配置子进程与可核验的恢复事务；原生 Windows 3.12/3.14 为独立验收门禁。
+- #459/#462：精确 PR458 schema 1 flat wheel、旧 runtime 恢复顺序及固定 ack 类别；既有 workspace/schema 2 校验保持严格。
+- #464/#465/#466/#467：保留 bot 原提交，更新审计过的依赖与确定性并发确认测试。
+- 独立 QA/review、精确完整 CI、普通 wheel、公开安装和资产分别作为发布门禁，见[发行说明](docs/release-notes-v5.0.9.md)。
+
+## V5.0.8
+
+- #458/#461：内容寻址的外部 wheel、精确来源/包资源校验与 Windows junction 拒绝，保留原贡献提交和历史署名。
+- #459：显式安全重绑，保留当前无关配置和迁移前证据；独立 manual-review fence 不自动清除。
+- #462：实际 PM 启动目录与官方镜像配置规划分别复现、修复与验收；未知来源和无关配置保护保持严格。
+- 普通 wheel、实际 PM、固定官方镜像、精确完整 CI、公开安装和资产分别验收，见[发行说明](docs/release-notes-v5.0.8.md)。
+
+## V5.0.7
+
+- #456：严格验证 v0.22.5 完成包装器与消息归属，保留 v0.22.4 回归；报告的拒装 exit 0 未复现。
+- #453：修复每轮回调后续覆盖并验证缓存 Agent 不串轮。
+- #451：4/5 API、footer、normal/waiter 与真实 Base 函数对照未复现重复；补固定分类诊断，保留 issue 待现场复测，不记为已修复。
+- 精确提交完整 CI、普通包/公开安装、真实 API、资产分别验收，见[发行说明](docs/release-notes-v5.0.7.md)。
+
+## V5.0.6
+
+- #454：三平台安装包统一版本化顶层目录，tar uid/gid 归零，目录与 shell 安装器 0755、其他普通文件 0644；归档严格验证完整清单、字节与安全路径。
+- 实际解压门禁核对 0700/1777 目标目录的 inode/uid/gid/mode 和哨兵，并用旧布局作负向控制。Linux GNU tar root/非 root、macOS，以及精确提交完整 CI/CodeQL、普通包与公开资产验收分别记录在[发布准备](docs/release-readiness.md)，待验项不提前记通过。
+- 解压后先进入版本化平台目录；保留 v5.0.5 及之前全部资产、标签和贡献署名。leavrcn 的 #454 署名对应问题证据。
+
+## V5.0.5
+
+- #451 / #452：核验 cf4、rc.2、v0.22.4 与固定 main 的 admission 来源，允许同一 admission 的合法 source 重建，保留身份、代次、单次终局和原生回退边界。
+- 官方配置 writer 新增受检源码族，保留旧族、准确字节规划、漂移拒绝、PM A→B 普通 wheel 来源与逐字恢复。
+- #448 / #449 与 #452 后续：保留完整平台矩阵，按实际耗时分片；上游 worker 独占普通 wheel runtime，缺环境或缺报告继续阻断，保留 25 分钟超时。
+- v5.0.5 发布验收包括精确提交 CI、真实 Feishu API、普通包/公开安装、tag 与资产；实际结果见精确版本 [GitHub Release 验收记录](https://github.com/baileyh8/hermes-feishu-streaming-card/releases/tag/v5.0.5)。真实 Gateway/model、报告者工具密集现场、桌面及 Android 视觉/点击未验证。iOS 与新用户试用不纳入本次范围。见[发布准备](docs/release-readiness.md)。
+
+## V5.0.4
+
+- #441 / #442：legacy 保持唯一 producer，可选逐调用 rate；preview/正式消费、配置字节归属及未知 marker 拒绝保持边界。
+- #434 / #444：精确 Preflight 与压缩完成通知沿既有 owner 在 15 秒后撤回，持续心跳和未知文案保留。
+- #443 / #445：已核验 5fc490e 原生 admission/waiter 跨 Task 收尾，保留原 execution claim、Base ledger、媒体/TTS 和未知源码原生兜底。
+- 组合候选的 floor/focused/full、CI、普通 wheel、真实 Feishu API、tag/资产与公开安装分别核验；桌面/Android 视觉及实际点击未验证，iOS/新用户试用不纳入本次范围。不宣称真实 Gateway/model 执行。
+
+## V5.0.3
+
+- #437 / #438：只接受已核验的新旧 channel-pin AST 表达式，保留未知源码拒绝安装与完整还原。
+- #392 / #436：可选 `output_rate` 使用逐调用 token/时间；缺失、异常或混合模型数据不显示，默认关闭。运行中估算不在本轮范围。
+- #430：交互过期后的新输出懒创建续答卡，覆盖侧车先过期、重复/迟到事件及终态收束。
+- #388、#389、#390、#439：固定官方 Actions SHA 与 Ruff 0.17.1；发布仍需完整 CI、精确 tag、资产及公开安装。
+- #344 缺少原问题复现，#361 真实后台任务与移动端待验；保留已有修复证据，不因本次相邻改动关闭。
+
 ## V5.0.2
 
 - #434：已知中英文 busy 完整回执与中文裸压缩提示沿原路由撤回；保留排队、onboarding、未知文案及原生心跳收尾。

@@ -5,7 +5,7 @@ import base64
 from collections import OrderedDict
 import copy
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from ipaddress import ip_address
 import importlib
@@ -29,6 +29,7 @@ from urllib import parse
 from urllib import request
 
 from . import __version__
+from . import completion_diagnostics as _completion_diagnostics
 from .card_limits import serialize_card_for_delivery
 from .canonical_turn import (
     publish_canonical_turn_id,
@@ -277,6 +278,7 @@ class _PolicyIdentity:
     scope_key: tuple[str, str, str, str]
     turn_key: tuple[str, str, str, str]
     is_new_turn: bool
+    home_binding: tuple[Path, Path] | None
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,13 @@ class _PolicyGateResult:
 class _PolicyCacheEntry:
     disposition: str
     expires_at: float
+    home_binding: tuple[Path, Path] | None = None
+
+
+@dataclass(frozen=True)
+class _PinnedPolicyDecision:
+    disposition: str
+    home_binding: tuple[Path, Path] | None
 
 
 _SEQUENCES: dict[str, int] = {}
@@ -305,7 +314,7 @@ _PENDING_DELTAS_LOCK = threading.Lock()
 _POLICY_LOCK = threading.RLock()
 _POLICY_CACHE: OrderedDict[tuple[str, str, str], _PolicyCacheEntry] = OrderedDict()
 _TURN_POLICY_DECISIONS: OrderedDict[
-    tuple[str, str, str, str], str
+    tuple[str, str, str, str], _PinnedPolicyDecision
 ] = OrderedDict()
 _ACTIVE_POLICY_TURNS: dict[
     tuple[str, str, str, str], tuple[str, str, str, str]
@@ -443,6 +452,7 @@ def reset_runtime_state() -> None:
         _POLICY_QUERY_LOCKS.clear()
         _POLICY_ASYNC_QUERY_LOCKS.clear()
         _POLICY_ASYNC_EVENT_LOCKS.clear()
+    _completion_diagnostics.reset()
     with _OPERATION_TRANSPORT_SECRETS_LOCK:
         _OPERATION_TRANSPORT_SECRETS.clear()
     _HFC_FEISHU_COMMAND_RESULT_CONTEXT.set(None)
@@ -1105,6 +1115,9 @@ async def maintenance_admission_from_hermes_locals(
 def load_runtime_config() -> RuntimeConfig:
     enabled_value = os.environ.get("HERMES_FEISHU_CARD_ENABLED", "1").strip().lower()
     enabled = enabled_value not in {"0", "false", "no", "off"}
+    if enabled:
+        from .install.legacy_home_revocation import hook_disabled
+        enabled = not hook_disabled()
     event_url = os.environ.get("HERMES_FEISHU_CARD_EVENT_URL", DEFAULT_EVENT_URL).strip()
     if not event_url:
         event_url = DEFAULT_EVENT_URL
@@ -1137,6 +1150,25 @@ def load_runtime_config() -> RuntimeConfig:
     )
 
 
+def _config_for_terminal(
+    config: RuntimeConfig, local_vars: dict[str, Any], event_name: str,
+) -> RuntimeConfig:
+    """Let an already-owned turn finish when HOME revocation appeared mid-turn."""
+    if config.enabled or event_name not in {"message.completed", "message.failed"}:
+        return config
+    enabled_value = os.environ.get("HERMES_FEISHU_CARD_ENABLED", "1").strip().lower()
+    if enabled_value in {"0", "false", "no", "off"}:
+        return config
+    from .install.legacy_home_revocation import hook_disabled
+    if not hook_disabled():
+        return config
+    identity = _policy_identity(config, local_vars, event_name)
+    if (identity is not None and not identity.is_new_turn and identity.home_binding is not None
+            and _pinned_policy_disposition(identity, require_home=True) == "card"):
+        return replace(config, enabled=True)
+    return config
+
+
 def _timeout_from_env(value: str | None) -> float:
     if value is None:
         return DEFAULT_TIMEOUT_SECONDS
@@ -1167,10 +1199,34 @@ def _int_from_env(
     return parsed
 
 
+def _first_card_admission_guard(
+    local_vars: dict[str, Any], event_name: str
+) -> Callable[[], bool] | None:
+    if event_name not in SUPPORTED_RUNTIME_EVENTS:
+        return None
+    mode = admission_completion_mode(local_vars)
+    if mode == "ordinary":
+        return None
+    if mode == "handoff":
+        from .admission_completion import first_card_guard, _prepare_failed
+
+        profile, source = _profile_identity(
+            local_vars, local_vars.get("source"), local_vars.get("message")
+        )
+        if not source.startswith("sanitized_"):
+            guard = first_card_guard(local_vars, profile)
+            if guard is not None:
+                return guard
+        _prepare_failed("authority-unverified")
+    return lambda: False
+
+
 def _policy_gate_sync(
     config: RuntimeConfig,
     local_vars: dict[str, Any],
     event_name: str,
+    *,
+    _admission_guard: Callable[[], bool] | None = None,
 ) -> _PolicyGateResult:
     identity = _policy_identity(config, local_vars, event_name)
     if identity is None:
@@ -1182,21 +1238,33 @@ def _policy_gate_sync(
         with query_lock:
             disposition = _pinned_policy_disposition(identity)
             if disposition is None:
-                cached = _cached_policy_disposition(identity)
-                if cached is None:
-                    payload = _policy_payload(identity)
-                    try:
-                        fetched = _fetch_delivery_policy_sync(
-                            f"{_summary_base_url(config.event_url)}/delivery/policy",
-                            payload,
-                            min(config.timeout_seconds, POLICY_QUERY_TIMEOUT_SECONDS),
-                        )
-                    except Exception:
-                        fetched = None
-                    disposition, ttl_seconds = _normalize_policy_response(fetched)
-                    _cache_policy_disposition(identity, disposition, ttl_seconds)
+                guard = _admission_guard
+                if guard is None:
+                    guard = _first_card_admission_guard(local_vars, event_name)
+                if guard is not None and not guard():
+                    # Refuse before any card event claims this turn. The
+                    # existing turn policy owns this decision, never the chat.
+                    disposition = "native"
                 else:
-                    disposition = cached
+                    cached = _cached_policy_disposition(identity)
+                    if cached is None:
+                        payload = _policy_payload(identity)
+                        try:
+                            fetched = _fetch_delivery_policy_sync(
+                                f"{_summary_base_url(config.event_url)}/delivery/policy",
+                                payload,
+                                min(config.timeout_seconds, POLICY_QUERY_TIMEOUT_SECONDS),
+                            )
+                        except Exception:
+                            fetched = None
+                        disposition, ttl_seconds = _normalize_policy_response(fetched)
+                        _cache_policy_disposition(identity, disposition, ttl_seconds)
+                    else:
+                        disposition = cached
+                    # A route can move while the sidecar policy request waits.
+                    # Recheck under the same single-flight lock before pinning.
+                    if disposition == "card" and guard is not None and not guard():
+                        disposition = "native"
                 _pin_policy_disposition(identity, disposition)
     result = _PolicyGateResult(disposition == "card", identity)
     _hfc_policy_terminal_log(event_name, identity, result, "sync")
@@ -1241,11 +1309,12 @@ async def _policy_gate_async(
             # Never hold the shared threading.Lock in the event-loop thread
             # across an await: a synchronous callback on that loop could block
             # waiting for it and prevent the async owner from resuming.
+            # Borrow the native frame in its original Task before moving the
+            # policy query to a worker; the worker rechecks before pinning.
+            guard = _first_card_admission_guard(local_vars, event_name)
+            kwargs = {"_admission_guard": guard} if guard is not None else {}
             result = await asyncio.to_thread(
-                _policy_gate_sync,
-                config,
-                local_vars,
-                event_name,
+                _policy_gate_sync, config, local_vars, event_name, **kwargs
             )
     if not result.card:
         # ContextVar writes in the worker's copied context do not flow back to
@@ -1330,6 +1399,7 @@ def _policy_identity(
         and (not terminal_known or stream_reopens_turn)
         and (bool(message_id) or active_turn is None)
     )
+    from .install.legacy_home_revocation import _authoritative_binding
     return _PolicyIdentity(
         endpoint=endpoint,
         profile_id=profile_id,
@@ -1340,6 +1410,7 @@ def _policy_identity(
         scope_key=scope_key,
         turn_key=turn_key,
         is_new_turn=is_new_turn,
+        home_binding=_authoritative_binding(),
     )
 
 
@@ -1357,7 +1428,7 @@ def _policy_payload(identity: _PolicyIdentity) -> dict[str, str]:
     return payload
 
 
-def _pinned_policy_disposition(identity: _PolicyIdentity) -> str | None:
+def _pinned_policy_disposition(identity: _PolicyIdentity, *, require_home: bool = False) -> str | None:
     now = time.monotonic()
     with _POLICY_LOCK:
         _prune_policy_state_locked(now)
@@ -1367,24 +1438,28 @@ def _pinned_policy_disposition(identity: _PolicyIdentity) -> str | None:
             else _TERMINAL_POLICY_DECISIONS.get(identity.turn_key)
         )
         if terminal is not None:
+            if require_home and terminal.home_binding != identity.home_binding:
+                return None
             _TERMINAL_POLICY_DECISIONS.move_to_end(identity.turn_key)
             return terminal.disposition
-        disposition = _TURN_POLICY_DECISIONS.get(identity.turn_key)
+        decision = _TURN_POLICY_DECISIONS.get(identity.turn_key)
         if (
-            disposition is None
+            decision is None
             and not identity.message_id
             and not identity.is_new_turn
         ):
             active_turn = _ACTIVE_POLICY_TURNS.get(identity.scope_key)
             if active_turn is not None:
-                disposition = _TURN_POLICY_DECISIONS.get(active_turn)
-        if disposition is not None:
+                decision = _TURN_POLICY_DECISIONS.get(active_turn)
+        if decision is not None:
+            if require_home and decision.home_binding != identity.home_binding:
+                return None
             _TURN_POLICY_DECISIONS.move_to_end(
                 identity.turn_key
                 if identity.turn_key in _TURN_POLICY_DECISIONS
                 else _ACTIVE_POLICY_TURNS[identity.scope_key]
             )
-        return disposition
+        return decision.disposition if decision is not None else None
 
 
 def _cached_policy_disposition(identity: _PolicyIdentity) -> str | None:
@@ -1420,7 +1495,7 @@ def _pin_policy_disposition(identity: _PolicyIdentity, disposition: str) -> None
     with _POLICY_LOCK:
         if identity.is_new_turn:
             _TERMINAL_POLICY_DECISIONS.pop(identity.turn_key, None)
-        _TURN_POLICY_DECISIONS[identity.turn_key] = disposition
+        _TURN_POLICY_DECISIONS[identity.turn_key] = _PinnedPolicyDecision(disposition, identity.home_binding)
         _TURN_POLICY_DECISIONS.move_to_end(identity.turn_key)
         _ACTIVE_POLICY_TURNS[identity.scope_key] = identity.turn_key
         _bound_ordered_dict(_TURN_POLICY_DECISIONS)
@@ -1430,12 +1505,16 @@ def _pin_policy_disposition(identity: _PolicyIdentity, disposition: str) -> None
 
 def _finish_policy_turn(identity: _PolicyIdentity, disposition: str) -> None:
     with _POLICY_LOCK:
-        _TURN_POLICY_DECISIONS.pop(identity.turn_key, None)
+        previous = _TURN_POLICY_DECISIONS.pop(identity.turn_key, None)
+        prior_terminal = _TERMINAL_POLICY_DECISIONS.get(identity.turn_key)
+        home_binding = (previous.home_binding if previous is not None else
+                        prior_terminal.home_binding if prior_terminal is not None else identity.home_binding)
         if _ACTIVE_POLICY_TURNS.get(identity.scope_key) == identity.turn_key:
             _ACTIVE_POLICY_TURNS.pop(identity.scope_key, None)
         _TERMINAL_POLICY_DECISIONS[identity.turn_key] = _PolicyCacheEntry(
             disposition,
             math.inf,
+            home_binding,
         )
         _TERMINAL_POLICY_DECISIONS.move_to_end(identity.turn_key)
         _bound_ordered_dict(_TERMINAL_POLICY_DECISIONS)
@@ -1785,7 +1864,7 @@ def emit_from_hermes_locals(
     event_name: str = "message.started",
 ) -> bool:
     try:
-        config = load_runtime_config()
+        config = _config_for_terminal(load_runtime_config(), local_vars, event_name)
         if not config.enabled:
             return False
         _ensure_runtime_control_started(config)
@@ -1824,7 +1903,7 @@ def emit_from_hermes_locals_threadsafe(
     event_name: str = "message.started",
 ) -> bool:
     try:
-        config = load_runtime_config()
+        config = _config_for_terminal(load_runtime_config(), local_vars, event_name)
         if not config.enabled:
             return False
         _ensure_runtime_control_started(config)
@@ -1972,7 +2051,7 @@ async def emit_from_hermes_locals_async(
     *, require_ack: bool = False,
 ) -> bool:
     try:
-        config = load_runtime_config()
+        config = _config_for_terminal(load_runtime_config(), local_vars, event_name)
         if not config.enabled:
             return False
         _ensure_runtime_control_started(config)
@@ -2053,6 +2132,7 @@ def can_stage_exact_base_completion(local_vars: dict[str, Any]) -> bool:
             return False
         response = _completion_answer(local_vars)
         if not response:
+            _warn_stage_diagnostic("empty-answer")
             return False
         agent_result = local_vars.get("agent_result")
         already_sent = bool(
@@ -2066,9 +2146,11 @@ def can_stage_exact_base_completion(local_vars: dict[str, Any]) -> bool:
             isinstance(agent_result, dict) and agent_result.get("failed")
         )
         if already_sent and not failed:
+            _warn_stage_diagnostic("already-delivered")
             return False
         return _exact_base_delivery_hook_available()
     except Exception:
+        _warn_stage_diagnostic("exception")
         return False
 
 
@@ -2093,11 +2175,23 @@ def _exact_base_delivery_hook_available() -> bool:
         ledger_names = set(getattr(getattr(ledger, "__code__", None), "co_names", ()))
         ledger_contract = {"_record_delivery_obligation", "_send_with_retry", "_finalize_delivery_obligation"}
         if not ledger_contract.issubset(ledger_names):
+            _warn_stage_diagnostic("base-hook-unavailable")
             return False
         if decomposed:
-            return "send_final_ledgered" in send_names and "prepare_decomposed_base_final_delivery" in ledger_names
-        return {"finalize_exact_base_no_text", "send_final_ledgered"}.issubset(names) and "prepare_exact_base_final_delivery" in ledger_names
+            available = (
+                "send_final_ledgered" in send_names
+                and "prepare_decomposed_base_final_delivery" in ledger_names
+            )
+        else:
+            available = (
+                {"finalize_exact_base_no_text", "send_final_ledgered"}.issubset(names)
+                and "prepare_exact_base_final_delivery" in ledger_names
+            )
+        if not available:
+            _warn_stage_diagnostic("base-hook-unavailable")
+        return available
     except Exception:
+        _warn_stage_diagnostic("exception")
         return False
 
 
@@ -2112,8 +2206,9 @@ async def stage_message_completed_from_hermes_locals_async(
     """
     _HFC_EXACT_COMPLETION_STAGE.set(None)
     try:
-        config = load_runtime_config()
+        config = _config_for_terminal(load_runtime_config(), local_vars, "message.completed")
         if not config.enabled:
+            _warn_stage_diagnostic("config-disabled")
             return False
         _ensure_runtime_control_started(config)
         _hfc_info(
@@ -2121,6 +2216,7 @@ async def stage_message_completed_from_hermes_locals_async(
         )
         order_identity = _policy_identity(config, local_vars, "message.completed")
         if order_identity is None:
+            _warn_stage_diagnostic("policy-identity-unavailable")
             _cleanup_native_policy_state(local_vars)
             return False
         event_lock = _policy_async_event_lock(order_identity)
@@ -2131,6 +2227,7 @@ async def stage_message_completed_from_hermes_locals_async(
                 "message.completed",
             )
             if not gate.card:
+                _warn_stage_diagnostic("policy-native")
                 _hfc_info(
                     "exact-base completion NOT staged: gate is native "
                     f"turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
@@ -2140,6 +2237,7 @@ async def stage_message_completed_from_hermes_locals_async(
             await _flush_pending_deltas_for_local_vars(event_locals)
             payload = build_event("message.completed", event_locals)
             if payload is None:
+                _warn_stage_diagnostic("payload-unavailable")
                 _hfc_info(
                     "exact-base completion NOT staged: build_event None "
                     f"turn_id={str(_first_string(local_vars, ('turn_id',)) or '')!r}"
@@ -2149,23 +2247,29 @@ async def stage_message_completed_from_hermes_locals_async(
             task = asyncio.current_task()
         except RuntimeError:
             task = None
-        _HFC_EXACT_COMPLETION_STAGE.set(
-            {
-                "payload": payload,
-                "event_url": config.event_url,
-                "timeout_seconds": _timeout_for_event(
-                    config,
-                    "message.completed",
-                ),
-                "task_id": id(task) if task is not None else None,
-            }
-        )
+        stage = {
+            "payload": payload,
+            "event_url": config.event_url,
+            "timeout_seconds": _timeout_for_event(config, "message.completed"),
+            "task_id": id(task) if task is not None else None,
+        }
+        admission_mode = admission_completion_mode(local_vars)
+        if admission_mode == "native":
+            return False
+        if admission_mode == "handoff":
+            from .admission_completion import prepare
+            offer = prepare(local_vars, stage, _finish_admission_delivery)
+            if offer is None:
+                return False
+            stage["_admission_offer"] = offer
+        _HFC_EXACT_COMPLETION_STAGE.set(stage)
         _hfc_info(
             "exact-base completion staged "
             f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
         )
         return True
     except Exception:
+        _warn_stage_diagnostic("exception")
         _HFC_EXACT_COMPLETION_STAGE.set(None)
         return False
 
@@ -2182,6 +2286,15 @@ def _exact_completion_stage_for_current_task() -> dict[str, Any] | None:
     if owner is not None and (task is None or id(task) != owner):
         _HFC_EXACT_COMPLETION_STAGE.set(None)
         return None
+    offer = stage.get("_admission_offer")
+    if offer is not None and not (offer.state == "prepared" and offer.fresh()):
+        _HFC_EXACT_COMPLETION_STAGE.set(None)
+        return None
+    if "_admission_claim" in stage:
+        from .admission_completion import valid_consumed
+        if not valid_consumed(stage):
+            _HFC_EXACT_COMPLETION_STAGE.set(None)
+            return None
     if not isinstance(stage.get("payload"), dict):
         _HFC_EXACT_COMPLETION_STAGE.set(None)
         return None
@@ -2619,6 +2732,87 @@ async def _recover_exact_terminal_native_handoff(
     return False
 
 
+def admission_completion_mode(local_vars: dict[str, Any]) -> str:
+    from .admission_completion import (
+        _prepare_failed,
+        admission_identity_ready,
+        admission_readiness_reason,
+        extractor_available,
+        mode,
+        unsupported_reason,
+    )
+    value = mode(local_vars)
+    if value == "native":
+        _hfc_warn("admission completion retains native: " + unsupported_reason())
+    if value == "handoff":
+        if not admission_identity_ready(local_vars):
+            _prepare_failed(admission_readiness_reason(local_vars))
+            return "native"
+        if _admission_default_profile_unverified(local_vars):
+            _prepare_failed("profile-default-unverified")
+            return "native"
+        runner = local_vars.get("self")
+        try:
+            adapter = runner._adapter_for_source(local_vars.get("source"))
+            available = extractor_available(adapter)
+        except Exception:
+            available = False
+        if not available:
+            _hfc_warn("admission completion retains native: missing-or-unverified-extraction-seam")
+            return "native"
+    return value
+
+
+def _admission_default_profile_unverified(local_vars: dict[str, Any]) -> bool:
+    """Do not guess that an arbitrary multiplex HOME is the default bot."""
+    runner = local_vars.get("self") or local_vars.get("runner")
+    registered = _GATEWAY_RUNNER_REF() if _GATEWAY_RUNNER_REF is not None else None
+    multiplex = any(
+        getattr(getattr(item, "config", None), "multiplex_profiles", False) is True
+        for item in (runner, registered)
+    )
+    if not multiplex:
+        return False
+    _profile, source = _profile_identity(
+        local_vars, local_vars.get("source"), local_vars.get("message")
+    )
+    if source != "fallback_default":
+        return False
+    try:
+        from hermes_constants import get_hermes_home
+        selected = Path(get_hermes_home()).expanduser().resolve()
+        standard_default = (Path.home() / ".hermes").resolve()
+        return selected != standard_default
+    except Exception:
+        return True
+
+
+def capture_admission_base_extraction(local_vars: dict[str, Any]) -> None:
+    from .admission_completion import consume_extracted
+    event = local_vars.get("event")
+    profile, _ = _profile_identity({}, getattr(event, "source", None), None)
+    stage = consume_extracted(local_vars, profile)
+    if stage is not None:
+        _HFC_EXACT_COMPLETION_STAGE.set(stage)
+
+
+async def _finish_admission_delivery(event: Any, succeeded: bool) -> None:
+    stage = _exact_completion_stage_for_current_task()
+    if stage is None or stage.get("_admission_event") is not event:
+        return
+    try:
+        if succeeded:
+            # The original no-waiter function has finished attachments.
+            # A missing standalone send carries no native-text ACK.
+            await finalize_exact_base_no_text({
+                **stage.get("base_context", {}), "event": event,
+                "content": stage.get("_admission_text") or "",
+                "metadata": {"thread_id": stage.get("payload", {}).get("thread_id", "")},
+            })
+    finally:
+        _HFC_EXACT_COMPLETION_STAGE.set(None)
+
+
 def capture_decomposed_base_context(local_vars: dict[str, Any]) -> None:
     """Carry extracted attachments across Base's helper call in this exact turn."""
     stage = _exact_completion_stage_for_current_task()
@@ -2648,6 +2842,8 @@ async def prepare_exact_base_final_delivery(
     local_vars: dict[str, Any],
 ) -> tuple[Any, str, Any, Any]:
     """Commit exact Base terminal state after Hermes ledger is attempting."""
+    from .admission_completion import diagnose_attempt
+
     adapter = local_vars.get("delivery_adapter")
     content = str(local_vars.get("content") or "")
     reply_to = local_vars.get("reply_to")
@@ -2661,6 +2857,7 @@ async def prepare_exact_base_final_delivery(
             f"content={int(bool(content))} turn_id={str((stage or {}).get('payload') or {}).get('turn_id') or ''!r}"
         )
         return fallback
+    attempt = None
     try:
         obligation_id = str(local_vars.get("obligation_id") or "").strip()
         plan_fingerprint = _native_handoff_plan_fingerprint(adapter)
@@ -2671,6 +2868,7 @@ async def prepare_exact_base_final_delivery(
             and not _exact_base_has_attachments(local_vars)
             and _exact_stage_allows_ack(stage)
         )
+        normal_reason = "ack-not-capable" if not ack_capable else ""
         payload = _exact_terminal_payload(
             stage,
             {
@@ -2681,6 +2879,7 @@ async def prepare_exact_base_final_delivery(
         )
         if ack_capable and not is_exact_native_text_scope(payload.get("data")):
             ack_capable = False
+            normal_reason = "ack-not-exact-scope"
             payload = _exact_terminal_payload(
                 stage,
                 {
@@ -2692,12 +2891,17 @@ async def prepare_exact_base_final_delivery(
         event_url = str(stage["event_url"])
         timeout = float(stage["timeout_seconds"])
         try:
-            result = await _post_json_ordered_response(
-                event_url,
-                payload,
-                timeout,
-            )
+            if "_admission_claim" in stage:
+                result, attempt = await _post_admission_terminal(
+                    stage, payload, local_vars, adapter, event_url, timeout
+                )
+                if attempt is None:
+                    diagnose_attempt(stage, "ack-stage-invalidated")
+                    return fallback
+            else:
+                result = await _post_json_ordered_response(event_url, payload, timeout)
         except Exception:
+            diagnose_attempt(stage, "ack-transport-error")
             if ack_capable:
                 await _recover_exact_terminal_native_handoff(
                     payload,
@@ -2716,6 +2920,23 @@ async def prepare_exact_base_final_delivery(
             f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r} "
             f"delivery={str(result)[:120]!r}"
         )
+        if attempt is not None and applied:
+            # The sidecar has accepted this exact terminal. Do not reinterpret
+            # the old send as a new owner's claim after this await; consume only
+            # the frozen, single-use acknowledgement of the submitted request.
+            if _HFC_EXACT_COMPLETION_STAGE.get() is not stage or not attempt.consume(result):
+                attempt.revoke()
+                diagnose_attempt(stage, "ack-stage-invalidated")
+                return fallback
+        elif "_admission_claim" in stage:
+            from .admission_completion import valid_consumed
+            if not valid_consumed(stage):
+                diagnose_attempt(stage, "ack-stage-invalidated")
+                return fallback
+        if not applied:
+            if attempt is not None:
+                attempt.revoke()
+            diagnose_attempt(stage, "ack-not-applied")
         if ack_capable and not applied:
             registered = _register_native_handoff_descriptor(payload, result)
             if not registered:
@@ -2725,6 +2946,8 @@ async def prepare_exact_base_final_delivery(
                     timeout=timeout,
                 )
         if applied:
+            if normal_reason:
+                diagnose_attempt(stage, normal_reason, consume=False)
             _hfc_info(
                 "exact-base final delivery returning PROXY "
                 f"turn_id={str(payload.get('turn_id') or payload.get('message_id'))!r}"
@@ -2746,10 +2969,56 @@ async def prepare_exact_base_final_delivery(
         )
         return fallback
     except Exception:
+        diagnose_attempt(stage, "ack-stage-invalidated")
         _HFC_NATIVE_HANDOFF_CONTEXT.set(None)
         return fallback
     finally:
-        _HFC_EXACT_COMPLETION_STAGE.set(None)
+        if attempt is not None:
+            try:
+                attempt.revoke()
+            except BaseException:
+                pass
+        if _HFC_EXACT_COMPLETION_STAGE.get() is stage:
+            _HFC_EXACT_COMPLETION_STAGE.set(None)
+
+
+async def _post_admission_terminal(
+    stage: dict[str, Any], payload: dict[str, Any], values: dict[str, Any],
+    adapter: Any, url: str, timeout: float,
+) -> tuple[Any, Any]:
+    """Bound the queue and send; freeze the live claim only after the lock."""
+    from .admission_completion import begin_applied_attempt
+
+    deadline = time.monotonic() + timeout
+    lock = _send_lock(url, payload)
+    acquired = False
+    attempt = None
+    try:
+        if lock is not None:
+            await asyncio.wait_for(lock.acquire(), timeout=max(0.0, deadline - time.monotonic()))
+            acquired = True
+        if _HFC_EXACT_COMPLETION_STAGE.get() is not stage:
+            return None, None
+        attempt = begin_applied_attempt(stage, payload, values, adapter)
+        if attempt is None:
+            return None, None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        result = await asyncio.wait_for(
+            _post_json_response(url, payload, remaining), timeout=remaining
+        )
+        return result, attempt
+    except BaseException:
+        if attempt is not None:
+            try:
+                attempt.revoke()
+            except BaseException:
+                pass
+        raise
+    finally:
+        if acquired:
+            lock.release()
 
 
 async def finalize_exact_base_no_text(local_vars: dict[str, Any]) -> None:
@@ -2760,6 +3029,8 @@ async def finalize_exact_base_no_text(local_vars: dict[str, Any]) -> None:
         return
     _hfc_info("exact-base no-text entered with stage")
     try:
+        from .admission_completion import diagnose_attempt
+
         payload = _exact_terminal_payload(stage, local_vars, ack_capable=False)
         await _post_json_ordered_response(
             str(stage["event_url"]),
@@ -2772,6 +3043,10 @@ async def finalize_exact_base_no_text(local_vars: dict[str, Any]) -> None:
         )
     except Exception:
         _hfc_info("exact-base no-text terminal post raised")
+        try:
+            diagnose_attempt(stage, "ack-transport-error")
+        except Exception:
+            pass
     finally:
         _HFC_EXACT_COMPLETION_STAGE.set(None)
 
@@ -3140,6 +3415,18 @@ def _message_sender_open_id(
         if type(candidate) is str and _FEISHU_OPEN_ID_RE.fullmatch(candidate)
         else ""
     )
+
+
+def _message_admission_user_id(source_obj: Any) -> str:
+    """Keep the native admission identity separate from a Feishu mention open_id."""
+    candidate = getattr(source_obj, "user_id", None)
+    if (
+        type(candidate) is str
+        and candidate.strip()
+        and len(candidate) <= 256
+    ):
+        return candidate
+    return ""
 
 
 def _parse_hfc_command(text: str) -> str | None:
@@ -4274,11 +4561,19 @@ def _hfc_response_summary(response: Any) -> str:
 def _hfc_warn(message: str) -> None:
     try:
         logger.warning("[hermes-feishu-card] %s", message)
-    except Exception:
+        return
+    except BaseException:
         pass
     try:
         print(f"[hermes-feishu-card] {message}", file=sys.stderr)
-    except Exception:
+    except BaseException:
+        pass
+
+
+def _warn_stage_diagnostic(reason: str) -> None:
+    try:
+        _completion_diagnostics.stage_skipped(reason)
+    except BaseException:
         pass
 
 
@@ -4457,6 +4752,12 @@ def _hfc_looks_like_system_notice(content: Any) -> bool:
         text = str(content or "").strip()
         if not text:
             return False
+        # A disposable status line the transient-recall policy already knows
+        # (compression preflight / compaction done, en+zh) is a notice, never a
+        # full answer: upstream v5.0.12 asserts that such a send keeps the
+        # adapter's own result instead of reporting a suppressed duplicate card.
+        if _transient_notice_recall_seconds(text) is not None:
+            return True
         lowered = text.lower()
         markers = (
             "background task",
@@ -10657,7 +10958,7 @@ def _build_event(
     sequence = (
         _peek_next_sequence(sequence_id) if preview else _next_sequence(sequence_id)
     )
-    event_data = _event_data(event_name, local_vars, source_obj, message_obj)
+    event_data = _event_data(event_name, local_vars, source_obj, message_obj, preview=preview)
     if thread_id:
         event_data.setdefault("thread_id", thread_id)
     payload = {
@@ -11063,13 +11364,17 @@ def _resolved_target_thread_id(targets: list[dict[str, Any]], platform: str) -> 
 
 
 def _event_data(
-    event_name: str, local_vars: dict[str, Any], source_obj: Any, message_obj: Any
+    event_name: str, local_vars: dict[str, Any], source_obj: Any, message_obj: Any,
+    *, preview: bool = False,
 ) -> dict[str, Any]:
     profile_id, profile_source = _profile_identity(local_vars, source_obj, message_obj)
     data: dict[str, Any] = {
         "profile_id": profile_id,
         "profile_source": profile_source,
     }
+    admission_user_id = _message_admission_user_id(source_obj)
+    if admission_user_id:
+        data["admission_user_id"] = admission_user_id
     # Any event can open a session when message.started is unavailable.
     # Preserve requester identity on those fallback paths as well.
     sender_open_id = _message_sender_open_id(
@@ -11255,6 +11560,11 @@ def _event_data(
             "tokens": _completion_tokens(local_vars, answer),
             "context": _completion_context(local_vars),
         })
+        # Preview checks body/media only; the actual terminal payload consumes
+        # observations once and is reused by exact staging and transport retries.
+        rate = None if preview else _completion_observed_rate(local_vars)
+        if rate is not None:
+            data["rate"] = rate
         delivery_kind = _first_string(local_vars, ("delivery_kind",))
         if delivery_kind:
             data["delivery_kind"] = delivery_kind
@@ -12049,6 +12359,37 @@ def effective_response_model(agent: Any) -> str:
         if not model.startswith(provider + "/"):
             return f"{provider}/{model}"
     return model
+
+
+def _completion_observed_rate(local_vars):
+    """Consume display observations without making delivery depend on the plugin."""
+    try:
+        from .turn_metrics import RATE_MIN_OUTPUT_TOKENS, completion_output_rate, metric_count
+        result = local_vars.get("agent_result")
+        if type(result) is not dict:
+            return None
+        runtime = _plugin_runtime()
+        if runtime is None:
+            return None
+        observed = runtime.take_observed_rate(result.get("session_id"))
+        # A preflight/early return can reuse the session without ever calling
+        # pre_llm_call. Consume and discard unowned old observations unless the
+        # actual result proves this invocation made at least one API request.
+        api_calls = metric_count(result.get("api_calls"))
+        if observed is None or api_calls is None or api_calls == 0:
+            return None
+        rate, count = observed
+        # Legacy footer counts can be session-cumulative on cached agents.
+        # Only the independently validated per-invocation observations qualify.
+        exact = metric_count(count)
+        if exact is None or exact < RATE_MIN_OUTPUT_TOKENS:
+            return None
+        validated = completion_output_rate(rate)
+        if validated is None:
+            return None
+        return {"output_tps": validated[0], "basis": validated[1]}
+    except Exception:
+        return None
 
 
 def _completion_tokens(local_vars: dict[str, Any], answer: str) -> dict[str, int]:

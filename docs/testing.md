@@ -2,6 +2,10 @@
 
 [中文](testing.md) | [English](testing.en.md)
 
+## CI 回归范围与耗时
+
+普通 PR 按改动选择 docs、focused 或 full；main 和发布 gate 始终跑 full。完整矩阵保留 Linux Python 3.9–3.14 和 macOS 的全部用例，按耗时拆分为 Linux 十二片、macOS 十片和上游十二片并核对覆盖。单轮目标为 20 分钟内，以实际 workflow 用时为准。隔离方式、required check 和报告说明见[CI 回归分级](wiki/regression-ci.md)。
+
 ## 提交前检查（Issue #330）
 
 在当前 checkout 根目录，用实际准备跑测试的 Python 执行：
@@ -16,7 +20,7 @@ python tools/preflight.py --suite full
 
 默认只检查，不运行全量，也不安装依赖、fetch、修改 Hermes 或重启服务。检查包括 cwd 是否属于本 checkout、Python/venv、pytest 依赖、实际包来源和固定 Hermes fixture 的文件摘要。`ready` 只表示检查通过，`pytest.status=not_run` 明确表示还没测试；`--suite` 才会运行真正的 `python -m pytest`，通过后分别检查指定 base 到 HEAD 的已提交差异、未暂存差异和暂存区的 `git diff --check`。
 
-`focused` 默认按相对 `HEAD` 的暂存、未暂存及新增文件选择测试；`--base origin/main` 还包含当前分支已提交改动。删除同样参与选择，重命名按旧路径删除和新路径新增处理；删除的测试会要求明确选择替代矩阵，不能静默略过。也可重复指定 `--module runtime|render|appearance|quota|config|install|process|docs|preflight`。未知改动或没有匹配测试时会提示显式选择模块，不会偷偷扩成全量。聚焦选择只是起点；复杂改动仍按 [维护指南](wiki/maintenance-guide.md) 增加相关矩阵，发布前必须跑全量与 CI。
+`focused` 默认按相对 `HEAD` 的暂存、未暂存及新增文件选择测试；`--base origin/main` 还包含当前分支已提交改动。删除同样参与选择，重命名按旧路径删除和新路径新增处理；删除的测试会要求明确选择替代矩阵，不能静默略过。也可重复指定 `--module runtime|render|appearance|quota|config|install|process|docs|preflight|ci`。未知改动或没有匹配测试时会提示显式选择模块，不会偷偷扩成全量。聚焦选择只是起点；复杂改动仍按 [维护指南](wiki/maintenance-guide.md) 增加相关矩阵。发布前必须具备精确提交的完整 CI 证据，不要求同时重复一套本地全量。
 
 固定源码通过 `HFC_FIXED_TAG_SOURCE_ROOT` 指定，默认与现有测试一致。必须是包含 `.git` 的完整 Git checkout，Git 根目录必须与指定目录一致，HEAD 必须等于仓库内 provenance 的 commit，且暂存区、工作区和未跟踪文件均干净。工具还只读核对 provenance 的 SHA256，不下载、修复或修改该目录。仅解压官方 tag 的 tarball/zip，即使所有摘要相同，也不能替代 Git checkout：native capability 测试需要从它克隆并验证精确 commit。缺失返回 `missing`，摘要不同返回 `digest_mismatch`，没有 Git 信息返回 `git_checkout_required`，目录不匹配返回 `git_root_mismatch`，提交不匹配返回 `commit_mismatch`，本地改动返回 `dirty`。任一未验证状态使 check-only 返回 `incomplete`；需要 fixture 的测试和 `full` 会阻断，不能把缺环境当通过。不需要 fixture 的聚焦测试仍可执行，成功时整体为 `partial`，其 `pytest` 结果单独记录。
 
@@ -26,7 +30,34 @@ python tools/preflight.py --suite full
 
 若报告缺少测试依赖，请在自己选用的开发环境执行 `python -m pip install -e ".[test]"`。完整矩阵需要独立克隆的官方 Hermes `v2026.8.3` Git checkout（含 `.git`，固定 commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`），以 `HFC_FIXED_TAG_SOURCE_ROOT` 指向它；准备方式也见 `.github/workflows/tests.yml` 的 `fixed-hermes-fixture`。不要用运行中的 Hermes checkout 代替固定测试源码。
 
+V5.0.7 新增独立 `issue456_0225` 来源，固定提交 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`；保留 v0.22.4 与所有历史来源。官方 writer/PM 使用 `HFC_CONFIG_WRITER_0225_ROOT`，生成的完成/回调契约测试使用 `HFC_UPSTREAM_ISSUE456_0225_ROOT`；未知或漂移来源继续拒绝。
+
+Issue #463 的 `native-windows-463` job 在 Python 3.12/3.14 上运行真实 Windows 字节 I/O、portable restore、PM dependency 和固定未改 family 的 v0.22.5 官方 enable。checkout 使用进程级 `GIT_CONFIG_COUNT=1`、`GIT_CONFIG_KEY_0=core.autocrlf`、`GIT_CONFIG_VALUE_0=false`，不修改 runner 的 global Git 配置；源码、wheel、runtime 和临时路径由 PowerShell/Python 写入 `GITHUB_ENV` 为 Windows 原生绝对路径，随后读回两个固定 SHA、普通 wheel 的每个包资源及 `direct_url.json` 摘要。该 job 的结果才是原生 Windows 验收证据；本机 POSIX 的 handle 语义模拟只证明事务控制流。
+
 ## 单元测试
+
+固定上游矩阵在 2026-10-22 更新到 Hermes `v0.22.4`
+（`4d04303818b61bf3aa09278af48356315515965b`）与 main
+（`4e58c721c8cf9b51c46636ea84ea6a5cb540880a`）。Issue #451 的
+`cf4f3a7396814ffcaef69d9af09f7cfdade3ddbe` 和 `rc.2-v0.22.3`
+（`f83b4df3ce1ab2ec62f1e0e90f22e0a1db21cb68`）也单独保留。
+`tests/fixtures/hermes_upstream_sources.json` 逐文件登记摘要，CI 执行安装、
+重复安装、诊断及逐字恢复；新快照须包含 persistence、prepare、hygiene
+拆分文件，不能复用旧稳定版的文件集合。
+
+原 `v0.22.2`（`d923a5eb487a17c0a68801bba9ef0f56c81040a8`）与 main
+（`0ab43d4f67e41be75f4f6c0fa14a86dbcfd3e5b3`）分别保留为
+`baseline_0222` / `baseline_main_0ab`。旧 observer、writer 和 rate 契约继续
+绑定这些来源；刷新 latest 不得隐式替换旧测试。channel pin 的已核验
+`event.internal or getattr(event, "inherit_channel_pin", False)` 表达式仍保留，
+来源重绑定、缺失 tuple 和未知继承条件仍拒绝。
+
+CI 的普通 wheel 子进程对照官方 writer 的准确配置字节，并在旧 `7bda2a`、
+v0.22.4 与新 main 上验证 PM A→B 重建及 `site-packages` 来源。
+`HFC_REQUIRE_CONFIG_WRITER_CONTRACT=1` 和 `HFC_REQUIRE_PM_GENERATION=1`
+使缺失的指定来源、普通 wheel 或解释器成为失败；测试只转发列出的 fixture
+变量。这里的源码、私有 HOME 和本机子进程验证不代表真实 Gateway/model、
+飞书 API 或客户端验收。
 
 ```bash
 python3 -m pytest tests/unit -q

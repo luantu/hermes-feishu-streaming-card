@@ -4,6 +4,12 @@
 
 | Version | Highlights |
 |---|---|
+| [v5.0.2](release-notes-v5.0.2.en.md) | Known en/zh transient-notice recall; preserve queue guidance and native heartbeat cleanup |
+| [v5.0.1](release-notes-v5.0.1.en.md) | Hermes 0.22.x completion/approval compatibility and persistent PM dependencies |
+| [v5.0.0](release-notes-v5.0.0.en.md) | Task sections, interaction continuity, turn metrics and installation boundaries |
+| [v4.7.7](release-notes-v4.7.7.en.md) | Opt-in native tables; preserve long cells and indivisible Markdown tables |
+| [v4.7.6](release-notes-v4.7.6.en.md) | Split HOME binding, multi-instance ownership and diagnostics |
+| [v4.7.5](release-notes-v4.7.5.en.md) | PM runtime binding, DM card admission and layout limitations |
 | [v4.7.3](release-notes-v4.7.3.en.md) | Bounded heartbeat scans, responsive health snapshots and recovery guidance |
 | [v4.7.2](release-notes-v4.7.2.en.md) | Update safety, SDK callbacks, integrity recovery / 更新与回调修复 |
 | [v4.7.1](release-notes-v4.7.1.en.md) | Slash-confirm callback repair and result-card updates |
