@@ -3,9 +3,58 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：2026-11-02（〇-K V5.0.12 合并）；上一位：〇-D 自我改进回顾多列项改无序列表
-> +〇-F 表格行修复 + native_tables 开启（2026-10-21/23）；再上一位：〇-E 模型回退通知收卡
+> 最后更新：2026-11-03（〇-L V5.0.13 合并 + Hermes v0.22.5 支持边界）；上一位：〇-K
+> V5.0.12 合并（2026-11-02）；再上一位：〇-D 自我改进回顾多列项改无序列表 +〇-F 表格行
+> 修复 + native_tables 开启（2026-10-21/23）；再上一位：〇-E 模型回退通知收卡
 > （2026-10-20）；再上一位：V5.0.2 合并（2026-10-19，merge commit ed0972b）
+
+---
+
+## 〇-L、V5.0.13 合并 + Hermes v0.22.5 安装（2026-11-03）
+
+上游 **v5.0.12 → v5.0.13**（3 提交，30 文件 +832/−143）：非飞书平台完成路径隔离
+（#479，完成 hook 只允许 Feishu 进入 HFC 的 admission/排队终局/卡片交接）、`/model`
+Provider 选择首屏不再预选当前项（#478）、Python 3.9 注解兼容。**无冲突**（自动合并）。
+
+### ⚠️ Hermes 版本支持边界（本次最大结论）
+
+`hermes update` 把本机升到 **v0.22.6**，但 HFC v5.0.13 对它报
+`compatibility: unsupported`：`gateway/run_turn.py` / `run_turn_persistence.py` 的
+`message_handler`、`completion_return`、`run_agent`、`admission_completion` 锚点全部
+缺失（上游重构了完成路径），无法打补丁 → 卡片链路中断。**已回退到 v0.22.5**
+（官方 HFC 矩阵的最新受支持版本）：
+
+- 官方升级器不支持降级（`--branch` 会 fetch 远端分支并失败），做法是
+  `git checkout -b hfc-compat-v0.22.5 v0.22.5` 手动切到 tag `bf0203a7`，复用已同步的
+  依赖环境，再 `launchctl kickstart -k ai.hermes.external.gateway`。
+- v0.22.5 上 HFC 是 **`partial`**：`_status_callback_sync` 在新版被移到
+  `gateway/run_turn_progress.py`，HFC 的 status 锚点找不到 → **状态轨通知
+  （模型回退、压缩状态）回落原生文本**，其余卡片链路（正文、工具、终态、通知生产者）
+  正常。若要恢复状态轨，需要上游补 `run_turn_progress.py` 的锚点。
+- 结论矩阵：v0.21.7 = full；v0.22.4/v0.22.5 = partial（缺 status 锚点）；
+  v0.22.6 = unsupported。
+
+### 安装路径终于走通（官方族解锁）
+
+v0.22.5 命中官方 `pm-0225` 族 → PM 准入通过，`setup --repair --yes` 成功
+（新建环境 `acbf42c1…`，注册 5.0.13，`install ok`）。两个必须记住的坑：
+
+1. 先手动执行一次 `hermes plugins enable hermes-feishu-card --no-allow-tool-override`
+   （官方 writer 写入 `plugins.enabled` 与 `entries.hermes-feishu-card`）；否则安装器在
+   "official plugin enable failed" 处中止并回滚 PM generation（facts 会指回旧环境）。
+2. 安装器末尾报 `a running sidecar cannot be managed safely without a verified pidfile`
+   （退出码 1）——本机 sidecar 是自定义 launchd 服务，不归它管；忽略该错误，自行
+   `launchctl kickstart -k ai.hermes.feishu-card`（补丁已装好，`install ok` 已打印）。
+3. Hermes 更新后必须先删残留 `.hermes_feishu_card_manifest`、`recovery.lock` 和
+   `*.hermes_feishu_card.bak`，否则检测报 `decomposed ownership cannot be verified`。
+   本次已备份到 `/private/tmp/hfc-v5012-preinstall/stale-after-hermes-0226/`。
+
+### 测试
+
+固定 fixture 重建后（/private/tmp/hermes-agent-v2026.8.3-v430-audit，pin 3c27eb6）：
+聚焦四组（runtime/render/notices/appearance）**3128 用例 / 53 失败**，与 v5.0.12
+完全一致（零新增），新增的 #478/#479 测试全部通过。运行状态：Hermes v0.22.5 +
+HFC 5.0.13，sidecar 自定义 launchd 服务、网关外置启动器，飞书已连接、钩子已装。
 
 ---
 
