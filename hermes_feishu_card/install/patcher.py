@@ -4,6 +4,7 @@ import textwrap
 
 from .source_layout import (
     DECOMPOSED_GATEWAY_TARGETS as DECOMPOSED_GATEWAY_TARGETS,
+    DECOMPOSED_OPTIONAL_GATEWAY_TARGETS as DECOMPOSED_OPTIONAL_GATEWAY_TARGETS,
     DECOMPOSED_TARGETS as DECOMPOSED_TARGETS,
 )
 from . import admission_extraction, stop_cancellation
@@ -4436,7 +4437,8 @@ DECOMPOSED_LAYOUT_MARKERS = {
 def apply_gateway_fragment(content: str, target: str, *, strategy="gateway_run_013_plus",
                            completion_sources=None) -> str:
     """Render one routed legacy fragment; never infer an integration mode."""
-    if target not in ("gateway/run.py", *DECOMPOSED_GATEWAY_TARGETS):
+    if target not in ("gateway/run.py", *DECOMPOSED_GATEWAY_TARGETS,
+                      *DECOMPOSED_OPTIONAL_GATEWAY_TARGETS):
         raise ValueError("unknown Gateway patch target")
     tree = _parse_content(content)
     split_node = (_split_completion_node({**completion_sources, target: content}, target)

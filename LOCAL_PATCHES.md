@@ -22,8 +22,12 @@ v0.22.6（f0d94882）把完成路径又拆了一层，HFC 5.0.13 原本报 `unsu
    （仍验证：类唯一、无基类/装饰器、无方法名重绑定、无 `__getattr__`）。
 2. **回调模块**：状态/进度回调从 `_run_agent` 的闭包移到
    `gateway/run_turn_progress.py` 的 `GatewayTurnProgressMixin` 方法，状态经由 `ctx`
-   读取。`DECOMPOSED_GATEWAY_TARGETS` 新增 `gateway/run_turn_progress.py` 与
-   `gateway/run_background.py`（后者无自有钩子，作为完成所有权的字节证据一起纳入受管集）。
+   读取。新增**可选源** `DECOMPOSED_OPTIONAL_GATEWAY_TARGETS`
+   （`gateway/run_background.py` = 完成所有权字节证据、无自有钩子；
+   `gateway/run_turn_progress.py` = status 钩子目标）：存在才纳入快照/受管集，
+   老版本树不受影响（上游夹具按固定目标集构建，硬加会 KeyError）。配套：
+   `decomposed_ownership` 快照/恢复、`manifest` 校验、`detect` 源读取都接受这组可选目标；
+   `_inspect` 的 `extension_targets` 允许旧 manifest 不含它们（升级不报 target set changed）。
 3. **mixin 定位器**：新增 `_find_mixin_callback_body_location()`——只接受唯一的、绑定
    `ctx = self._ctx` 且读取所需 `ctx.<attr>` 的方法；`_apply_callback_patch` 增加
    `allow_mixin_context` / `required_ctx_attrs`。status 补丁同时允许旧闭包形态与
@@ -40,7 +44,19 @@ v0.22.6（f0d94882）把完成路径又拆了一层，HFC 5.0.13 原本报 `unsu
 `verify_launch_sources` 分别识别 `pm-0226` / `pm-0225`。
 
 测试：`tests/unit/test_hermes_0226_anchors.py`（mixin 定位正/负例、双形态钩子可编译、
-受管目标集合、admission 族、基类契约）。
+可选目标集合、admission 族、基类契约）；聚焦四组 3128 用例 / 53 失败，与 v5.0.13
+基线逐条一致（零新增）。
+
+**线上切换（2026-11-06 实操）**：v0.22.5（已装补丁）→ v0.22.6 的正确顺序是
+「还原源码 → 切版本 → 全新安装」，因为渲染器变了，旧安装会处于
+`stale_unpatched`（`uninstall`/`rebind-legacy` 均按设计拒绝）。步骤：
+`git checkout -- .` 还原 → 删 `.hermes_feishu_card_manifest`、`recovery.lock`、
+`*.hermes_feishu_card.bak` 与旧 `.hermes_feishu_card_observer.json`（否则
+`legacy_rebind_decomposed_install_required`）→ `git checkout -b hfc-compat-v0.22.6 v0.22.6`
+→ `setup --repair --yes`（`install ok`，新 PM 环境 478de9a5、SDK 升到 lark-oapi 1.7.5；
+末尾 sidecar pidfile 报错属自定义服务，忽略）→ kickstart 两个服务。
+现状：Hermes v0.22.6 + HFC 5.0.13，`compatibility: full`，status 钩子装在
+`gateway/run_turn_progress.py`，飞书已连接。
 
 ---
 

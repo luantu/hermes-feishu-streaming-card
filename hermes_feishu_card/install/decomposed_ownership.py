@@ -16,6 +16,7 @@ from .source_layout import (
     BACKUP_SUFFIX, MANIFEST_NAME,
     DECOMPOSED_MANIFEST_VERSION as MANIFEST_VERSION,
     DECOMPOSED_SOURCE_TARGETS as SOURCE_TARGETS,
+    DECOMPOSED_OPTIONAL_SOURCE_TARGETS as OPTIONAL_SOURCE_TARGETS,
 )
 
 VERSION_TARGETS = ("VERSION", "hermes_cli/__init__.py", ".git/HEAD", ".git/packed-refs")
@@ -33,7 +34,9 @@ def is_managed(root: Path) -> bool:
 def _snapshot(root: Path) -> dict[str, bytes | None]:
     """Bind every candidate, including absence, so a new file invalidates a plan."""
     result: dict[str, bytes | None] = {}
-    for name in (*SOURCE_TARGETS, *(n + BACKUP_SUFFIX for n in SOURCE_TARGETS),
+    for name in (*SOURCE_TARGETS, *OPTIONAL_SOURCE_TARGETS,
+                 *(n + BACKUP_SUFFIX for n in SOURCE_TARGETS),
+                 *(n + BACKUP_SUFFIX for n in OPTIONAL_SOURCE_TARGETS),
                  MANIFEST_NAME, *VERSION_TARGETS):
         path = root / name
         for parent in (path, *path.parents):
@@ -208,10 +211,12 @@ def _legacy_upgrade_sources(snapshot: Mapping[str, bytes | None], sources: Mappi
 
 def _inspect(root: Path, *, render_hooks: bool = True) -> tuple[dict[str, bytes | None], dict[str, bytes], dict[str, bytes] | None, str]:
     snapshot = _snapshot(root)
-    sources = {name: raw for name in SOURCE_TARGETS if (raw := snapshot[name]) is not None}
+    sources = {name: raw for name in (*SOURCE_TARGETS, *OPTIONAL_SOURCE_TARGETS)
+               if (raw := snapshot[name]) is not None}
     raw_manifest = snapshot[MANIFEST_NAME]
     if raw_manifest is None:
-        if any(snapshot[name + BACKUP_SUFFIX] is not None for name in SOURCE_TARGETS):
+        if any(snapshot[name + BACKUP_SUFFIX] is not None
+               for name in (*SOURCE_TARGETS, *OPTIONAL_SOURCE_TARGETS)):
             raise ValueError("decomposed backup has no manifest; refusing mutation")
         if any(b"HERMES_FEISHU_CARD_" in raw for raw in sources.values()):
             raise ValueError("decomposed hooks have no manifest; refusing mutation")
@@ -225,8 +230,12 @@ def _inspect(root: Path, *, render_hooks: bool = True) -> tuple[dict[str, bytes 
     validate_manifest(manifest)
     owned_targets = set(manifest["targets"])
     added = set(sources) - owned_targets
+    # Targets that an older manifest could legitimately not own yet: the layout
+    # extensions of the decomposed facade, plus the v0.22 split modules
+    # (background mixin evidence and the progress-callback mixin).
     extension_targets = {"gateway/run_turn_persistence.py", "gateway/run_turn_prepare.py",
-                         "gateway/run_turn_hygiene.py"}
+                         "gateway/run_turn_hygiene.py",
+                         "gateway/run_background.py", "gateway/run_turn_progress.py"}
     if owned_targets - set(sources) or not added.issubset(extension_targets):
         raise ValueError("decomposed source target set changed")
     if any(b"HERMES_FEISHU_CARD_" in sources[name] for name in added):
@@ -239,7 +248,8 @@ def _inspect(root: Path, *, render_hooks: bool = True) -> tuple[dict[str, bytes 
             raise ValueError(f"{target}: backup missing or changed")
         compile(backup, target, "exec")
         originals[target] = backup
-    if any(snapshot[name + BACKUP_SUFFIX] is not None for name in SOURCE_TARGETS if name not in originals):
+    if any(snapshot[name + BACKUP_SUFFIX] is not None
+           for name in (*SOURCE_TARGETS, *OPTIONAL_SOURCE_TARGETS) if name not in originals):
         raise ValueError("unowned decomposed backup exists")
     clean_targets = []
     replacements = {name: sources[name] for name in added}

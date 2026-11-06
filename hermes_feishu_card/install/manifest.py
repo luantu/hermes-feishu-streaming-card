@@ -12,6 +12,7 @@ from ..integration import (
 )
 from .source_layout import (
     BACKUP_SUFFIX, DECOMPOSED_MANIFEST_VERSION, DECOMPOSED_LAYOUT, DECOMPOSED_SOURCE_TARGETS,
+    DECOMPOSED_OPTIONAL_SOURCE_TARGETS,
 )
 from .patch_descriptors import HYBRID_PATCH_REGISTRY, HYBRID_PATCH_TARGETS
 
@@ -334,7 +335,8 @@ def validate_decomposed_manifest(manifest: object) -> None:
             or manifest.get("integration_mode") != "legacy-patch"
             or not isinstance(manifest.get("targets"), dict)
             or not manifest["targets"]
-            or not set(manifest["targets"]).issubset(DECOMPOSED_SOURCE_TARGETS)
+            or not set(manifest["targets"]).issubset(
+                (*DECOMPOSED_SOURCE_TARGETS, *DECOMPOSED_OPTIONAL_SOURCE_TARGETS))
             or "gateway/run.py" not in manifest["targets"]):
         raise ManifestStructureError("invalid decomposed ownership manifest")
     for target, row in manifest["targets"].items():

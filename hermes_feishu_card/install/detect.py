@@ -195,7 +195,9 @@ def detect_hermes(root: str | Path) -> HermesDetection:
         return result(False, run_py_error)
 
     gateway_sources["gateway/run.py"] = contents
-    for name in patcher.DECOMPOSED_GATEWAY_TARGETS:
+    # v0.22 optional split modules: present on newer trees only, read when shipped.
+    for name in (*patcher.DECOMPOSED_GATEWAY_TARGETS,
+                  *patcher.DECOMPOSED_OPTIONAL_GATEWAY_TARGETS):
         path = hermes_root / name
         if path.is_symlink():
             return result(False, f"{name} must not be a symlink")

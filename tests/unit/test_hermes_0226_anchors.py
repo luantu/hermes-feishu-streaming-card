@@ -86,8 +86,26 @@ def test_rendered_status_hook_compiles_for_both_callback_shapes(shape):
 
 
 def test_v022_modules_join_the_managed_source_set():
-    assert "gateway/run_turn_progress.py" in DECOMPOSED_GATEWAY_TARGETS
-    assert "gateway/run_background.py" in DECOMPOSED_GATEWAY_TARGETS
+    """They are OPTIONAL sources: older trees do not ship them, so they must not be
+    required by the fixed target list (upstream fixtures build exactly that list)."""
+    from hermes_feishu_card.install.source_layout import (
+        DECOMPOSED_ALL_SOURCE_TARGETS,
+        DECOMPOSED_GATEWAY_TARGETS,
+        DECOMPOSED_OPTIONAL_GATEWAY_TARGETS,
+    )
+
+    assert "gateway/run_turn_progress.py" in DECOMPOSED_OPTIONAL_GATEWAY_TARGETS
+    assert "gateway/run_background.py" in DECOMPOSED_OPTIONAL_GATEWAY_TARGETS
+    assert "gateway/run_turn_progress.py" not in DECOMPOSED_GATEWAY_TARGETS
+    assert set(DECOMPOSED_OPTIONAL_GATEWAY_TARGETS).issubset(DECOMPOSED_ALL_SOURCE_TARGETS)
+    # The patch dispatcher must accept the optional module as a target.
+    compile(
+        patcher.apply_gateway_fragment(
+            V0226_STATUS_MODULE, "gateway/run_turn_progress.py"
+        ),
+        "<run_turn_progress>",
+        "exec",
+    )
 
 
 def test_completion_ownership_accepts_the_v0226_background_base():
