@@ -316,6 +316,11 @@ def _apply_turn_callbacks(content: str, *, strategy: str) -> str:
             ),
             required_callback_args=("event_type", "message"),
             allow_turn_context=True,
+            # v0.22 moved the callback to GatewayTurnProgressMixin and reads the
+            # closure state through ``ctx``; ``source`` is the attribute the hook
+            # block cannot run without.
+            allow_mixin_context=True,
+            required_ctx_attrs=("source",),
         )
     return content
 
@@ -1554,6 +1559,8 @@ def _apply_callback_patch(
     required_callback_args=(),
     required_callback_calls=(),
     allow_turn_context=False,
+    allow_mixin_context=False,
+    required_ctx_attrs=(),
 ) -> str:
     owned_block = _find_simple_marker_block(
         content,
@@ -1581,6 +1588,13 @@ def _apply_callback_patch(
         required_callback_args=required_callback_args,
         required_callback_calls=required_callback_calls,
     )
+    if callback_body is None and allow_mixin_context:
+        callback_body = _find_mixin_callback_body_location(
+            tree,
+            lines,
+            callback_name,
+            required_ctx_attrs=required_ctx_attrs,
+        )
     use_turn_context = False
     if callback_body is None and allow_turn_context:
         callback_body = _find_turn_runner_callback_body_location(
@@ -2091,6 +2105,43 @@ def _has_required_callback_scope(
     return set(required_outer_names).issubset(outer_names) and set(
         required_callback_args
     ).issubset(callback_args)
+
+
+def _ctx_attribute_names(node) -> set[str]:
+    """Return the ``ctx.<attr>`` names a callback reads after binding ``ctx = self._ctx``."""
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if (isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name)
+                and child.value.id == "ctx"):
+            names.add(child.attr)
+    return names
+
+
+def _find_mixin_callback_body_location(
+    tree, lines, callback_name: str, *, required_ctx_attrs=(),
+):
+    """Locate a callback that is a method on a turn mixin (v0.22+ layout).
+
+    v0.21 nested these callbacks inside ``_run_agent``; v0.22 moved
+    ``_status_callback_sync`` onto ``GatewayTurnProgressMixin`` in its own module and
+    switched the closure names to ``ctx`` attributes. Accept exactly one method that
+    binds ``ctx = self._ctx`` and reads every attribute the hook block relies on, so a
+    renamed or unbound callback is still refused instead of patched by guesswork.
+    """
+    candidates = []
+    for klass in tree.body:
+        if not isinstance(klass, ast.ClassDef):
+            continue
+        for node in klass.body:
+            if (isinstance(node, ast.FunctionDef) and node.name == callback_name
+                    and _binds_turn_context(node)):
+                candidates.append(node)
+    if len(candidates) != 1:
+        return None
+    node = candidates[0]
+    if not set(required_ctx_attrs).issubset(_ctx_attribute_names(node)):
+        return None
+    return _body_location(node, lines)
 
 
 def _has_required_callback_calls(callback, required_callback_calls) -> bool:
@@ -3985,8 +4036,16 @@ def _render_generation_approval_hook_block(indent: str, newline: str):
 
 
 def _render_status_hook_block(indent: str, newline: str, *, suppress_owned: bool = True):
+    """Render the status hook for both callback shapes.
+
+    v0.21 closed over bare locals (``source``, ``_status_chat_id``, ...); v0.22 moved
+    the callback onto a turn mixin and reads the same state through ``ctx``. The block
+    resolves either shape before delegating, so one renderer covers both and an
+    unknown shape simply fails open to the original native status path.
+    """
     inner_indent = _child_indent(indent)
     deeper_indent = _child_indent(inner_indent)
+    handler_indent = _child_indent(deeper_indent)
     return [
         f"{indent}{STATUS_PATCH_BEGIN}{newline}",
         f"{indent}try:{newline}",
@@ -3994,15 +4053,33 @@ def _render_status_hook_block(indent: str, newline: str, *, suppress_owned: bool
             f"{inner_indent}from hermes_feishu_card.hook_runtime "
             f"import handle_status_from_hermes_locals as _hfc_handle_status{newline}"
         ),
-        f"{inner_indent}if _run_still_current():{newline}",
+        f"{inner_indent}_hfc_ctx = locals().get(\"ctx\") or getattr(self, \"_ctx\", None){newline}",
+        (
+            f"{inner_indent}_hfc_guard = locals().get(\"_run_still_current\") "
+            f"or getattr(_hfc_ctx, \"_run_still_current\", None){newline}"
+        ),
+        f"{inner_indent}if not callable(_hfc_guard) or _hfc_guard():{newline}",
         f"{deeper_indent}{'if ' if suppress_owned else ''}_hfc_handle_status({{{newline}",
         f"{deeper_indent}    **locals(),{newline}",
-        f"{deeper_indent}    \"source\": source,{newline}",
-        f"{deeper_indent}    \"chat_id\": _status_chat_id,{newline}",
-        f"{deeper_indent}    \"message_id\": event_message_id,{newline}",
-        f"{deeper_indent}    \"_hfc_loop\": _loop_for_step,{newline}",
+        (
+            f"{deeper_indent}    \"source\": locals().get(\"source\") "
+            f"or getattr(_hfc_ctx, \"source\", None),{newline}"
+        ),
+        (
+            f"{deeper_indent}    \"chat_id\": locals().get(\"_status_chat_id\") "
+            f"or getattr(_hfc_ctx, \"_status_chat_id\", None),{newline}"
+        ),
+        (
+            f"{deeper_indent}    \"message_id\": locals().get(\"event_message_id\") "
+            f"or getattr(_hfc_ctx, \"event_message_id\", None),{newline}"
+        ),
+        (
+            f"{deeper_indent}    \"_hfc_loop\": locals().get(\"_loop_for_step\") "
+            f"or getattr(_hfc_ctx, \"_loop_for_step\", None),{newline}"
+        ),
+        f"{deeper_indent}    \"_run_still_current\": _hfc_guard,{newline}",
         f"{deeper_indent}}}, event_type=event_type, message=message){':' if suppress_owned else ''}{newline}",
-        *([f"{deeper_indent}    return{newline}"] if suppress_owned else []),
+        *([f"{handler_indent}return{newline}"] if suppress_owned else []),
         *_render_hook_exception_handler(indent, newline),
         f"{indent}{STATUS_PATCH_END}{newline}",
     ]
@@ -4451,7 +4528,10 @@ def _split_completion_node(sources, target):
     if (len(owners) != 1 or len(peers) != 1 or len(imports) != 1
             or tuple(ast.unparse(base) for base in owners[0].bases) not in {
                 ("GatewayTurnPersistenceMixin",),
-                ("GatewayTurnPrepareMixin", "GatewayTurnHygieneMixin", "GatewayTurnPersistenceMixin")}
+                ("GatewayTurnPrepareMixin", "GatewayTurnHygieneMixin", "GatewayTurnPersistenceMixin"),
+                # v0.22.6 adds a background-task mixin ahead of the same three owners.
+                ("GatewayBackgroundMixin", "GatewayTurnPrepareMixin",
+                 "GatewayTurnHygieneMixin", "GatewayTurnPersistenceMixin")}
             or any(getattr(node, "name", None) in methods for node in owners[0].body)):
         raise ValueError("inherited completion ownership contract changed")
     # Earlier bases must be proven not to shadow persistence. Bind their
@@ -4462,7 +4542,8 @@ def _split_completion_node(sources, target):
         name = base.id
         module = {"GatewayTurnPrepareMixin": "gateway.run_turn_prepare",
                   "GatewayTurnHygieneMixin": "gateway.run_turn_hygiene",
-                  "GatewayTurnPersistenceMixin": "gateway.run_turn_persistence"}[name]
+                  "GatewayTurnPersistenceMixin": "gateway.run_turn_persistence",
+                  "GatewayBackgroundMixin": "gateway.run_background"}[name]
         bindings = [node for node in handler_tree.body if isinstance(node, ast.ImportFrom)
                     and node.module == module and node.level == 0
                     and any(alias.name == name and alias.asname is None for alias in node.names)]

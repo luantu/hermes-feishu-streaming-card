@@ -3,10 +3,44 @@
 本文档记录本地分支相对于上游（`upstream/main`）的全部修订。
 每次合并上游后对比此清单确保不丢失。
 
-> 最后更新：2026-11-03（〇-L V5.0.13 合并 + Hermes v0.22.5 支持边界）；上一位：〇-K
-> V5.0.12 合并（2026-11-02）；再上一位：〇-D 自我改进回顾多列项改无序列表 +〇-F 表格行
-> 修复 + native_tables 开启（2026-10-21/23）；再上一位：〇-E 模型回退通知收卡
-> （2026-10-20）；再上一位：V5.0.2 合并（2026-10-19，merge commit ed0972b）
+> 最后更新：2026-11-06（〇-M Hermes v0.22.6 锚点适配）；上一位：〇-L V5.0.13 合并 +
+> Hermes v0.22.5 支持边界（2026-11-03）；再上一位：〇-K V5.0.12 合并（2026-11-02）；
+> 再上一位：〇-D 自我改进回顾多列项改无序列表 +〇-F 表格行修复 + native_tables 开启
+> （2026-10-21/23）；再上一位：〇-E 模型回退通知收卡（2026-10-20）；再上一位：
+> V5.0.2 合并（2026-10-19，merge commit ed0972b）
+
+---
+
+## 〇-M、Hermes v0.22.6 锚点适配（2026-11-06，本地安装契约扩展）
+
+v0.22.6（f0d94882）把完成路径又拆了一层，HFC 5.0.13 原本报 `unsupported`。四处适配：
+
+1. **完成所有权基类**：`GatewayTurnMixin` 在 v0.22.6 变成
+   `(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin,
+   GatewayTurnPersistenceMixin)`。`patcher._split_completion_node` 接受这条四基类元组，
+   并把 `GatewayBackgroundMixin → gateway.run_background` 加入逐基类绑定/遮蔽校验
+   （仍验证：类唯一、无基类/装饰器、无方法名重绑定、无 `__getattr__`）。
+2. **回调模块**：状态/进度回调从 `_run_agent` 的闭包移到
+   `gateway/run_turn_progress.py` 的 `GatewayTurnProgressMixin` 方法，状态经由 `ctx`
+   读取。`DECOMPOSED_GATEWAY_TARGETS` 新增 `gateway/run_turn_progress.py` 与
+   `gateway/run_background.py`（后者无自有钩子，作为完成所有权的字节证据一起纳入受管集）。
+3. **mixin 定位器**：新增 `_find_mixin_callback_body_location()`——只接受唯一的、绑定
+   `ctx = self._ctx` 且读取所需 `ctx.<attr>` 的方法；`_apply_callback_patch` 增加
+   `allow_mixin_context` / `required_ctx_attrs`。status 补丁同时允许旧闭包形态与
+   mixin 形态，钩子块改为**双形态**（`locals().get("source") or getattr(_hfc_ctx, "source")`
+   …，并把 `_run_still_current` 归一化后传入），旧版本逐字节行为不变。
+4. **PM writer 族**：新增 `FAMILIES["pm-0226"]`（88 个 writer/boot/migration 源文件的
+   v0.22.6 精确哈希）与 `LAUNCH_SOURCES["pm-0226"]`（`hermes_cli/main.py`
+   `e8a2cf5d…`），并加入 `BOOT_GATE_FAMILIES`；`admission_completion.SOURCE_COHORTS`
+   新增 v0.22.6 的 ingress/authority 哈希对。
+
+**验证（离线）**：v0.22.6 worktree 上 `doctor` = `full`，`status_callback: found
+(gateway/run_turn_progress.py)`；`decomposed_ownership.render()` 15 文件全部
+补丁→编译→去补丁逐字节还原，status 标记唯一；v0.22.5 同样 `full`（回归无退化）。
+`verify_launch_sources` 分别识别 `pm-0226` / `pm-0225`。
+
+测试：`tests/unit/test_hermes_0226_anchors.py`（mixin 定位正/负例、双形态钩子可编译、
+受管目标集合、admission 族、基类契约）。
 
 ---
 

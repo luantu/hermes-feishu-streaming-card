@@ -49,6 +49,13 @@ SOURCE_COHORTS: tuple[dict[str, str], ...] = (
         "gateway.session_authority": "f6eba4d4e17f35e9bcaaf664d1dece93bca8ceccddba3d6d2ad99aa7983bb15f",
     },
     {
+        # v0.22.6 (f0d94882): detached route and room-silence bookkeeping changed
+        # both bodies; the admission seam, marker moves and Base extraction keep
+        # their exact shape, and this complete pair is the only accepted proof.
+        "gateway.session_ingress": "12466f9c31f57877c6ae8ea6189d76123a278bdc99e5242c13c5c4ecff0f8ae9",
+        "gateway.session_authority": "207708e4aeb0bf2d8e577f145110a414d80c12da1c4e69570f0402f7d7f6d1a6",
+    },
+    {
         # Issue 471: 9b904dcc22 changes route/claim refusal and automation
         # ownership upstream. Accept only this complete source pair; the
         # original row, live owner, generation, epoch and ACK gates still apply.

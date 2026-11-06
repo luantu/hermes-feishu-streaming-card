@@ -60,7 +60,8 @@
       "tests/integration/test_legacy_observer_install.py",
       "tests/integration/test_pm_rebind.py",
       "tests/integration/test_official_enable_root.py",
-      "tests/unit/test_launch_source_paths.py"
+      "tests/unit/test_launch_source_paths.py",
+      "tests/unit/test_hermes_0226_anchors.py"
     ],
     "process": [
       "tests/unit/test_process.py",
@@ -429,7 +430,10 @@
     "hermes_feishu_card/metrics.py": [
       "runtime"
     ],
-    "hermes_feishu_card/model_names.py": ["render", "appearance"],
+    "hermes_feishu_card/model_names.py": [
+      "render",
+      "appearance"
+    ],
     "hermes_feishu_card/native_commands.py": [
       "commands"
     ],

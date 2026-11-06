@@ -504,8 +504,8 @@ def test_ledgered_base_patch_roundtrip_and_compile():
 
 
 def test_ledgered_cli_install_doctor_repeat_remove_roundtrip(ledgered_hermes, monkeypatch):
-    monkeypatch.setattr(cli, "_ensure_hermes_runtime_package", lambda detection: None)
-    monkeypatch.setattr(cli, "_ensure_hermes_feishu_sdk", lambda detection: None)
+    monkeypatch.setattr(cli, "_ensure_hermes_runtime_package", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_ensure_hermes_feishu_sdk", lambda *args, **kwargs: None)
     before = sources(ledgered_hermes)
     detection = detect_hermes(ledgered_hermes)
     assert detection.supported and detection.compatibility == "full"
